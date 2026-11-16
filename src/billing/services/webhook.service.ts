@@ -24,6 +24,7 @@ import {
 } from './invoice-sync.util';
 import { getSubscriptionPeriod } from './subscription-sync.util';
 import { StripeService } from '../../stripe/stripe.service';
+import { PaymentAlertsService } from './payment-alerts.service';
 import {
   endStripeProviderRows,
   refreshStripeProviderRowStatus,
@@ -43,6 +44,7 @@ export class WebhookService {
     private stripeService: StripeService,
     private readonly lookup: SubscriptionLookupService,
     private readonly billingEmail: BillingEmailService,
+    private readonly paymentAlerts: PaymentAlertsService,
   ) {}
 
   async handleWebhook(event: Stripe.Event): Promise<void> {
@@ -101,7 +103,7 @@ export class WebhookService {
           break;
 
         case 'invoice.payment_failed':
-          await this.handleInvoicePaymentFailed(event.data.object);
+          await this.handleInvoicePaymentFailed(event.data.object, event.id);
           break;
 
         case 'invoice.payment_succeeded':
@@ -517,6 +519,7 @@ export class WebhookService {
 
   private async handleInvoicePaymentFailed(
     invoice: Stripe.Invoice,
+    eventId: string,
   ): Promise<void> {
     this.logger.error(`Invoice payment failed: ${invoice.id}`);
 
@@ -629,6 +632,23 @@ export class WebhookService {
       `Failed payment recorded for subscription ${subscription[0].id}. ` +
         `Total unresolved: ${unresolvedFailures.length}/${this.MAX_FAILED_ATTEMPTS}`,
     );
+
+    // One alert per failure EVENT. Keyed on the event id, not the invoice's
+    // `attempt_count`: a manual retry that fails again does not bump the count
+    // but is a new event. Redelivery of the same event is stopped earlier by
+    // the billing_events check, and the alert claim is unique besides.
+    await this.paymentAlerts.paymentFailed({
+      userId: subscription[0].userId,
+      provider: 'stripe',
+      alertKey: `stripe:failed:${eventId}`,
+      amountMinor:
+        typeof invoice.amount_due === 'number' ? invoice.amount_due : null,
+      card: null, // the saved default card; the invoice does not carry one
+      // An Invoice carries no decline message (that lives on the
+      // PaymentIntent), so the notification uses its default sentence rather
+      // than a placeholder reading "failed: Payment failed".
+      reason: null,
+    });
   }
 
   private async handleInvoicePaymentSucceeded(
@@ -646,6 +666,22 @@ export class WebhookService {
         .limit(1);
 
       if (subscription.length > 0) {
+        // Read BEFORE resolving: was this account in dunning when the payment
+        // landed? `subscription.updated` may already have flipped the status
+        // to active, so unresolved failure rows count as evidence too.
+        const unresolved = await db
+          .select({ id: failedPayments.id })
+          .from(failedPayments)
+          .where(
+            and(
+              eq(failedPayments.subscriptionId, subscription[0].id),
+              eq(failedPayments.resolved, false),
+            ),
+          )
+          .limit(1);
+        const wasPastDue =
+          subscription[0].status === 'past_due' || unresolved.length > 0;
+
         // Resolve all failed payments for this subscription
         await db
           .update(failedPayments)
@@ -671,6 +707,18 @@ export class WebhookService {
             })
             .where(eq(subscriptions.id, subscription[0].id));
         }
+
+        await this.paymentAlerts.paymentSucceeded({
+          userId: subscription[0].userId,
+          provider: 'stripe',
+          alertKey: `stripe:recovered:${invoice.id}`,
+          amountMinor:
+            typeof invoice.amount_paid === 'number'
+              ? invoice.amount_paid
+              : null,
+          planCode: subscription[0].planCode,
+          wasPastDue,
+        });
       }
     }
   }

@@ -12,6 +12,7 @@ import { relations, sql } from 'drizzle-orm';
 import { users } from './users.schema';
 import { workspace } from './workspace.schema';
 import { socialMediaChannels, SupportedPlatform } from './channels.schema';
+import type { PublishErrorCode } from '../../posts/composer/types/draft.types';
 
 // Post status enum values
 export const POST_STATUSES = [
@@ -86,6 +87,14 @@ export interface PostTarget {
   platformPostUrl?: string;
   publishedAt?: string;
   errorMessage?: string;
+  /**
+   * The failure's cause in one coarse code, from the shared classifier
+   * (posts/composer/services/composer-error-mapper.service.ts). Set on a
+   * failed target by Publish now and by the scheduled job alike; cleared
+   * when the target is attempted again. Kept in the existing `targets`
+   * jsonb, no migration.
+   */
+  errorCode?: PublishErrorCode;
   /** Per-item results when the post went out as several (see above). */
   itemResults?: PublishItemResult[];
   /**
@@ -105,7 +114,8 @@ export interface PostTarget {
    * is next attempted. Kept in the existing `targets` jsonb, no migration.
    */
   heldAt?: string;
-  heldReason?: 'channel_paused';
+  // Paused by the user, or disconnected (channel soft disconnect, 0081).
+  heldReason?: 'channel_paused' | 'channel_disconnected';
   contentOverride?: PlatformContent;
   /**
    * Sub-destination for chat/messaging platforms (Slack/Discord): which
@@ -212,6 +222,9 @@ export const posts = pgTable(
     index('posts_status_idx').on(table.status),
     index('posts_scheduled_at_idx').on(table.scheduledAt),
     index('posts_created_at_idx').on(table.createdAt),
+    // Migration 0086: the platform-status measurement reads the posts
+    // updated in its window.
+    index('posts_updated_at_idx').on(table.updatedAt),
     index('posts_workspace_draft_idx')
       .on(table.workspaceId, table.updatedAt.desc())
       .where(sql`${table.status} = 'draft'`),

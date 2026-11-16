@@ -40,6 +40,7 @@ describe('ChannelService.findChannelsByPlatformAccountAllWorkspaces', () => {
       {} as any,
       {} as any,
       {} as any,
+      {} as any,
     );
     const res = await service.findChannelsByPlatformAccountAllWorkspaces(
       'whatsapp',

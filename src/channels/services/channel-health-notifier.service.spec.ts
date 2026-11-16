@@ -261,8 +261,11 @@ describe('ChannelHealthNotifier.markExpired', () => {
       connectionStatus: 'expired',
     });
     const q = new PgDialect().sqlToQuery(updates[0].where);
-    expect(q.sql).toMatch(/"connection_status" <> \$/);
-    expect(q.params).toContain('expired');
+    // Neither already expired nor disconnected (soft disconnect, 0081).
+    expect(q.sql).toMatch(/"connection_status" not in \(/);
+    expect(q.params).toEqual(
+      expect.arrayContaining(['expired', 'disconnected']),
+    );
     expect(notify.notify).toHaveBeenCalledTimes(2);
     expect(notify.notify.mock.calls[0][0].email.idempotencyKey).toBe(
       `channel-expired.5.${AT.getTime()}.u-owner`,
@@ -276,8 +279,10 @@ describe('ChannelHealthNotifier.markExpired', () => {
 
     expect(updates).toHaveLength(2);
     expect(updates[1].set).toEqual(updates[0].set);
+    // The fields land on an expired row, never on a disconnected one.
     const q = new PgDialect().sqlToQuery(updates[1].where);
-    expect(q.sql).not.toContain('<>');
+    expect(q.sql).toMatch(/"connection_status" <> \$/);
+    expect(q.params).toEqual([5, 'disconnected']);
     expect(notify.notify).not.toHaveBeenCalled();
   });
 

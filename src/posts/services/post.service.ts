@@ -15,6 +15,7 @@ import {
   inArray,
   isNotNull,
   ne,
+  or,
   sql,
   gte,
   lte,
@@ -75,14 +76,26 @@ import { channelContent } from '../lib/channel-content';
 import {
   enqueueHeldPost,
   holdTarget,
+  holdingReasonOf,
   isHeld,
+  publishRefusalFor,
   releaseTarget,
+  HELD_REASON,
+  MISSED_HELD_MESSAGE,
+  type HeldReason,
+  type HoldingChannel,
 } from '../lib/held-targets';
 import { syncHeldDripPost } from '../../drips/lib/held-drip-sync';
 import type {
   PostStatusChangedPayload,
   PostStatusChangedTarget,
+  PublishTrigger,
 } from '../../realtime/types/analytics-events.types';
+import {
+  ClassifiedPublishError,
+  classifyPublishError,
+} from '../composer/services/composer-error-mapper.service';
+import { REMINDER_FAILURE_PREFIX } from '../lib/post-failure';
 
 export interface CreatePostDto {
   content?: string;
@@ -149,6 +162,7 @@ export class PostService {
       platformPostUrl: t.platformPostUrl,
       publishedAt: t.publishedAt,
       errorMessage: t.errorMessage,
+      errorCode: t.errorCode,
     }));
   }
 
@@ -162,6 +176,11 @@ export class PostService {
     lastError: string | null;
     triggeredBy: 'user' | 'scheduler';
     triggeredByUserId: string | null;
+    /** The post's author: who hears about a publish nobody pressed. */
+    authorId: string | null;
+    trigger: PublishTrigger;
+    /** Only on the outcome of a run: the targets that run attempted. */
+    attemptedChannelIds?: string[];
   }): void {
     const payload: PostStatusChangedPayload = {
       workspaceId: args.workspaceId,
@@ -174,6 +193,11 @@ export class PostService {
       updatedAt: new Date().toISOString(),
       triggeredBy: args.triggeredBy,
       triggeredByUserId: args.triggeredByUserId,
+      authorId: args.authorId,
+      trigger: args.trigger,
+      ...(args.attemptedChannelIds
+        ? { attemptedChannelIds: args.attemptedChannelIds }
+        : {}),
     };
     this.realtimeEmitter.emit(args.workspaceId, 'post.status.changed', payload);
   }
@@ -602,16 +626,35 @@ export class PostService {
        */
       heldOnly?: boolean;
       /**
-       * What a target on a channel the user paused does. 'hold' waits for
-       * the resume; 'refuse' (400 CHANNEL_PAUSED) is for a person pressing
+       * With heldOnly (job data `missedHeld`): the held targets missed their
+       * time while their channel was disconnected. They are failed with
+       * MISSED_HELD_MESSAGE, never published late.
+       */
+      missedHeld?: boolean;
+      /**
+       * What a target on a channel the user paused (or disconnected) does.
+       * 'hold' waits for the resume / reconnect; 'refuse' (400
+       * CHANNEL_PAUSED / CHANNEL_DISCONNECTED) is for a person pressing
        * Publish now. Defaults to hold for the scheduler, refuse otherwise;
        * an automated "publish now" (a drip occurrence) passes 'hold'.
        */
       onPaused?: 'hold' | 'refuse';
+      /**
+       * Whether a person is waiting on this publish ('publish_now': they see
+       * its outcome where they pressed it) or it ran on its own
+       * ('scheduled': the post's author is told through the realtime event).
+       * Defaults from `triggeredBy`; a drip occurrence, published by the drip
+       * job with nobody watching, passes 'scheduled'.
+       */
+      trigger?: PublishTrigger;
     },
   ): Promise<typeof posts.$inferSelect> {
     const triggeredBy = options?.triggeredBy ?? 'user';
+    const trigger: PublishTrigger =
+      options?.trigger ??
+      (triggeredBy === 'scheduler' ? 'scheduled' : 'publish_now');
     const heldOnly = options?.heldOnly === true;
+    const missedHeld = heldOnly && options?.missedHeld === true;
     const onPaused =
       options?.onPaused ?? (triggeredBy === 'scheduler' ? 'hold' : 'refuse');
     const post = await this.getPost(postId, workspaceId);
@@ -635,26 +678,24 @@ export class PostService {
       assertApprovedFor(post.metadata, post);
     }
 
-    // Channels the user paused. A person publishing now is told so; a
-    // scheduled job (or a drip occurrence) holds those targets instead of
-    // failing them.
+    // Channels the user paused or disconnected. A person publishing now is
+    // told so; a scheduled job (or a drip occurrence) holds those targets
+    // instead of failing them.
     const paused = await this.pausedChannelsOf(post);
     if (paused.size > 0 && onPaused === 'refuse') {
-      const names = [...paused.values()].join(', ');
-      throw refusal(
-        `Paused: ${names}. Resume ${paused.size === 1 ? 'it' : 'them'} to publish now - scheduled posts wait until you do.`,
-        'CHANNEL_PAUSED',
-      );
+      throw publishRefusalFor(paused);
     }
     const isPausedTarget = (t: PostTarget): boolean =>
       t.status !== 'published' && paused.has(String(t.channelId));
+    const holdReasonOf = (t: PostTarget): HeldReason =>
+      paused.get(String(t.channelId))?.reason ?? HELD_REASON;
 
     // Every target still to go is on a paused channel: hold them all. The
     // post stays (or, for a drip occurrence, becomes) `scheduled` - never
     // `publishing`, no retry burned.
     const pending = post.targets.filter((t) => t.status !== 'published');
     if (pending.length > 0 && pending.every(isPausedTarget)) {
-      return this.holdPausedTargets(post, isPausedTarget, userId);
+      return this.holdPausedTargets(post, isPausedTarget, holdReasonOf, userId, trigger);
     }
 
     const previousStatus = post.status;
@@ -684,6 +725,8 @@ export class PostService {
       lastError: null,
       triggeredBy,
       triggeredByUserId: userId,
+      authorId: post.createdById ?? null,
+      trigger,
     });
 
     // Publish to each channel
@@ -695,6 +738,10 @@ export class PostService {
     let newSuccess = false;
     // Targets held for a paused channel; any keeps the post `scheduled`.
     const heldChannels = new Map<string, string>();
+    // The targets THIS run tried (published, failed or reminded). A target
+    // carried over untouched - live already, held, or an old failure a
+    // resume leaves alone - is not in it, so a client tells only the news.
+    const attemptedChannelIds: string[] = [];
     const now = new Date();
 
     for (const storedTarget of post.targets) {
@@ -707,9 +754,11 @@ export class PostService {
         continue;
       }
 
-      // Paused by the user: hold it, neither published nor failed.
+      // Paused or disconnected by the user: hold it, neither published nor
+      // failed.
       if (isPausedTarget(storedTarget)) {
-        updatedTargets.push(holdTarget(storedTarget, now));
+        const reason = holdReasonOf(storedTarget);
+        updatedTargets.push(holdTarget(storedTarget, now, reason));
         heldChannels.set(String(storedTarget.channelId), '');
         await this.recordHistory(
           postId,
@@ -718,7 +767,32 @@ export class PostService {
           post.status,
           storedTarget.channelId,
           userId,
-          { platform: storedTarget.platform, reason: 'channel_paused' },
+          { platform: storedTarget.platform, reason },
+        );
+        continue;
+      }
+
+      // Its channel came back long after this target's time: fail it as
+      // missed rather than publish it late without anyone asking.
+      if (missedHeld && isHeld(storedTarget)) {
+        updatedTargets.push({
+          ...releaseTarget(storedTarget),
+          status: 'failed',
+          errorMessage: MISSED_HELD_MESSAGE,
+          warnings: undefined,
+        });
+        allSuccess = false;
+        await this.recordHistory(
+          postId,
+          'failed',
+          'publishing',
+          'failed',
+          storedTarget.channelId,
+          userId,
+          {
+            platform: storedTarget.platform,
+            errorMessage: MISSED_HELD_MESSAGE,
+          },
         );
         continue;
       }
@@ -737,6 +811,7 @@ export class PostService {
 
       // Attempted now, so no longer held.
       const target = releaseTarget(storedTarget);
+      attemptedChannelIds.push(String(target.channelId));
 
       // "Publish: Remind me" (Instagram / Facebook): the platform is not
       // called. The person is notified with everything copied and posts it
@@ -756,6 +831,7 @@ export class PostService {
             status: REMINDER_TARGET_STATUS,
             reminderSentAt: new Date().toISOString(),
             errorMessage: undefined,
+            errorCode: undefined,
           });
           anySuccess = true;
           newSuccess = true;
@@ -777,7 +853,10 @@ export class PostService {
           updatedTargets.push({
             ...target,
             status: 'failed',
-            errorMessage: `Could not send your reminder: ${errorMessage}`,
+            errorMessage: `${REMINDER_FAILURE_PREFIX}: ${errorMessage}`,
+            // Our own notification failed, not the platform: never through
+            // the platform classifier ("Couldn't reach Instagram" would lie).
+            errorCode: 'reminder_failed',
           });
           allSuccess = false;
         }
@@ -797,6 +876,7 @@ export class PostService {
             ...target,
             status: 'failed',
             errorMessage: `Rate limit exceeded. Retry after ${Math.ceil((globalRateLimit.retryAfterMs || 0) / 1000 / 60)} minutes`,
+            errorCode: 'rate_limited',
           });
           allSuccess = false;
 
@@ -831,6 +911,7 @@ export class PostService {
             ...target,
             status: 'failed',
             errorMessage: `Channel rate limit exceeded. Retry after ${Math.ceil((channelRateLimit.retryAfterMs || 0) / 1000 / 60)} minutes`,
+            errorCode: 'rate_limited',
           });
           allSuccess = false;
 
@@ -868,6 +949,10 @@ export class PostService {
           platformPostId: result.platformPostId,
           platformPostUrl: result.platformPostUrl,
           publishedAt: new Date().toISOString(),
+          // A target that failed before and went out now: the old failure
+          // must not ride the live post.
+          errorMessage: undefined,
+          errorCode: undefined,
           ...(result.itemResults?.length
             ? { itemResults: result.itemResults }
             : {}),
@@ -910,6 +995,8 @@ export class PostService {
           ...target,
           status: 'failed',
           errorMessage,
+          // One classifier for Publish now and the scheduled job.
+          errorCode: classifyPublishError(error).code,
           warnings: undefined,
           // Part of the post is live (one Pin per image): keep what went
           // out, so the retry resumes after it rather than repeating it.
@@ -1027,6 +1114,9 @@ export class PostService {
       lastError: updatedPost.lastError ?? null,
       triggeredBy,
       triggeredByUserId: userId,
+      authorId: updatedPost.createdById ?? post.createdById ?? null,
+      trigger,
+      attemptedChannelIds,
     });
 
     // Post has left 'scheduled' status; syncPost will remove the (now stale)
@@ -1052,13 +1142,14 @@ export class PostService {
   }
 
   /**
-   * The post's target channels that the user has paused, id -> name. Not the
-   * plan lock (`is_active = false`): that one fails at `getAccessToken`, as
-   * it always has.
+   * The post's target channels that hold their posts: paused by the user, or
+   * disconnected (soft disconnect - its posts wait for an undo or a
+   * reconnect). id -> name and why. Not the plan lock (`is_active = false`):
+   * that one fails at `getAccessToken`, as it always has.
    */
   private async pausedChannelsOf(
     post: Pick<typeof posts.$inferSelect, 'workspaceId' | 'targets'>,
-  ): Promise<Map<string, string>> {
+  ): Promise<Map<string, HoldingChannel>> {
     const ids = [
       ...new Set(
         (post.targets ?? [])
@@ -1072,20 +1163,25 @@ export class PostService {
         id: socialMediaChannels.id,
         accountName: socialMediaChannels.accountName,
         pausedAt: socialMediaChannels.pausedAt,
+        connectionStatus: socialMediaChannels.connectionStatus,
       })
       .from(socialMediaChannels)
       .where(
         and(
           eq(socialMediaChannels.workspaceId, post.workspaceId),
           inArray(socialMediaChannels.id, ids),
-          isNotNull(socialMediaChannels.pausedAt),
+          or(
+            isNotNull(socialMediaChannels.pausedAt),
+            eq(socialMediaChannels.connectionStatus, 'disconnected'),
+          ),
         ),
       );
-    return new Map(
-      (rows ?? [])
-        .filter((r) => r && r.pausedAt)
-        .map((r) => [String(r.id), r.accountName]),
-    );
+    const holding = new Map<string, HoldingChannel>();
+    for (const r of rows ?? []) {
+      const reason = holdingReasonOf(r);
+      if (reason) holding.set(String(r.id), { name: r.accountName, reason });
+    }
+    return holding;
   }
 
   /**
@@ -1100,12 +1196,14 @@ export class PostService {
   private async holdPausedTargets(
     post: typeof posts.$inferSelect,
     isPausedTarget: (t: PostTarget) => boolean,
+    holdReasonOf: (t: PostTarget) => HeldReason,
     userId: string,
+    trigger: PublishTrigger,
   ): Promise<typeof posts.$inferSelect> {
     const now = new Date();
     const held = post.targets.filter(isPausedTarget);
     const targets = post.targets.map((t) =>
-      isPausedTarget(t) ? holdTarget(t, now) : t,
+      isPausedTarget(t) ? holdTarget(t, now, holdReasonOf(t)) : t,
     );
     const becomesScheduled = post.status !== 'scheduled';
     const [updated] = await db
@@ -1128,10 +1226,12 @@ export class PostService {
         'scheduled',
         t.channelId,
         userId,
-        { platform: t.platform, reason: 'channel_paused' },
+        { platform: t.platform, reason: holdReasonOf(t) },
       );
     }
-    this.logger.log(`Post ${post.id} held: every remaining channel is paused`);
+    this.logger.log(
+      `Post ${post.id} held: every remaining channel is paused or disconnected`,
+    );
 
     if (becomesScheduled && updated) {
       this.emitPostStatusChanged({
@@ -1144,6 +1244,8 @@ export class PostService {
         lastError: post.lastError ?? null,
         triggeredBy: 'scheduler',
         triggeredByUserId: userId,
+        authorId: post.createdById ?? null,
+        trigger,
       });
       this.syncCalendarForPost(post.id);
     }
@@ -1245,9 +1347,13 @@ export class PostService {
     }
 
     if (channel.connectionStatus !== 'connected') {
-      throw new Error(
-        `Channel is not connected (status: ${channel.connectionStatus})`,
-      );
+      const message = `Channel is not connected (status: ${channel.connectionStatus})`;
+      // An ended login is the network signing Schedura out: Reconnect fixes
+      // it. Other states ('error', 'refreshing') are left to the classifier.
+      throw channel.connectionStatus === 'expired' ||
+        channel.connectionStatus === 'revoked'
+        ? new ClassifiedPublishError(message, 'auth_failed')
+        : new Error(message);
     }
 
     // This channel's own caption and media: the composer's

@@ -184,7 +184,9 @@ describe('PublishOrchestratorService.publishInline', () => {
   });
 
   it('a reminder that cannot be sent fails that channel', async () => {
-    reminders.send.mockRejectedValue(new Error('down'));
+    // "network down" would read as a platform connection problem if it went
+    // through the platform classifier.
+    reminders.send.mockRejectedValue(new Error('network down'));
     const input: InlinePublishInput = {
       ...baseInput(),
       perPlatform: {
@@ -206,6 +208,11 @@ describe('PublishOrchestratorService.publishInline', () => {
     const result = await svc.publishInline('w1', 'u1', input);
     expect(result.draftStatus).toBe('failed');
     expect(publisher.publish).not.toHaveBeenCalled();
+    expect(result.channels[0]).toMatchObject({
+      publishStatus: 'failed',
+      errorCode: 'reminder_failed',
+      errorMessage: 'Could not send your reminder: network down',
+    });
   });
 
   it('marks channel failed with classified error and overall failed', async () => {

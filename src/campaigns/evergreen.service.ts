@@ -8,6 +8,7 @@ import { randomUUID } from 'crypto';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { and, eq } from 'drizzle-orm';
+import { liveChannel } from '../channels/lib/live-channel';
 import { db } from '../drizzle/db';
 import {
   campaigns,
@@ -990,7 +991,13 @@ export class EvergreenService {
       const [channelRow] = await db
         .select()
         .from(socialMediaChannels)
-        .where(eq(socialMediaChannels.id, Number(occurrence.channelId)));
+        .where(
+          and(
+            eq(socialMediaChannels.id, Number(occurrence.channelId)),
+            // A disconnected channel is skipped like a missing one.
+            liveChannel(),
+          ),
+        );
       if (!channelRow) {
         await db
           .update(evergreenOccurrences)

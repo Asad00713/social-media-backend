@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { and, desc, eq } from 'drizzle-orm';
+import { liveChannel } from '../../channels/lib/live-channel';
 import { db } from '../../drizzle/db';
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 import { inboxItems } from '../../drizzle/schema/inbox.schema';
@@ -44,6 +45,8 @@ async function whatsappChats(workspaceId: string): Promise<WaChat[]> {
       and(
         eq(socialMediaChannels.platform, 'whatsapp'),
         eq(socialMediaChannels.workspaceId, workspaceId),
+        // A disconnected one is history: not offered to the agent.
+        liveChannel(),
       ),
     );
   if (numbers.length === 0) return [];

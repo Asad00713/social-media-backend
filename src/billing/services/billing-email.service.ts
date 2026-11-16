@@ -152,7 +152,8 @@ function limitOrNull(value: number | undefined): number | null {
  * make the provider retry and double-apply.
  *
  * The email is mandatory (`event: null` on the templates); the bell follows
- * the person's `billing_alert` app preference.
+ * the person's `billing_alert` app preference. Payment failed has no bell
+ * here: PaymentAlertsService rings it.
  */
 @Injectable()
 export class BillingEmailService {
@@ -168,6 +169,11 @@ export class BillingEmailService {
     private readonly outbox: EmailOutboxService,
   ) {}
 
+  /**
+   * The email only. The bell and the live "Payment failed" toast are
+   * PaymentAlertsService's, which both webhooks call for the same event, so a
+   * bell here would ring twice.
+   */
   async paymentFailed(i: PaymentFailedInput): Promise<void> {
     await this.guarded('payment failed', i.userId, async () => {
       const ctx = await this.context(i.userId);
@@ -176,12 +182,6 @@ export class BillingEmailService {
         userId: i.userId,
         workspaceId: ctx.workspaceId,
         event: 'billing_alert',
-        bell: () =>
-          this.emitter.paymentFailed(
-            i.userId,
-            i.amountCents / 100,
-            i.reason ?? undefined,
-          ),
         email: {
           template: PAYMENT_FAILED,
           props: {

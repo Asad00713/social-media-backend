@@ -293,25 +293,15 @@ describe('BillingEmailService.paymentFailed (D1)', () => {
     ]);
   });
 
-  it('rings the bell with dollars and the reason, only when the app preference allows', async () => {
-    const on = harness();
-    await on.service.paymentFailed(failedInput);
-    expect(on.emitter.paymentFailed).toHaveBeenCalledWith(
-      USER_ID,
-      29,
-      'Your card has insufficient funds.',
-    );
-    expect(on.prefs.shouldSend).toHaveBeenCalledWith(
-      USER_ID,
-      WS_ID,
-      'billing_alert',
-      'app',
-    );
+  it('rings no bell: PaymentAlertsService does, so one failure is one bell', async () => {
+    const h = harness();
+    await h.service.paymentFailed(failedInput);
+    expect(h.emitter.paymentFailed).not.toHaveBeenCalled();
+    expect(h.queue.jobs.size).toBe(1);
 
+    // The email is mandatory: switching the bell off never stops it.
     const off = harness({ allowApp: false });
     await off.service.paymentFailed(failedInput);
-    expect(off.emitter.paymentFailed).not.toHaveBeenCalled();
-    // The email is mandatory: switching the bell off never stops it.
     expect(off.queue.jobs.size).toBe(1);
   });
 

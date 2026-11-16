@@ -9,6 +9,7 @@ import {
   socialMediaChannels,
   type SupportedPlatform,
 } from '../../../drizzle/schema/channels.schema';
+import { isDisconnected } from '../../lib/live-channel';
 import { postMetricSnapshots } from '../../../drizzle/schema/post-metric-snapshots.schema';
 import { AdapterRegistryService } from '../services/adapter-registry.service';
 import { QuotaTrackerService } from '../services/quota-tracker.service';
@@ -47,6 +48,13 @@ export class PostMetricSnapshotHandler {
       .where(eq(socialMediaChannels.id, channelId))
       .limit(1);
     const channel = channelRow[0];
+    // Disconnected (history): its posts' metrics stay as last measured.
+    if (channel && isDisconnected(channel)) {
+      this.logger.log(
+        `Post snapshot: channel ${channelId} is disconnected, skipping postId=${postId}`,
+      );
+      return { ok: true };
+    }
     if (!channel || !this.registry.has(channel.platform as SupportedPlatform)) {
       this.logger.log(
         `Post snapshot: no adapter for ${channel?.platform ?? 'unknown'}, skipping postId=${postId}`,

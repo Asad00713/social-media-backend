@@ -28,6 +28,10 @@ import type {
   AnalyticsEventName,
   AnalyticsEventPayloadMap,
 } from './types/analytics-events.types';
+import type {
+  UserEventName,
+  UserEventPayloadMap,
+} from './types/user-events.types';
 
 interface CachedRole {
   role: WorkspaceRole | null;
@@ -105,6 +109,9 @@ export class AnalyticsEventsGateway
       assertSessionLive(payload.iat, account.sessionsRevokedAt);
 
       socket.userId = userId;
+      // Per-user events (billing) go to this room. Joined from the verified
+      // token only — a client never names the room it joins.
+      await socket.join(this.userRoom(userId));
       this.logger.log(
         `Socket ${socket.id} connected for user ${socket.userId}`,
       );
@@ -288,6 +295,32 @@ export class AnalyticsEventsGateway
     payload: AnalyticsEventPayloadMap[K],
   ): void {
     this.server.to(this.workspaceRoom(workspaceId)).emit(eventName, payload);
+  }
+
+  /**
+   * To every socket on the namespace. Only for payloads with no workspace
+   * data: every socket here passed the JWT check in handleConnection (a
+   * socket without a valid token is disconnected), but it may belong to any
+   * user of any workspace.
+   */
+  emitToAll<K extends AnalyticsEventName>(
+    eventName: K,
+    payload: AnalyticsEventPayloadMap[K],
+  ): void {
+    this.server.emit(eventName, payload);
+  }
+
+  /** Send to every socket of one user, whichever workspace it is showing. */
+  emitToUser<K extends UserEventName>(
+    userId: string,
+    eventName: K,
+    payload: UserEventPayloadMap[K],
+  ): void {
+    this.server.to(this.userRoom(userId)).emit(eventName, payload);
+  }
+
+  private userRoom(userId: string): string {
+    return `user:${userId}`;
   }
 
   private workspaceRoom(workspaceId: string): string {

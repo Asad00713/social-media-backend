@@ -4,6 +4,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { and, eq } from 'drizzle-orm';
+import { liveChannel } from '../channels/lib/live-channel';
 import { db } from '../drizzle/db';
 import { notificationRoutes, socialMediaChannels } from '../drizzle/schema';
 import type {
@@ -29,6 +30,8 @@ export class NotificationRoutesService {
         and(
           eq(socialMediaChannels.id, dto.channelId),
           eq(socialMediaChannels.workspaceId, workspaceId),
+          // A disconnected channel cannot receive notifications.
+          liveChannel(),
         ),
       )
       .limit(1);

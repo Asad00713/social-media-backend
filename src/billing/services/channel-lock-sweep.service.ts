@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { and, eq, notInArray } from 'drizzle-orm';
+import { liveChannel } from '../../channels/lib/live-channel';
 import { db } from '../../drizzle/db';
 import {
   workspace,
@@ -60,6 +61,7 @@ export class ChannelLockSweepService implements OnApplicationBootstrap {
         and(
           eq(socialMediaChannels.isActive, false),
           notInArray(socialMediaChannels.platform, INTEGRATION_PLATFORMS),
+          liveChannel(),
         ),
       );
 

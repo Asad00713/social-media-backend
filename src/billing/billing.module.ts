@@ -15,6 +15,7 @@ import { SubscriptionLookupService } from './services/subscription-lookup.servic
 import { AccountChannelsService } from './services/account-channels.service';
 import { ChannelLockSweepService } from './services/channel-lock-sweep.service';
 import { PostQueueService } from './services/post-queue.service';
+import { PaymentAlertsService } from './services/payment-alerts.service';
 import { StripeModule } from '../stripe/stripe.module';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { NotificationsModule } from '../notifications/notifications.module';
@@ -76,6 +77,7 @@ const PROVIDER_ADAPTER_REGISTRATION = {
     PaymentMethodService,
     SubscriptionLookupService,
     PostQueueService,
+    PaymentAlertsService,
     AccountChannelsService,
     ChannelLockSweepService,
     ProviderRegistryService,

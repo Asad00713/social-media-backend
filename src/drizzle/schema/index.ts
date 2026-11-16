@@ -47,3 +47,6 @@ export * from './insight-reports.schema';
 export * from './notification-preferences.schema';
 export * from './email-suppressions.schema';
 export * from './known-devices.schema';
+export * from './channel-connect-links.schema';
+export * from './platform-status.schema';
+export * from './billing-payment-alerts.schema';

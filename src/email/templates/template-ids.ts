@@ -9,6 +9,7 @@ export const TEMPLATE_IDS = [
   'workspace-invitation',
   'invitation-accepted',
   'removed-from-workspace',
+  'channel-connect-link',
   'post-failed',
   'posts-failed',
   'channel-reconnect',

@@ -2,6 +2,7 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { and, desc, eq } from 'drizzle-orm';
+import { liveChannel } from '../../channels/lib/live-channel';
 import { db } from '../../drizzle/db';
 import { socialMediaChannels } from '../../drizzle/schema';
 import { QUEUES } from '../../queue/queue.module';
@@ -178,13 +179,15 @@ export class DiscordIngestProcessor extends WorkerHost {
           and(
             eq(socialMediaChannels.platform, 'discord'),
             eq(socialMediaChannels.platformAccountId, guildId),
+            // A disconnected server (history) ingests nothing new.
+            liveChannel(),
           ),
         );
     }
     const [c] = await db
       .select()
       .from(socialMediaChannels)
-      .where(eq(socialMediaChannels.platform, 'discord'))
+      .where(and(eq(socialMediaChannels.platform, 'discord'), liveChannel()))
       .orderBy(desc(socialMediaChannels.id))
       .limit(1);
     return c ? [c] : [];

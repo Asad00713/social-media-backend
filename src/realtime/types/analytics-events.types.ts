@@ -1,3 +1,8 @@
+import type { PublishErrorCode } from '../../posts/composer/types/draft.types';
+import type {
+  PlatformState,
+  PlatformStatusReason,
+} from '../../drizzle/schema/platform-status.schema';
 import type {
   ComposerPublishStateChangedPayload,
   ComposerDraftStatusChangedPayload,
@@ -36,7 +41,8 @@ export type AnalyticsEventName =
   | 'lead.created'
   | 'lead.delivered'
   | 'maestro.bridge.message'
-  | 'calendar.external.changed';
+  | 'calendar.external.changed'
+  | 'platform.status.changed';
 
 export interface ChannelSnapshotUpdatedPayload {
   workspaceId: string;
@@ -85,7 +91,16 @@ export interface PostStatusChangedTarget {
   platformPostUrl?: string;
   publishedAt?: string;
   errorMessage?: string;
+  /** Why a failed target failed, in one coarse code (absent otherwise). */
+  errorCode?: PublishErrorCode;
 }
+
+/**
+ * Whether a person is waiting on the publish: 'publish_now' (they pressed
+ * it and see the outcome there) or 'scheduled' (it ran on its own - a
+ * scheduled time, a resumed channel, a drip occurrence).
+ */
+export type PublishTrigger = 'scheduled' | 'publish_now';
 
 export interface PostStatusChangedPayload {
   workspaceId: string;
@@ -98,6 +113,19 @@ export interface PostStatusChangedPayload {
   updatedAt: string;
   triggeredBy: 'user' | 'scheduler';
   triggeredByUserId: string | null;
+  /**
+   * The post's author. A failed scheduled publish is told to them, not to
+   * everyone in the workspace; `triggeredByUserId` is whoever pressed
+   * Publish now, which on a retry is not always the author.
+   */
+  authorId: string | null;
+  trigger: PublishTrigger;
+  /**
+   * On the outcome of a publish run only: the channel ids that run attempted.
+   * A failed target outside it is an old failure carried over (a resume of a
+   * paused channel leaves it alone) and is not news. Absent on other events.
+   */
+  attemptedChannelIds?: string[];
 }
 
 export type InboxItemType = 'comment' | 'dm' | 'mention';
@@ -253,6 +281,24 @@ export interface CalendarExternalChangedPayload {
   deleted: number;
 }
 
+/**
+ * A publishing platform's shown state changed (platform-status module).
+ * Broadcast to every connected client: it carries no workspace data, and
+ * each client knows which platforms its workspace uses.
+ */
+export interface PlatformStatusChangedPayload {
+  platform: string;
+  status: PlatformState;
+  previousStatus: PlatformState;
+  /** When it entered `status`. */
+  since: string;
+  reason: PlatformStatusReason | null;
+  /** What it means for the customer's posts. */
+  message: string;
+  /** The incident that set this state, if one did. */
+  incident: { id: string; title: string } | null;
+}
+
 export type AnalyticsEventPayloadMap = {
   'channel.snapshot.updated': ChannelSnapshotUpdatedPayload;
   'post.metrics.updated': PostMetricsUpdatedPayload;
@@ -280,4 +326,5 @@ export type AnalyticsEventPayloadMap = {
   'lead.delivered': LeadDeliveredPayload;
   'maestro.bridge.message': MaestroBridgeMessagePayload;
   'calendar.external.changed': CalendarExternalChangedPayload;
+  'platform.status.changed': PlatformStatusChangedPayload;
 };

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { and, desc, eq } from 'drizzle-orm';
+import { liveChannel } from '../../channels/lib/live-channel';
 import { db } from '../../drizzle/db';
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 import { inboxItems } from '../../drizzle/schema/inbox.schema';
@@ -79,6 +80,8 @@ async function telegramChats(workspaceId: string): Promise<TgChat[]> {
       and(
         eq(socialMediaChannels.platform, 'telegram'),
         eq(socialMediaChannels.workspaceId, workspaceId),
+        // A disconnected one is history: not offered to the agent.
+        liveChannel(),
       ),
     );
   if (bots.length === 0) return [];

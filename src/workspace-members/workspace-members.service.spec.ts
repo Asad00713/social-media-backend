@@ -90,6 +90,14 @@ beforeEach(() => {
 });
 afterEach(() => jest.restoreAllMocks());
 
+/** The service's transactions (and savepoints) run the callback on the same mock. */
+function withTx<T extends Record<string, any>>(db: T): T {
+  const out: any = db;
+  out.execute = jest.fn().mockResolvedValue(undefined);
+  out.transaction = (fn: (tx: unknown) => unknown) => fn(out);
+  return out;
+}
+
 describe('WorkspaceMembersService.inviteMember email (B1)', () => {
   function inviteDb(expiresAt: Date) {
     const invitationRow = {
@@ -99,7 +107,7 @@ describe('WorkspaceMembersService.inviteMember email (B1)', () => {
       token: 'tok123',
       expiresAt,
     };
-    return {
+    return withTx({
       query: {
         workspace: {
           findFirst: jest.fn().mockResolvedValue({
@@ -111,10 +119,15 @@ describe('WorkspaceMembersService.inviteMember email (B1)', () => {
         users: { findFirst: jest.fn().mockResolvedValue(undefined) },
         workspaceInvitation: {
           findFirst: jest.fn().mockResolvedValue(undefined),
+          findMany: jest.fn().mockResolvedValue([]),
         },
       },
       insert: () => ({
-        values: () => ({ returning: () => Promise.resolve([invitationRow]) }),
+        // The row as inserted: `userId` is the invitee's account, if any.
+        values: (v: { userId: string | null }) => ({
+          returning: () =>
+            Promise.resolve([{ ...invitationRow, userId: v.userId }]),
+        }),
       }),
       // 8 connected channels, 2 accepted members (+ the owner = 3 people).
       select: () => ({
@@ -123,11 +136,13 @@ describe('WorkspaceMembersService.inviteMember email (B1)', () => {
             Promise.resolve([{ count: table === socialMediaChannels ? 8 : 2 }]),
         }),
       }),
-    };
+    });
   }
 
   const usage: any = {
-    enforceMemberLimit: jest.fn().mockResolvedValue(undefined),
+    getWorkspaceUsage: jest
+      .fn()
+      .mockResolvedValue({ membersLimit: 5, membersCount: 1 }),
   };
 
   it('sends the invitation inline to the invitee with the accept link', async () => {
@@ -271,7 +286,7 @@ describe('WorkspaceMembersService.acceptInvitation auto-verify + onboarding', ()
       inviter: { id: 'owner1', name: 'Sam' },
     };
     const acceptedRow = { ...invitationRow, status: 'ACCEPTED' };
-    const db: any = {
+    const db: any = withTx({
       query: {
         workspaceInvitation: {
           findFirst: jest
@@ -290,7 +305,7 @@ describe('WorkspaceMembersService.acceptInvitation auto-verify + onboarding', ()
           where: () => ({ returning: () => Promise.resolve([acceptedRow]) }),
         }),
       }),
-    };
+    });
     const usageService: any = {
       incrementMemberCount: jest.fn().mockResolvedValue(undefined),
     };
@@ -311,7 +326,7 @@ describe('WorkspaceMembersService.acceptInvitation auto-verify + onboarding', ()
 
 describe('WorkspaceMembersService.batchInvite seat gate', () => {
   it('rejects the whole batch when it exceeds remaining seats', async () => {
-    const db: any = {
+    const db: any = withTx({
       query: {
         workspace: { findFirst: jest.fn().mockResolvedValue({ id: 'w', ownerId: 'owner', name: 'Acme' }) },
         users: { findFirst: jest.fn().mockResolvedValue(undefined) },
@@ -323,7 +338,7 @@ describe('WorkspaceMembersService.batchInvite seat gate', () => {
       insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: 'i', email: 'x', role: 'MEMBER', token: 't', expiresAt: new Date() }]) }) }),
       // count of accepted members:
       select: () => ({ from: () => ({ where: () => Promise.resolve([{ count: 1 }]) }) }),
-    };
+    });
     const usageService: any = {
       getWorkspaceUsage: jest.fn().mockResolvedValue({ membersLimit: 2, membersCount: 1, membersAvailable: 1 }),
     };
@@ -386,17 +401,21 @@ describe('WorkspaceMembersService.inviteMember email case', () => {
           { id: 'i', email: 'sara@x.com', role: 'MEMBER', token: 't', expiresAt: new Date() },
         ]),
     });
-    const db: any = {
+    const db: any = withTx({
       query: {
         workspace: { findFirst: jest.fn().mockResolvedValue({ id: 'ws1', ownerId: 'owner1', name: 'A' }) },
         users: { findFirst: userFind },
-        workspaceInvitation: { findFirst: invFind },
+        workspaceInvitation: { findFirst: invFind, findMany: jest.fn().mockResolvedValue([]) },
       },
       insert: () => ({ values }),
-    };
+    });
     const service = build(
       db,
-      { enforceMemberLimit: jest.fn() } as any,
+      {
+        getWorkspaceUsage: jest
+          .fn()
+          .mockResolvedValue({ membersLimit: 5, membersCount: 1 }),
+      } as any,
       {} as any,
       noRole,
     );
@@ -434,7 +453,7 @@ describe('WorkspaceMembersService.acceptInvitation email (B2)', () => {
       role: 'MEMBER',
       acceptedAt: new Date('2026-10-26T10:42:00Z'),
     };
-    return {
+    return withTx({
       query: {
         workspaceInvitation: {
           findFirst: jest
@@ -455,7 +474,7 @@ describe('WorkspaceMembersService.acceptInvitation email (B2)', () => {
           where: () => ({ returning: () => Promise.resolve([acceptedRow]) }),
         }),
       }),
-    };
+    });
   }
 
   const usage: any = {
@@ -542,7 +561,12 @@ describe('WorkspaceMembersService.removeMember email (B3)', () => {
             .mockResolvedValue(undefined), // isUserAdmin
         },
       },
-      delete: () => ({ where: () => Promise.resolve() }),
+      // The soft removal: the conditional update finds the ACCEPTED row.
+      update: () => ({
+        set: () => ({
+          where: () => ({ returning: () => Promise.resolve([{ id: 'm1' }]) }),
+        }),
+      }),
     };
   }
 
@@ -567,7 +591,7 @@ describe('WorkspaceMembersService.removeMember email (B3)', () => {
     expect(input.event).toBeNull();
     expect(input.email?.template.id).toBe('removed-from-workspace');
     expect(input.email?.idempotencyKey).toMatch(
-      /^member-removed\.ws1\.user-1\.\d+$/,
+      /^member-removed\.m1\.\d+$/,
     );
     const { removedOn, ...rest } = input.email?.props as {
       removedOn: string;

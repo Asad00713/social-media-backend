@@ -82,9 +82,9 @@ describe('template registry', () => {
     expect(() => getTemplate('nope')).toThrow('Unknown email template "nope"');
   });
 
-  it('TEMPLATE_IDS lists the 29 ids from the spec, once each', () => {
-    expect(TEMPLATE_IDS).toHaveLength(29);
-    expect(new Set(TEMPLATE_IDS).size).toBe(29);
+  it('TEMPLATE_IDS lists the 29 ids from the spec plus channel-connect-link, once each', () => {
+    expect(TEMPLATE_IDS).toHaveLength(30);
+    expect(new Set(TEMPLATE_IDS).size).toBe(30);
   });
 
   it('every TEMPLATE_ID is registered', () => {

@@ -34,7 +34,7 @@ export class PostPublishProcessor extends WorkerHost {
   }
 
   async process(job: Job<PublishJobData>): Promise<any> {
-    const { postId, heldOnly } = job.data;
+    const { postId, heldOnly, missedHeld } = job.data;
 
     this.logger.log(`Processing scheduled publish job for post: ${postId}`);
 
@@ -97,9 +97,14 @@ export class PostPublishProcessor extends WorkerHost {
         postId,
         post.workspaceId,
         post.createdById, // Use the original creator as the performer
-        // A resume of a paused channel publishes only what it held.
+        // A resume of a paused channel publishes only what it held; a
+        // reconnect long after its time fails what it held as missed.
         heldOnly
-          ? { triggeredBy: 'scheduler', heldOnly: true }
+          ? {
+              triggeredBy: 'scheduler',
+              heldOnly: true,
+              ...(missedHeld ? { missedHeld: true } : {}),
+            }
           : { triggeredBy: 'scheduler' },
       );
 

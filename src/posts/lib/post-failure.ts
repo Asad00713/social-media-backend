@@ -5,6 +5,9 @@ import {
 import { classifyPublishError } from '../composer/services/composer-error-mapper.service';
 import type { PublishErrorCode } from '../composer/types/draft.types';
 
+/** How a failed "Remind me" target's message starts (post.service.ts). */
+export const REMINDER_FAILURE_PREFIX = 'Could not send your reminder';
+
 export interface PostFailure {
   message: string;
   needsReconnect: boolean;
@@ -21,7 +24,14 @@ export function describeFailure(input: {
     ]?.name ?? String(input.platform);
   const text = input.errorMessage?.trim() ?? '';
   const code =
-    input.errorCode ?? (text ? classifyPublishError(text).code : undefined);
+    input.errorCode ??
+    // A "Remind me" target stored before it had a code: our own notification
+    // failed, never the platform.
+    (text.startsWith(REMINDER_FAILURE_PREFIX)
+      ? 'reminder_failed'
+      : text
+        ? classifyPublishError(text).code
+        : undefined);
 
   switch (code) {
     case 'auth_failed':
@@ -47,6 +57,11 @@ export function describeFailure(input: {
     case 'transient':
       return {
         message: `We couldn't reach ${name}. Try again in a moment.`,
+        needsReconnect: false,
+      };
+    case 'reminder_failed':
+      return {
+        message: `We couldn't send your reminder to post on ${name}. Retry to send it again.`,
         needsReconnect: false,
       };
     default:

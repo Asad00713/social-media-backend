@@ -462,11 +462,13 @@ const billingEmail = {
 };
 
 function makeService(): WebhookService {
+  // Payment alerts are not under test here (webhook.payment-alerts.spec.ts).
   return new WebhookService(
     {} as never,
     {} as never,
     lookup as never,
     billingEmail as never,
+    { paymentFailed: jest.fn(), paymentSucceeded: jest.fn() } as never,
   );
 }
 

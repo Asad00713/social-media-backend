@@ -7,7 +7,9 @@ export type RefusalCode =
   | 'APPROVAL_REQUIRED'
   | 'APPROVAL_STALE'
   /** Publishing now to a channel the user paused (scheduling is fine). */
-  | 'CHANNEL_PAUSED';
+  | 'CHANNEL_PAUSED'
+  /** Publishing now to a channel the user disconnected. */
+  | 'CHANNEL_DISCONNECTED';
 
 /**
  * A 400 whose body keeps the standard Nest shape `{ statusCode, message,

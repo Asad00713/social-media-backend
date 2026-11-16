@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, eq, gte, inArray, lt, sql } from 'drizzle-orm';
+import { liveChannel } from '../channels/lib/live-channel';
 import type { DbType } from '../drizzle/db';
 import { DRIZZLE } from '../drizzle/drizzle.module';
 import { socialMediaChannels } from '../drizzle/schema/channels.schema';
@@ -77,6 +78,7 @@ export class WorkspaceHubService {
           and(
             inArray(socialMediaChannels.workspaceId, ids),
             eq(socialMediaChannels.isActive, true),
+            liveChannel(),
           ),
         ) as Promise<HubChannelRow[]>,
       this.db

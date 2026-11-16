@@ -1,4 +1,7 @@
+/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/require-await -- the db is a jest mock; mock.calls and the fetch stub are untyped */
 import { Test } from '@nestjs/testing';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { GoogleOauthRevokeService } from './google-oauth-revoke.service';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 
@@ -23,7 +26,11 @@ function otherGoogleChannels(n: number) {
 describe('GoogleOauthRevokeService', () => {
   beforeEach(() => {
     execute.mockReset();
-    global.fetch = jest.fn().mockResolvedValue({ ok: true, status: 200, text: async () => '' }) as any;
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => '',
+    }) as any;
   });
 
   afterEach(() => jest.restoreAllMocks());
@@ -31,7 +38,12 @@ describe('GoogleOauthRevokeService', () => {
   it('revokes when this is the last Google channel', async () => {
     otherGoogleChannels(0);
     const svc = await build();
-    const result = await svc.revokeIfLastGoogleChannel(1, 'ws', 'youtube', 'TKN');
+    const result = await svc.revokeIfLastGoogleChannel(
+      1,
+      'ws',
+      'youtube',
+      'TKN',
+    );
 
     expect(result.revoked).toBe(true);
     const [url, init] = (global.fetch as jest.Mock).mock.calls[0];
@@ -45,7 +57,12 @@ describe('GoogleOauthRevokeService', () => {
   it('does NOT revoke while another Google channel is still connected', async () => {
     otherGoogleChannels(1);
     const svc = await build();
-    const result = await svc.revokeIfLastGoogleChannel(1, 'ws', 'youtube', 'TKN');
+    const result = await svc.revokeIfLastGoogleChannel(
+      1,
+      'ws',
+      'youtube',
+      'TKN',
+    );
 
     expect(result.revoked).toBe(false);
     expect(result.reason).toMatch(/other google/i);
@@ -54,7 +71,12 @@ describe('GoogleOauthRevokeService', () => {
 
   it('does nothing for a non-Google platform', async () => {
     const svc = await build();
-    const result = await svc.revokeIfLastGoogleChannel(1, 'ws', 'twitter', 'TKN');
+    const result = await svc.revokeIfLastGoogleChannel(
+      1,
+      'ws',
+      'twitter',
+      'TKN',
+    );
 
     expect(result.revoked).toBe(false);
     expect(global.fetch).not.toHaveBeenCalled();
@@ -65,22 +87,36 @@ describe('GoogleOauthRevokeService', () => {
   // The user asked to disconnect. Whatever Google says, that must succeed.
   it('reports failure without throwing when Google rejects the revoke', async () => {
     otherGoogleChannels(0);
-    global.fetch = jest
-      .fn()
-      .mockResolvedValue({ ok: false, status: 400, text: async () => 'invalid_token' }) as any;
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: async () => 'invalid_token',
+    }) as any;
     const svc = await build();
 
-    const result = await svc.revokeIfLastGoogleChannel(1, 'ws', 'youtube', 'TKN');
+    const result = await svc.revokeIfLastGoogleChannel(
+      1,
+      'ws',
+      'youtube',
+      'TKN',
+    );
     expect(result.revoked).toBe(false);
     expect(result.reason).toMatch(/400/);
   });
 
   it('reports failure without throwing when the network is down', async () => {
     otherGoogleChannels(0);
-    global.fetch = jest.fn().mockRejectedValue(new Error('ECONNREFUSED')) as any;
+    global.fetch = jest
+      .fn()
+      .mockRejectedValue(new Error('ECONNREFUSED')) as any;
     const svc = await build();
 
-    const result = await svc.revokeIfLastGoogleChannel(1, 'ws', 'youtube', 'TKN');
+    const result = await svc.revokeIfLastGoogleChannel(
+      1,
+      'ws',
+      'youtube',
+      'TKN',
+    );
     expect(result.revoked).toBe(false);
     expect(result.reason).toMatch(/ECONNREFUSED/);
   });
@@ -108,7 +144,12 @@ describe('GoogleOauthRevokeService', () => {
         .mockResolvedValueOnce({ rows: [{ count: '1' }] }); // cross-workspace count
       const svc = await build();
 
-      const result = await svc.revokeIfLastGoogleChannel(1, 'ws-a', 'youtube', 'TKN');
+      const result = await svc.revokeIfLastGoogleChannel(
+        1,
+        'ws-a',
+        'youtube',
+        'TKN',
+      );
 
       expect(result.revoked).toBe(false);
       expect(global.fetch).not.toHaveBeenCalled();
@@ -125,7 +166,12 @@ describe('GoogleOauthRevokeService', () => {
         .mockResolvedValueOnce({ rows: [{ count: '0' }] });
       const svc = await build();
 
-      const result = await svc.revokeIfLastGoogleChannel(1, 'ws-a', 'youtube', 'TKN');
+      const result = await svc.revokeIfLastGoogleChannel(
+        1,
+        'ws-a',
+        'youtube',
+        'TKN',
+      );
 
       expect(result.revoked).toBe(true);
     });
@@ -139,11 +185,151 @@ describe('GoogleOauthRevokeService', () => {
         .mockResolvedValueOnce({ rows: [{ count: '0' }] });
       const svc = await build();
 
-      const result = await svc.revokeIfLastGoogleChannel(1, 'ws-a', 'youtube', 'TKN');
+      const result = await svc.revokeIfLastGoogleChannel(
+        1,
+        'ws-a',
+        'youtube',
+        'TKN',
+      );
 
       expect(result.revoked).toBe(true);
       const countQuery = JSON.stringify(execute.mock.calls[1][0]);
       expect(countQuery).toContain('ws-a');
+    });
+  });
+  // Connect links: a client signs their own Google account into the workspace.
+  // The channel row carries connected_by_user_id = the SENDER, so grouping by
+  // that user alone would let a client's YouTube disconnect see the sender's
+  // own Drive (and skip the revoke), or the other way round: the sender's team
+  // disconnect would see the client's channel and never revoke. The client's
+  // Google account is its own grant, so a link-added channel is grouped with
+  // the other LINK-ADDED Google channels of its workspace (any link: a sender
+  // may cancel a link and send a new one, and the client connects through
+  // each), and a team-connected one never counts link-added channels.
+  describe('connect-link grouping', () => {
+    const LINK = '33333333-3333-4333-8333-333333333333';
+    const SENDER = '22222222-2222-4222-8222-222222222222';
+    const render = (q: unknown) => new PgDialect().sqlToQuery(q as SQL);
+
+    it('a link-added YouTube channel counts the other link-added Google channels of its workspace, any link', async () => {
+      execute
+        .mockResolvedValueOnce({
+          rows: [{ connected_by_user_id: SENDER, connect_link_id: LINK }],
+        })
+        .mockResolvedValueOnce({ rows: [{ count: '0' }] });
+      const svc = await build();
+
+      const result = await svc.revokeIfLastGoogleChannel(
+        7,
+        'ws-a',
+        'youtube',
+        'TKN',
+      );
+
+      // the sender's own Google channels do not keep the CLIENT's grant alive
+      expect(result.revoked).toBe(true);
+      const { sql, params } = render(execute.mock.calls[1][0]);
+      expect(sql).toMatch(/workspace_id = \$\d/);
+      expect(sql).toMatch(/connect_link_id IS NOT NULL/);
+      expect(sql).toMatch(/id <> \$\d/);
+      expect(sql).toMatch(/platform IN \(\$\d, \$\d, \$\d, \$\d\)/);
+      expect(params).toContain('ws-a');
+      // not keyed by the link: a Drive added through ANOTHER link of the
+      // workspace counts too
+      expect(sql).not.toMatch(/connect_link_id = \$\d/);
+      expect(params).not.toContain(LINK);
+      expect(params).not.toContain(SENDER);
+      expect(sql).not.toMatch(/connected_by_user_id/);
+    });
+
+    // Found on local Postgres: drizzle spreads an array parameter into a row
+    // `($3, $4, ...)`, and `x = ANY((row))` is rejected by Postgres ("op
+    // ANY/ALL (array) requires array on right side"). The count query failed,
+    // the error was swallowed as "could not count", and revoke never fired for
+    // anyone. A plain IN list is what a spread parameter list is valid for.
+    it.each([
+      [
+        'a link-added channel',
+        { connected_by_user_id: SENDER, connect_link_id: LINK },
+      ],
+      [
+        'a team-connected channel',
+        { connected_by_user_id: SENDER, connect_link_id: null },
+      ],
+      [
+        'a channel with no owner',
+        { connected_by_user_id: null, connect_link_id: null },
+      ],
+    ])(
+      '%s: the Google platform list is an IN list, never ANY(row)',
+      async (_n, owner) => {
+        execute
+          .mockResolvedValueOnce({ rows: [owner] })
+          .mockResolvedValueOnce({ rows: [{ count: '0' }] });
+        const svc = await build();
+        await svc.revokeIfLastGoogleChannel(7, 'ws-a', 'youtube', 'TKN');
+        const { sql, params } = render(execute.mock.calls[1][0]);
+        expect(sql).not.toMatch(/ANY\s*\(/);
+        expect(sql).toMatch(/platform IN \(\$\d, \$\d, \$\d, \$\d\)/);
+        expect(params).toEqual(
+          expect.arrayContaining([
+            'youtube',
+            'google_drive',
+            'google_photos',
+            'google_calendar',
+          ]),
+        );
+      },
+    );
+
+    it('a link-added channel with another link-added Google channel in the workspace does not revoke', async () => {
+      execute
+        .mockResolvedValueOnce({
+          rows: [{ connected_by_user_id: SENDER, connect_link_id: LINK }],
+        })
+        .mockResolvedValueOnce({ rows: [{ count: '1' }] });
+      const svc = await build();
+
+      const result = await svc.revokeIfLastGoogleChannel(
+        7,
+        'ws-a',
+        'youtube',
+        'TKN',
+      );
+
+      expect(result.revoked).toBe(false);
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('a team-connected Google channel never counts link-added ones', async () => {
+      execute
+        .mockResolvedValueOnce({
+          rows: [{ connected_by_user_id: SENDER, connect_link_id: null }],
+        })
+        .mockResolvedValueOnce({ rows: [{ count: '0' }] });
+      const svc = await build();
+
+      await svc.revokeIfLastGoogleChannel(7, 'ws-a', 'youtube', 'TKN');
+
+      const { sql, params } = render(execute.mock.calls[1][0]);
+      expect(sql).toMatch(/connected_by_user_id = \$\d/);
+      expect(sql).toMatch(/connect_link_id IS NULL/);
+      expect(params).toContain(SENDER);
+    });
+
+    it('the NULL-owner workspace fallback never counts link-added ones either', async () => {
+      execute
+        .mockResolvedValueOnce({
+          rows: [{ connected_by_user_id: null, connect_link_id: null }],
+        })
+        .mockResolvedValueOnce({ rows: [{ count: '0' }] });
+      const svc = await build();
+
+      await svc.revokeIfLastGoogleChannel(7, 'ws-a', 'youtube', 'TKN');
+
+      const { sql } = render(execute.mock.calls[1][0]);
+      expect(sql).toMatch(/workspace_id = \$\d/);
+      expect(sql).toMatch(/connect_link_id IS NULL/);
     });
   });
 });

@@ -3,6 +3,10 @@ import {
   getRefreshTokenTtlDays,
   type SupportedPlatform,
 } from '../../drizzle/schema/channels.schema';
+import {
+  CHANNEL_RESTORE_WINDOW_MS,
+  mustDeleteOnDisconnect,
+} from './disconnect-policy';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -29,6 +33,9 @@ export interface ChannelHealthInput {
   /** Encrypted or not: only its presence is read. */
   refreshToken: string | null;
   refreshTokenIssuedAt: Date | null;
+  /** Soft disconnect (0081); absent on callers that predate it. */
+  disconnectedAt?: Date | null;
+  disconnectFinalizedAt?: Date | null;
 }
 
 export interface PersonRef {
@@ -37,6 +44,7 @@ export interface PersonRef {
 }
 
 export type ChannelHealthKind =
+  | 'disconnected'
   | 'ok'
   | 'reconnect'
   | 'expiring'
@@ -56,6 +64,15 @@ export interface ChannelHealth {
    * when unknown - a token that simply ran out records no error.
    */
   since?: string;
+  /** For 'disconnected': when it was disconnected. */
+  disconnectedAt?: string;
+  /** For 'disconnected': until when the disconnect can be undone; null once it cannot. */
+  restoreUntil?: string | null;
+  /**
+   * For 'disconnected': false when the platform's policy deletes its history
+   * when the undo window closes (it is then deleted at `restoreUntil`).
+   */
+  historyKept?: boolean;
 }
 
 /**
@@ -122,6 +139,21 @@ export function channelHealth(
   opts: { now?: Date; pausedBy?: PersonRef | null } = {},
 ): ChannelHealth {
   const now = opts.now ?? new Date();
+
+  // Disconnected first: it is history, whatever else is true of the row.
+  if (channel.connectionStatus === 'disconnected' && channel.disconnectedAt) {
+    const until = new Date(
+      new Date(channel.disconnectedAt).getTime() + CHANNEL_RESTORE_WINDOW_MS,
+    );
+    const canUndo =
+      !channel.disconnectFinalizedAt && until.getTime() > now.getTime();
+    return {
+      kind: 'disconnected',
+      disconnectedAt: new Date(channel.disconnectedAt).toISOString(),
+      restoreUntil: canUndo ? until.toISOString() : null,
+      historyKept: !mustDeleteOnDisconnect(channel.platform),
+    };
+  }
 
   if (channel.isActive === false) return { kind: 'locked' };
 

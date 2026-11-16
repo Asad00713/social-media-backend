@@ -31,6 +31,7 @@ function build(payload: Record<string, unknown>) {
     id: 's1',
     userId: undefined as string | undefined,
     handshake: { auth: { token: 'tok' }, query: {}, headers: {} },
+    join: jest.fn().mockResolvedValue(undefined),
     disconnect,
   };
   return {

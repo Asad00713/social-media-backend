@@ -168,6 +168,8 @@ export class YoutubeDataDeletionService {
           last_error = 'YouTube data was deleted by user request — channel deactivated to prevent re-ingestion. Reconnect to resume.',
           updated_at = NOW()
       WHERE id = ${channelId} AND workspace_id = ${workspaceId}
+        -- A disconnected channel stays disconnected (CHECK, 0081).
+        AND connection_status <> 'disconnected'
     `);
     this.logger.log(
       `Channel ${channelId} (workspace ${workspaceId}) deactivated after YouTube data deletion request`,

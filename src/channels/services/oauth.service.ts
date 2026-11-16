@@ -4,7 +4,7 @@ import {
   BadRequestException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, gt, sql } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import {
   oauthStates,
@@ -267,6 +267,14 @@ const OAUTH_CONFIGS: Record<SupportedPlatform, PlatformOAuthConfig> = {
   },
 };
 
+/**
+ * How long past its expires_at an OAuth state may still be PEEKED (never
+ * validated or consumed) so a connect-link visitor whose state timed out on
+ * the network's login page still lands back on /c/<token>. Bounded on purpose:
+ * the peek must never become a permanent oracle for old state tokens.
+ */
+export const LINK_STATE_PEEK_GRACE_MS = 60 * 60 * 1000;
+
 @Injectable()
 export class OAuthService {
   private readonly logger = new Logger(OAuthService.name);
@@ -478,6 +486,50 @@ export class OAuthService {
       codeVerifier: foundState.codeVerifier,
       redirectUrl: foundState.redirectUrl,
       additionalData: foundState.additionalData,
+    };
+  }
+
+  /**
+   * A state's additionalData, and who it was started for (workspace, user),
+   * WITHOUT using the state up, or null for an unknown token. The callback
+   * answers with a link page only when that workspace and user are the
+   * link's own (isStateOfLink). For the callback's early exits (the network answered with
+   * an error, or validation failed): a state started from a connect link must
+   * still send the visitor back to the link page. A used state is still read
+   * (a replay lands on the link page), and so is an expired one: a visitor
+   * can sit on the network's login page past the state's 15 minutes and must
+   * still come back to the link page, not the team error page. The window is
+   * bounded (LINK_STATE_PEEK_GRACE_MS past expiry): the link page URL carries
+   * the raw link token, so an old state must not keep answering with it.
+   */
+  async peekState(stateToken: string): Promise<{
+    workspaceId: string;
+    userId: string;
+    additionalData: Record<string, unknown> | null;
+  } | null> {
+    const [row] = await db
+      .select({
+        workspaceId: oauthStates.workspaceId,
+        userId: oauthStates.userId,
+        additionalData: oauthStates.additionalData,
+      })
+      .from(oauthStates)
+      .where(
+        and(
+          eq(oauthStates.stateToken, stateToken),
+          gt(
+            oauthStates.expiresAt,
+            new Date(Date.now() - LINK_STATE_PEEK_GRACE_MS),
+          ),
+        ),
+      )
+      .limit(1);
+    if (!row) return null;
+    return {
+      workspaceId: row.workspaceId,
+      userId: row.userId,
+      additionalData:
+        (row.additionalData as Record<string, unknown> | null) ?? null,
     };
   }
 
@@ -816,7 +868,16 @@ export class OAuthService {
   }
 
   /**
-   * Clean up expired OAuth states
+   * Clean up expired OAuth states.
+   *
+   * NOTE: nothing calls this today (no cron, no caller anywhere in src), so
+   * `oauth_states` only grows - a pre-existing gap. That is also the only
+   * reason peekState's grace period works: a connect-link visitor must land
+   * back on `/c/<token>` up to LINK_STATE_PEEK_GRACE_MS past a state's
+   * expiry, which needs the row to still exist. If this is ever wired to a
+   * cron it MUST delete only rows with
+   * `expires_at < now() - LINK_STATE_PEEK_GRACE_MS`, not `< now()` as below,
+   * or the grace silently stops working.
    */
   async cleanupExpiredStates(): Promise<number> {
     const result = await db

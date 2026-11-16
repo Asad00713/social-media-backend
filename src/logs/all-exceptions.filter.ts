@@ -8,6 +8,7 @@ import {
 import type { Request, Response } from 'express';
 import { LogWriterService } from './log-writer.service';
 import { redactTokenUrls } from './redact-token-urls';
+import { redactSensitivePath } from './redact-path';
 
 /**
  * Global exception filter. It preserves Nest's default response exactly — same
@@ -31,9 +32,16 @@ export class AllExceptionsFilter implements ExceptionFilter {
         ? exception.getStatus()
         : HttpStatus.INTERNAL_SERVER_ERROR;
 
-    const message =
-      exception instanceof Error ? exception.message : 'Unknown error';
-    const stack = exception instanceof Error ? exception.stack : undefined;
+    // Nest's own route-not-found 404 spells the URL in its message ("Cannot
+    // POST /public/connect-links/<token>"), and the stack repeats the
+    // message, so both get the same redaction as the path.
+    const message = redactSensitivePath(
+      exception instanceof Error ? exception.message : 'Unknown error',
+    );
+    const stack =
+      exception instanceof Error && exception.stack
+        ? redactSensitivePath(exception.stack)
+        : undefined;
 
     // Persist (guarded, fire-and-forget). Never let this affect the response.
     try {
@@ -47,7 +55,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
         message: redactTokenUrls(message),
         context: 'HTTP',
         stack: stack ? redactTokenUrls(stack) : null,
-        path: request?.url ? redactTokenUrls(request.url) : null,
+        // Some routes carry a bearer token in the path; never persist it.
+        path: request?.url
+          ? redactTokenUrls(redactSensitivePath(request.url))
+          : null,
         method: request?.method ?? null,
         statusCode: status,
         userId: user?.userId ?? null,

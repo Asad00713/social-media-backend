@@ -38,6 +38,9 @@ const mockDb = {
       return { where: () => chain(() => [{ ...existing, ...v }]) };
     },
   })),
+  // The reconnect writes inside a transaction (a revival takes the account
+  // lock there); the double runs it on itself.
+  transaction: jest.fn(async (cb: (tx: unknown) => unknown) => cb(mockDb)),
 };
 
 jest.mock('../../drizzle/db', () => ({ db: mockDb }));
@@ -70,12 +73,27 @@ const row = (over: Record<string, unknown> = {}) => ({
 });
 
 function make(
-  billing: Partial<Record<'ownerOf' | 'releaseFreedSlots', jest.Mock>> = {},
+  billing: Partial<
+    Record<
+      'ownerOf' | 'releaseFreedSlots' | 'enforceWithinTransaction',
+      jest.Mock
+    >
+  > = {},
 ) {
   const accountChannels = {
     ownerOf: billing.ownerOf ?? jest.fn(async () => 'owner-1'),
     releaseFreedSlots:
       billing.releaseFreedSlots ?? jest.fn(async () => undefined),
+    enforceWithinTransaction:
+      billing.enforceWithinTransaction ?? jest.fn(async () => undefined),
+  };
+  const heldPosts = {
+    releaseAfterReconnect: jest.fn(async () => ({
+      resumedCount: 0,
+      overdueCount: 0,
+      missedCount: 0,
+      stillPausedCount: 0,
+    })),
   };
   const svc = new ChannelService(
     {} as never,
@@ -83,8 +101,12 @@ function make(
     {} as never,
     accountChannels as never,
     {} as never,
+    heldPosts as never,
   );
-  return { svc, accountChannels };
+  const increment = jest.fn(async () => undefined);
+  (svc as unknown as { incrementChannelCount: jest.Mock }).incrementChannelCount =
+    increment;
+  return { svc, accountChannels, heldPosts, increment };
 }
 
 const reconnect = (svc: ChannelService, platform = 'bluesky') =>
@@ -151,5 +173,105 @@ describe('reconnecting a plan-locked channel', () => {
     const dto = await reconnect(svc, 'google_drive');
     expect(accountChannels.releaseFreedSlots).not.toHaveBeenCalled();
     expect(dto.isActive).toBe(false);
+  });
+});
+
+describe('reconnecting a channel the user disconnected (revival)', () => {
+  const disconnected = (over: Record<string, unknown> = {}) =>
+    row({
+      isActive: true,
+      connectionStatus: 'disconnected',
+      disconnectedAt: new Date('2026-11-01T10:00:00Z'),
+      disconnectedByUserId: 'u9',
+      statusBeforeDisconnect: 'connected',
+      disconnectFinalizedAt: new Date('2026-11-01T10:10:00Z'),
+      accessToken: '',
+      ...over,
+    });
+
+  it('revives the same row: marks cleared, slot taken under the account lock, held posts released', async () => {
+    existing = disconnected();
+    const { svc, accountChannels, heldPosts, increment } = make();
+    const dto = await reconnect(svc);
+
+    expect(dto.id).toBe(7);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({
+      connectionStatus: 'connected',
+      disconnectedAt: null,
+      disconnectedByUserId: null,
+      statusBeforeDisconnect: null,
+      disconnectFinalizedAt: null,
+      connectedByUserId: 'u1',
+    });
+    expect(accountChannels.enforceWithinTransaction).toHaveBeenCalledWith(
+      expect.anything(),
+      'owner-1',
+    );
+    expect(increment).toHaveBeenCalledWith('ws', expect.anything());
+    expect(heldPosts.releaseAfterReconnect).toHaveBeenCalledWith(
+      'ws',
+      7,
+      10 * 60 * 1000,
+    );
+  });
+
+  it('refuses at the ceiling and writes nothing', async () => {
+    existing = disconnected();
+    const limit = Object.assign(new Error('Channel limit reached'), {
+      code: 'CHANNEL_LIMIT_REACHED',
+    });
+    const { svc, heldPosts, increment } = make({
+      enforceWithinTransaction: jest.fn(async () => {
+        throw limit;
+      }),
+    });
+    await expect(reconnect(svc)).rejects.toBe(limit);
+    expect(writes).toHaveLength(0);
+    expect(increment).not.toHaveBeenCalled();
+    expect(heldPosts.releaseAfterReconnect).not.toHaveBeenCalled();
+  });
+
+  it('a broken (not disconnected) channel reconnects without the ceiling or a count change', async () => {
+    existing = row({ isActive: true });
+    const { svc, accountChannels, heldPosts, increment } = make();
+    await reconnect(svc);
+    expect(accountChannels.enforceWithinTransaction).not.toHaveBeenCalled();
+    expect(increment).not.toHaveBeenCalled();
+    expect(heldPosts.releaseAfterReconnect).not.toHaveBeenCalled();
+    expect('disconnectedAt' in writes[0]).toBe(false);
+  });
+
+  it('a re-added Telegram bot takes its fresh webhook route', async () => {
+    existing = disconnected({ platform: 'telegram', telegramWebhookRouteId: 'old' });
+    const { svc } = make();
+    await svc.createChannel('ws', 'u1', {
+      platform: 'telegram',
+      accountType: 'bot',
+      platformAccountId: 'acc',
+      accountName: 'Bot',
+      accessToken: 'tok',
+      telegramWebhookRouteId: 'fresh',
+    } as never);
+    expect(writes[0].telegramWebhookRouteId).toBe('fresh');
+  });
+});
+
+describe('reconnecting a must-delete channel its finalize is deleting', () => {
+  it('is refused (409 CHANNEL_BEING_REMOVED) and writes nothing', async () => {
+    existing = row({
+      platform: 'youtube',
+      isActive: true,
+      connectionStatus: 'disconnected',
+      disconnectedAt: new Date('2026-11-01T10:00:00Z'),
+      disconnectFinalizedAt: new Date('2026-11-01T10:10:00Z'),
+    });
+    const { svc, heldPosts } = make();
+    const err = await reconnect(svc, 'youtube').catch((e: unknown) => e);
+    expect((err as { getResponse(): unknown }).getResponse()).toMatchObject({
+      code: 'CHANNEL_BEING_REMOVED',
+    });
+    expect(writes).toHaveLength(0);
+    expect(heldPosts.releaseAfterReconnect).not.toHaveBeenCalled();
   });
 });

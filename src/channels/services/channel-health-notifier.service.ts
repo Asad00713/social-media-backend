@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { and, count, eq, gt, min, ne, not, sql } from 'drizzle-orm';
+import { and, count, eq, gt, min, not, notInArray, sql } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
@@ -21,6 +21,7 @@ import {
 import { NotificationEmitterService } from '../../notifications/notification-emitter.service';
 import { NotifyService } from '../../notifications/notify.service';
 import { RecipientsService } from '../../notifications/recipients.service';
+import { DISCONNECTED_STATUS, liveChannel } from '../lib/live-channel';
 
 interface HealthChannel {
   id: number;
@@ -95,6 +96,9 @@ export class ChannelHealthNotifier {
    * they are written either way, as each writer did before. A database error
    * is the caller's, as it was. The email runs in the background, so a slow
    * Redis, queue or lookup never delays a publish; it never throws.
+   *
+   * A disconnected channel (soft disconnect, 0081) is history: it is neither
+   * flipped nor written, so it keeps that status and never emails.
    */
   async markExpired(channelId: number, fields: ExpiredFields): Promise<void> {
     const set = { ...fields, connectionStatus: 'expired' };
@@ -104,7 +108,10 @@ export class ChannelHealthNotifier {
       .where(
         and(
           eq(socialMediaChannels.id, channelId),
-          ne(socialMediaChannels.connectionStatus, 'expired'),
+          notInArray(socialMediaChannels.connectionStatus, [
+            'expired',
+            DISCONNECTED_STATUS,
+          ]),
         ),
       )
       .returning({
@@ -119,7 +126,7 @@ export class ChannelHealthNotifier {
       await this.db
         .update(socialMediaChannels)
         .set(set)
-        .where(eq(socialMediaChannels.id, channelId));
+        .where(and(eq(socialMediaChannels.id, channelId), liveChannel()));
       return;
     }
     const channel = { ...flipped[0], id: Number(flipped[0].id) };

@@ -10,6 +10,7 @@ import {
   ProviderItemType,
 } from '../../drizzle/schema';
 import { SubscriptionLookupService } from './subscription-lookup.service';
+import { PaymentAlertsService, toCard } from './payment-alerts.service';
 import { mapLemonSqueezyStatus } from '../providers/lemonsqueezy-status.util';
 // The heir search lives in the shared helper now, and it filters on the SAME
 // `isLive` predicate `hasLiveBasePlan` reads — one definition of "live", not
@@ -94,12 +95,13 @@ interface LsSubscriptionAttributes {
 interface LsInvoiceAttributes {
   /** On a subscription-invoice payload this names the subscription. */
   subscription_id?: string | number | null;
-  /** The amount charged, in cents of `currency`. */
-  total?: number | null;
-  currency?: string | null;
+  /** The card the charge was attempted on (`visa`, `mastercard`…). */
   card_brand?: string | null;
   card_last_four?: string | null;
-  /** Moves on every payment attempt, so it tells one attempt from the next. */
+  /** Invoice total, in cents of `currency`. */
+  total?: number | null;
+  currency?: string | null;
+  /** Moves on each retry; a redelivery carries the same value. */
   updated_at?: string | null;
 }
 
@@ -148,6 +150,7 @@ export class LemonSqueezyWebhookService {
   constructor(
     private readonly lookup: SubscriptionLookupService,
     private readonly billingEmail: BillingEmailService,
+    private readonly paymentAlerts: PaymentAlertsService,
   ) {}
 
   // -------------------------------------------------------------- signature
@@ -890,6 +893,28 @@ export class LemonSqueezyWebhookService {
     const status =
       eventName === 'subscription_payment_failed' ? 'past_due' : 'active';
 
+    const account = await this.billingAccount(target.subscriptionId);
+
+    // Whether this success ENDS dunning is decided by the write itself:
+    // `past_due -> active` matches one row for exactly one caller. Lemon
+    // Squeezy sends `subscription_payment_success` and
+    // `subscription_payment_recovered` together; a read-then-write let both
+    // see `past_due` and both announce the recovery.
+    let wasPastDue = false;
+    if (status === 'active') {
+      const moved = await db
+        .update(subscriptions)
+        .set({ status, updatedAt: new Date() })
+        .where(
+          and(
+            eq(subscriptions.id, target.subscriptionId),
+            eq(subscriptions.status, 'past_due'),
+          ),
+        )
+        .returning({ id: subscriptions.id });
+      wasPastDue = moved.length > 0;
+    }
+
     await db
       .update(subscriptions)
       .set({ status, updatedAt: new Date() })
@@ -918,8 +943,21 @@ export class LemonSqueezyWebhookService {
       .set({ providerStatus: status, updatedAt: new Date() })
       .where(eq(providerSubscriptions.id, target.rowId));
 
-    if (eventName === 'subscription_payment_failed') {
-      await this.emailPaymentFailed(envelope, target, providerSubscriptionId);
+    if (account) {
+      // The bell and the live toast (main's payment alerts), then the email
+      // (the templated outbox). The alerts do not email; the email does not
+      // ring the bell, so one failure is one bell and one email.
+      await this.alertOwner(eventName, envelope, account.userId, {
+        planCode: account.planCode,
+        wasPastDue,
+      });
+      if (eventName === 'subscription_payment_failed') {
+        await this.emailPaymentFailed(
+          envelope,
+          account,
+          providerSubscriptionId,
+        );
+      }
     }
   }
 
@@ -935,21 +973,11 @@ export class LemonSqueezyWebhookService {
    */
   private async emailPaymentFailed(
     envelope: LsEnvelope,
-    target: Target,
+    account: { userId: string; planCode: string },
     providerSubscriptionId: string,
   ): Promise<void> {
     try {
       const attrs = envelope.data?.attributes ?? {};
-      const rows = await db
-        .select({
-          userId: subscriptions.userId,
-          planCode: subscriptions.planCode,
-        })
-        .from(subscriptions)
-        .where(eq(subscriptions.id, target.subscriptionId));
-      const account = (rows as { userId: string; planCode: string }[])[0];
-      if (!account) return;
-
       const invoiceId = idOf(envelope.data?.id) ?? providerSubscriptionId;
       const attempt =
         dateOf(attrs.updated_at)?.getTime() ??
@@ -970,6 +998,61 @@ export class LemonSqueezyWebhookService {
         `Billing email (payment failed) skipped: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+  }
+
+  /**
+   * Tell the billing owner, after the billing writes are done.
+   *
+   * A failure alerts once per failed ATTEMPT: the key is the invoice plus its
+   * `updated_at`, which moves on each retry and is identical on a redelivery.
+   * A success alerts only when it ends dunning (see `paymentSucceeded`):
+   * `subscription_payment_success` also fires on every ordinary renewal. Its
+   * key is the invoice alone, so the success/recovered pair for one invoice
+   * alerts once.
+   */
+  private async alertOwner(
+    eventName: string,
+    envelope: LsEnvelope,
+    userId: string,
+    success: { planCode: string; wasPastDue: boolean },
+  ): Promise<void> {
+    const attrs = envelope.data?.attributes;
+    const invoiceId =
+      idOf(envelope.data?.id) ??
+      `sub-${idOf(attrs?.subscription_id) ?? 'unknown'}`;
+    if (eventName === 'subscription_payment_failed') {
+      await this.paymentAlerts.paymentFailed({
+        userId,
+        provider: PROVIDER,
+        alertKey: `${PROVIDER}:failed:${invoiceId}:${strOf(attrs?.updated_at) ?? 'na'}`,
+        amountMinor: typeof attrs?.total === 'number' ? attrs.total : null,
+        card: toCard(attrs?.card_brand, attrs?.card_last_four),
+        reason: null,
+      });
+      return;
+    }
+    await this.paymentAlerts.paymentSucceeded({
+      userId,
+      provider: PROVIDER,
+      alertKey: `${PROVIDER}:recovered:${invoiceId}`,
+      amountMinor: typeof attrs?.total === 'number' ? attrs.total : null,
+      planCode: success.planCode,
+      wasPastDue: success.wasPastDue,
+    });
+  }
+
+  private async billingAccount(
+    subscriptionId: number,
+  ): Promise<{ userId: string; planCode: string } | null> {
+    const rows = await db
+      .select({
+        userId: subscriptions.userId,
+        planCode: subscriptions.planCode,
+      })
+      .from(subscriptions)
+      .where(eq(subscriptions.id, subscriptionId))
+      .limit(1);
+    return rows[0] ?? null;
   }
 
   // ------------------------------------------------------------------ shared

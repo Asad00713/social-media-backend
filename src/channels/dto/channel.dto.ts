@@ -10,6 +10,7 @@ import {
   MinLength,
   MaxLength,
 } from 'class-validator';
+import { Transform } from 'class-transformer';
 import {
   SUPPORTED_PLATFORMS,
   ACCOUNT_TYPES,
@@ -219,6 +220,23 @@ export class ChannelQueryDto {
   @IsNumber()
   @IsOptional()
   offset?: number;
+
+  /**
+   * `?includeDisconnected=true`: also list disconnected channels (history).
+   * Off by default, so no picker or filter offers them.
+   */
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean()
+  includeDisconnected?: boolean;
+}
+
+/** `?deleteHistory=true` on DELETE channels/workspaces/:ws/:channelId. */
+export class DisconnectChannelQueryDto {
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean()
+  deleteHistory?: boolean;
 }
 
 // =============================================================================
@@ -269,6 +287,21 @@ export class ChannelResponseDto {
   pausedBy: ChannelPersonRef | null;
   /** Who connected it; null when that user is gone. */
   connectedBy: ChannelPersonRef | null;
+  /** Set when a client added it through a connect link (`email` is the one
+   * the link was sent to; null when the link had none). null otherwise. */
+  connectedVia: ChannelConnectedVia | null;
+  /** When the user disconnected it (it is kept as history); null when not. */
+  disconnectedAt: Date | null;
+  /**
+   * False when the platform's policy requires its data deleted on disconnect
+   * (channels/lib/disconnect-policy.ts): the disconnect dialog says so.
+   */
+  keepsHistoryOnDisconnect: boolean;
+}
+
+export interface ChannelConnectedVia {
+  kind: 'link';
+  email: string | null;
 }
 
 /** A person as the Channels page shows them. */

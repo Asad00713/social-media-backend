@@ -1,7 +1,7 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Inject, Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { QUEUES } from '../../queue/queue.module';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
@@ -11,6 +11,7 @@ import {
 import { OAuthService } from '../services/oauth.service';
 import { encrypt, decrypt } from '../../common/utils/encryption.util';
 import { ChannelHealthNotifier } from '../services/channel-health-notifier.service';
+import { isDisconnected, liveChannel } from '../lib/live-channel';
 
 export interface TokenRefreshJob {
   channelId: number;
@@ -42,6 +43,14 @@ export class TokenRefreshProcessor extends WorkerHost {
     if (!channel) {
       this.logger.warn(`Token refresh: channel ${channelId} not found`);
       return { ok: false };
+    }
+
+    // Disconnected: its tokens are kept only for the undo, never renewed.
+    if (isDisconnected(channel)) {
+      this.logger.log(
+        `Token refresh: channel ${channelId} is disconnected, skipping`,
+      );
+      return { ok: true };
     }
 
     if (!channel.refreshToken) {
@@ -77,10 +86,11 @@ export class TokenRefreshProcessor extends WorkerHost {
         updateData.refreshTokenIssuedAt = new Date();
       }
 
+      // Never onto a row disconnected meanwhile (that would revive it).
       await this.db
         .update(socialMediaChannels)
         .set(updateData)
-        .where(eq(socialMediaChannels.id, channelId));
+        .where(and(eq(socialMediaChannels.id, channelId), liveChannel()));
 
       this.logger.log(
         `Token refresh success: channelId=${channelId} platform=${channel.platform} new_expires_at=${newTokenExpiresAt?.toISOString() ?? 'n/a'}`,

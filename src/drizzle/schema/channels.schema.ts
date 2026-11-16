@@ -14,6 +14,7 @@ import {
 import { relations } from 'drizzle-orm';
 import { users } from './users.schema';
 import { workspace } from './workspace.schema';
+import { channelConnectLinks } from './channel-connect-links.schema';
 
 // Platform enum values
 export const SUPPORTED_PLATFORMS = [
@@ -117,6 +118,9 @@ export const CONNECTION_STATUSES = [
   'revoked',
   'error',
   'refreshing',
+  // The user disconnected it (migration 0081). The row stays as history;
+  // `disconnected_at` is set exactly when this is the status (CHECK).
+  'disconnected',
 ] as const;
 
 export type ConnectionStatus = (typeof CONNECTION_STATUSES)[number];
@@ -207,6 +211,24 @@ export const socialMediaChannels = pgTable(
     connectionStatus: varchar('connection_status', { length: 20 })
       .default('connected')
       .notNull(),
+
+    // Soft disconnect (migration 0081). Set together with connection_status
+    // 'disconnected' (a CHECK keeps the two in step). Until
+    // `disconnect_finalized_at` the tokens are kept so the disconnect can be
+    // undone (CHANNEL_RESTORE_WINDOW_MS); the finalize job then clears them,
+    // or deletes the row when the platform's policy requires it.
+    disconnectedAt: timestamp('disconnected_at', { withTimezone: true }),
+    disconnectedByUserId: uuid('disconnected_by_user_id').references(
+      () => users.id,
+      { onDelete: 'set null' },
+    ),
+    // What an undo puts back: the status the channel had when disconnected.
+    statusBeforeDisconnect: varchar('status_before_disconnect', {
+      length: 20,
+    }),
+    disconnectFinalizedAt: timestamp('disconnect_finalized_at', {
+      withTimezone: true,
+    }),
     lastError: text('last_error'),
     lastErrorAt: timestamp('last_error_at'),
     consecutiveErrors: integer('consecutive_errors').default(0).notNull(),
@@ -225,6 +247,16 @@ export const socialMediaChannels = pgTable(
     connectedByUserId: uuid('connected_by_user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'set null' }),
+
+    // Added through a connect link (migration 0067). connectLinkId says which
+    // link; the two marks are copied at connect time so they survive the link
+    // row. A channel is "added through a link" when addedViaLinkAt is set.
+    connectLinkId: uuid('connect_link_id').references(
+      () => channelConnectLinks.id,
+      { onDelete: 'set null' },
+    ),
+    addedViaLinkAt: timestamp('added_via_link_at', { withTimezone: true }),
+    addedViaLinkEmail: varchar('added_via_link_email', { length: 320 }),
 
     // Display preferences
     displayOrder: integer('display_order').default(0).notNull(),

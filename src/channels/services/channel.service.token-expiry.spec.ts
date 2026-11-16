@@ -33,6 +33,7 @@ function make(refresh: jest.Mock) {
     {} as never,
     {} as never,
     health as never,
+    {} as never,
   );
   return { svc, health };
 }

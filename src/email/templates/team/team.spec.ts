@@ -1,6 +1,11 @@
 import { renderEmail } from '../../render/render-email';
 import type { RenderContext } from '../types';
 import {
+  channelConnectLink,
+  formatLinkExpiry,
+  formatNetworkList,
+} from './channel-connect-link';
+import {
   invitationAccepted,
   type InvitationAcceptedProps,
 } from './invitation-accepted';
@@ -27,11 +32,12 @@ const NASTY = 'A & <B> "q"';
 const NASTY_ESCAPED = 'A &amp; &lt;B&gt; &quot;q&quot;';
 
 describe('team templates', () => {
-  it('registers B1, B2 and B3 in the team group', () => {
+  it('registers B1, B2, B3 and the connect link in the team group', () => {
     expect(TEAM_TEMPLATES.map((d) => d.id)).toEqual([
       'workspace-invitation',
       'invitation-accepted',
       'removed-from-workspace',
+      'channel-connect-link',
     ]);
   });
 
@@ -208,6 +214,56 @@ describe('team templates', () => {
       );
       expect(r.html).toContain(NASTY_ESCAPED);
       expect(r.html).not.toContain('<B>');
+    });
+  });
+
+  describe('channel-connect-link', () => {
+    const props = channelConnectLink.fixture;
+
+    it('is mandatory mail with a plain footer naming sender and recipient', () => {
+      expect(channelConnectLink.category).toBe('team');
+      expect(channelConnectLink.event).toBeNull();
+      expect(channelConnectLink.footer).toBe('plain');
+      expect(channelConnectLink.footerReason?.(props)).toBe(
+        'You get this because M Rehman sent a connect link to client@lumierecafe.pk.',
+      );
+    });
+
+    it('names the sender, the networks and the link, and says no account is needed', async () => {
+      const r = await renderEmail(channelConnectLink, props, ctx);
+      expect(r.subject).toBe(
+        'M Rehman asked you to connect Instagram, Facebook and TikTok to Rehman Workspace',
+      );
+      expect(r.html).toContain('Connect your accounts');
+      expect(r.html).toContain(props.connectUrl);
+      expect(r.text).toContain(
+        'asked you to connect your Instagram, Facebook and TikTok to their workspace on Schedura.',
+      );
+      expect(r.text).toContain('works until November 20, 2026 (UTC)');
+      expect(r.text).toContain('no Schedura account or password needed');
+    });
+
+    it('states the expiry as a UTC date, labelled UTC, whatever the server time zone', () => {
+      // 23:30 UTC on Nov 20: already Nov 21 east of UTC, still Nov 20 in UTC
+      expect(formatLinkExpiry(new Date('2026-11-20T23:30:00Z'))).toBe(
+        'November 20, 2026 (UTC)',
+      );
+    });
+
+    it('lists networks by name, X for twitter', () => {
+      expect(formatNetworkList(['instagram'])).toBe('Instagram');
+      expect(formatNetworkList(['twitter', 'threads'])).toBe('X and Threads');
+    });
+
+    it('escapes the sender and workspace names', async () => {
+      const r = await renderEmail(
+        channelConnectLink,
+        { ...props, senderName: NASTY, workspaceName: NASTY },
+        ctx,
+      );
+      expect(r.html).toContain(NASTY_ESCAPED);
+      expect(r.html).not.toContain('<B>');
+      expect(r.subject).not.toMatch(/[\r\n]/);
     });
   });
 });
