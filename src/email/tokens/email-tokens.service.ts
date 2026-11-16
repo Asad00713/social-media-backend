@@ -28,6 +28,8 @@ export interface SecurityClaims {
   act: SecurityAction;
   from?: string;
   to?: string;
+  /** When the link was minted (seconds): a revert ignores a later squatter. */
+  iat?: number;
 }
 
 /**
@@ -117,6 +119,7 @@ export class EmailTokensService {
       act: p.act,
       ...(p.from !== undefined ? { from: p.from } : {}),
       ...(p.to !== undefined ? { to: p.to } : {}),
+      ...(typeof p.iat === 'number' ? { iat: p.iat } : {}),
     };
   }
 

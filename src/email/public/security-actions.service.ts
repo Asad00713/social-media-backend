@@ -30,6 +30,9 @@ interface Account {
   email: string;
 }
 
+/** The root db or the revert transaction. */
+type Executor = DbType | Parameters<Parameters<DbType['transaction']>[0]>[0];
+
 /** A revert claim always names both addresses (Task 7 mints it so). */
 type RevertClaims = SecurityClaims & { from: string; to: string };
 
@@ -37,8 +40,14 @@ type RevertResult =
   | { kind: 'reverted'; account: Account }
   | { kind: 'already' }
   | { kind: 'refused' }
-  | { kind: 'superseded'; account: Account }
   | { kind: 'gone' };
+
+/**
+ * Tables whose rows a bare sign-up leaves behind and nobody would miss: the
+ * device a registration signs in from. Any other row pointing at a squatter
+ * means it holds data, and it is never deleted.
+ */
+const SIGN_IN_TRACE_TABLES = new Set(['known_devices']);
 
 const SECURE_BUTTON = 'Secure my account';
 const SECURED_TITLE = 'Your account is secured';
@@ -116,11 +125,13 @@ export class SecurityActionsService {
    * (`to`); once switched, a repeat finds the email already back at `from`
    * and says so without signing out or mailing again (it secures again only
    * if a new email change has been started since). After any other change,
-   * the link refuses and leaves the email alone, so an old link can never
-   * move the account onto an address it no longer uses. It still signs out
-   * everywhere and cancels a pending change: the clicker reads an address the
-   * account had, and a chained change (victim → a1 → a2) must not leave the
-   * person who made it signed in. No reset link: it would go to that address.
+   * or when another account holds `from`, the link refuses and leaves the
+   * email alone, so an old link can never move the account onto an address
+   * it no longer uses. Every refusal still signs out everywhere and cancels a
+   * pending change: the clicker reads an address the account had, and
+   * whoever made the change (victim → a1 → a2, or a squatter registration on
+   * victim@) must not stay signed in. No reset link: it would go to the
+   * account's current address, which may be the attacker's.
    */
   async perform(token: string): Promise<SecurityDone | null> {
     const claims = this.tokens.verifySecurity(token);
@@ -147,8 +158,8 @@ export class SecurityActionsService {
         body: `Your sign-in email is already back to ${maskEmail(claims.from)}.`,
       };
     }
-    if (result.kind === 'superseded') await this.protect(result.account);
-    if (result.kind === 'refused' || result.kind === 'superseded') {
+    if (result.kind === 'refused') {
+      await this.protect(claims.uid);
       return {
         title: "Your email wasn't switched back",
         body: `We couldn't switch your email back. Write to ${this.links.supportEmail()} and we'll help.`,
@@ -168,6 +179,13 @@ export class SecurityActionsService {
    * only while it is still `to` and no other account has taken `from`.
    * The click proves the person reads `from` (the link was mailed there), so
    * the address counts as verified.
+   *
+   * One holder of `from` does not block: a squatter, i.e. an UNVERIFIED
+   * account created after the link was minted that holds nothing but its
+   * sign-in trace. That is the attacker registering the vacated address to
+   * defeat this link. It is deleted in this transaction and the revert goes
+   * on. Its row stays locked from the check to the delete, so no data can
+   * be attached to it in between.
    */
   private async revertEmail(claims: RevertClaims): Promise<RevertResult> {
     const from = normalizeEmail(claims.from);
@@ -189,21 +207,30 @@ export class SecurityActionsService {
             account: { id: claims.uid, email: row.email },
           };
         }
-        if (current !== normalizeEmail(claims.to)) {
-          return {
-            kind: 'superseded',
-            account: { id: claims.uid, email: row.email },
-          };
-        }
+        if (current !== normalizeEmail(claims.to)) return { kind: 'refused' };
 
-        const [taken] = await tx
-          .select({ id: users.id })
+        const [holder] = await tx
+          .select({
+            id: users.id,
+            isEmailVerified: users.isEmailVerified,
+            // created_at is a bare timestamp written by now(): compare it in
+            // the database, in the same session time zone, never in JS.
+            createdAfterLink: sql<boolean>`coalesce(${users.createdAt} > to_timestamp(${claims.iat ?? null}::double precision)::timestamp, false)`,
+          })
           .from(users)
           .where(
             and(sql`lower(${users.email}) = ${from}`, ne(users.id, claims.uid)),
           )
-          .limit(1);
-        if (taken) return { kind: 'refused' };
+          .limit(1)
+          .for('update');
+        if (holder) {
+          const isSquatter =
+            !holder.isEmailVerified &&
+            holder.createdAfterLink &&
+            (await this.holdsNothing(tx, holder.id));
+          if (!isSquatter) return { kind: 'refused' };
+          await tx.delete(users).where(eq(users.id, holder.id));
+        }
 
         await tx
           .update(users)
@@ -226,15 +253,39 @@ export class SecurityActionsService {
     }
   }
 
+  /**
+   * True when no row in any table points at `userId` through a foreign key,
+   * apart from its sign-in trace (SIGN_IN_TRACE_TABLES). Read from the
+   * catalogue, so a table added later is covered without a code change.
+   */
+  private async holdsNothing(tx: Executor, userId: string): Promise<boolean> {
+    const refs = await tx.execute<{ tbl: string; col: string }>(sql`
+      SELECT c.conrelid::regclass::text AS tbl, a.attname AS col
+        FROM pg_constraint c
+        JOIN pg_attribute a
+          ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+       WHERE c.contype = 'f' AND c.confrelid = 'users'::regclass`);
+    const probes = refs.rows
+      .filter((r) => !SIGN_IN_TRACE_TABLES.has(r.tbl))
+      // The table name comes from the catalogue, already quoted by regclass.
+      .map(
+        (r) =>
+          sql`(SELECT 1 FROM ${sql.raw(r.tbl)} WHERE ${sql.identifier(r.col)} = ${userId} LIMIT 1)`,
+      );
+    if (probes.length === 0) return true;
+    const found = await tx.execute(sql.join(probes, sql` UNION ALL `));
+    return found.rows.length === 0;
+  }
+
   /** Signs out everywhere, cancels a pending email change, mails a reset link. */
   private async secure(account: Account): Promise<boolean> {
-    await this.protect(account);
+    await this.protect(account.id);
     return this.auth.issuePasswordReset(account);
   }
 
   /** Signs out everywhere and cancels a pending email change. */
-  private async protect(account: Account): Promise<void> {
-    await this.security.revokeSessions(account.id);
+  private async protect(userId: string): Promise<void> {
+    await this.security.revokeSessions(userId);
     await this.db
       .update(users)
       .set({
@@ -243,7 +294,7 @@ export class SecurityActionsService {
         pendingEmailExpiresAt: null,
         pendingEmailAttempts: 0,
       })
-      .where(eq(users.id, account.id));
+      .where(eq(users.id, userId));
   }
 
   private async account(uid: string): Promise<Account | null> {

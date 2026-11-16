@@ -153,9 +153,16 @@ describe('EmailTokensService', () => {
         from: 'old@acme.com',
         to: 'new@acme.com',
       } as const;
-      expect(service.verifySecurity(service.securityToken(full))).toEqual(full);
+      const iat = expect.any(Number) as number;
+      expect(service.verifySecurity(service.securityToken(full))).toEqual({
+        ...full,
+        iat,
+      });
       const bare = { uid: UID, act: 'not_me' } as const;
-      expect(service.verifySecurity(service.securityToken(bare))).toEqual(bare);
+      expect(service.verifySecurity(service.securityToken(bare))).toEqual({
+        ...bare,
+        iat,
+      });
     });
 
     it('keeps iat and exp: it is never a header of queued mail', () => {

@@ -25,6 +25,8 @@ const MIGRATIONS = [
   '0071_users_pending_email.sql',
   '0073_users_email_changed_at.sql',
 ];
+/** The squatter cases also seed a known_devices row. */
+const SQUAT_MIGRATIONS = [...MIGRATIONS, '0072_known_devices.sql'];
 const CTX = { ip: null, userAgent: null };
 const rand = () => Math.random().toString(36).slice(2, 10);
 
@@ -75,8 +77,10 @@ function build(db: DbType) {
   );
   const minted: SecurityClaims[] = [];
   const tokens = {
+    // A real token carries its issue time; the revert compares a squatter's
+    // created_at with it.
     securityToken: (c: SecurityClaims) => {
-      minted.push(c);
+      minted.push({ ...c, iat: Math.floor(Date.now() / 1000) });
       return `tok${minted.length}`;
     },
     verifySecurity: (t: string) => minted[Number(t.slice(3)) - 1] ?? null,
@@ -257,12 +261,145 @@ describeDb('email change on a real database (0071, 0073)', () => {
 
       await changes.request(id, { newEmail: b });
       await changes.confirm(id, lastCode(), CTX);
-      await seedUser(client, a);
+      // Someone else's real (verified) account now signs in with `a`.
+      const other = await seedUser(client, a);
+      await client.query(
+        'UPDATE users SET is_email_verified = true WHERE id = $1',
+        [other],
+      );
 
       const done = await actions.perform('tok1');
 
       expect(done?.title).toBe("Your email wasn't switched back");
-      expect((await stateOf(client, id)).email).toBe(b);
+      const after = await stateOf(client, id);
+      expect(after.email).toBe(b);
+      // Every refusal still signs the account out everywhere.
+      expect(after.sessions_revoked_at).toBeInstanceOf(Date);
+    });
+  });
+});
+
+describeDb('revert against a squatter registration (0072, 0073)', () => {
+  const savedAllowlist = process.env.ALLOWLIST_EMAILS;
+  beforeEach(() => {
+    jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    delete process.env.ALLOWLIST_EMAILS;
+  });
+  afterAll(() => {
+    if (savedAllowlist !== undefined) {
+      process.env.ALLOWLIST_EMAILS = savedAllowlist;
+    }
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  /**
+   * a -> b on the victim's account, then someone registers `a`. now() is the
+   * harness transaction's start, so the squatter's created_at is set from
+   * clock_timestamp() (after the link) or a day back (before it).
+   */
+  async function squatted(
+    db: DbType,
+    client: PoolClient,
+    holder: { verified: boolean; createdAfterLink: boolean },
+  ) {
+    const a = `a-${rand()}@example.test`;
+    const b = `b-${rand()}@example.test`;
+    const id = await seedUser(client, a);
+    const built = build(db);
+    await built.changes.request(id, { newEmail: b });
+    await built.changes.confirm(id, built.lastCode(), CTX);
+    const created = holder.createdAfterLink
+      ? `clock_timestamp()::timestamp`
+      : `(clock_timestamp() - interval '1 day')::timestamp`;
+    const r = await client.query<{ id: string }>(
+      `INSERT INTO users (email, name, is_email_verified, created_at)
+       VALUES ($1, 'Squatter', $2, ${created}) RETURNING id`,
+      [a, holder.verified],
+    );
+    const squatter = r.rows[0].id;
+    // The device the registration signed in from: a trace, not data.
+    await client.query(
+      `INSERT INTO known_devices (user_id, device_hash, label) VALUES ($1, $2, 'Chrome on Windows')`,
+      [squatter, 'f'.repeat(64)],
+    );
+    return { ...built, id, a, b, squatter };
+  }
+
+  const exists = async (client: PoolClient, id: string) =>
+    (await client.query('SELECT 1 FROM users WHERE id = $1', [id])).rowCount ===
+    1;
+
+  it('an unverified account registered on the old address after the link is removed, and the revert goes through', async () => {
+    await withRollbackDb(SQUAT_MIGRATIONS, async (db, client) => {
+      const { actions, auth, id, a, squatter } = await squatted(db, client, {
+        verified: false,
+        createdAfterLink: true,
+      });
+
+      const done = await actions.perform('tok1');
+
+      expect(done?.title).toBe('Your account is secured');
+      expect(await exists(client, squatter)).toBe(false);
+      const after = await stateOf(client, id);
+      expect(after.email).toBe(a);
+      expect(after.sessions_revoked_at).toBeInstanceOf(Date);
+      expect(auth.issuePasswordReset).toHaveBeenCalledWith({ id, email: a });
+    });
+  });
+
+  it('a verified holder of the old address still refuses, and the victim account is signed out everywhere', async () => {
+    await withRollbackDb(SQUAT_MIGRATIONS, async (db, client) => {
+      const { actions, auth, id, b, squatter } = await squatted(db, client, {
+        verified: true,
+        createdAfterLink: true,
+      });
+
+      const done = await actions.perform('tok1');
+
+      expect(done?.title).toBe("Your email wasn't switched back");
+      expect(await exists(client, squatter)).toBe(true);
+      const after = await stateOf(client, id);
+      expect(after.email).toBe(b);
+      expect(after.sessions_revoked_at).toBeInstanceOf(Date);
+      expect(auth.issuePasswordReset).not.toHaveBeenCalled();
+    });
+  });
+
+  it('an unverified holder created before the link still refuses, and signs out', async () => {
+    await withRollbackDb(SQUAT_MIGRATIONS, async (db, client) => {
+      const { actions, id, b, squatter } = await squatted(db, client, {
+        verified: false,
+        createdAfterLink: false,
+      });
+
+      const done = await actions.perform('tok1');
+
+      expect(done?.title).toBe("Your email wasn't switched back");
+      expect(await exists(client, squatter)).toBe(true);
+      const after = await stateOf(client, id);
+      expect(after.email).toBe(b);
+      expect(after.sessions_revoked_at).toBeInstanceOf(Date);
+    });
+  });
+
+  it('an unverified squatter that owns data is never deleted: refused, signed out', async () => {
+    await withRollbackDb(SQUAT_MIGRATIONS, async (db, client) => {
+      const { actions, id, b, squatter } = await squatted(db, client, {
+        verified: false,
+        createdAfterLink: true,
+      });
+      await client.query(
+        `INSERT INTO workspace (name, slug, owner_id) VALUES ('w', $1, $2)`,
+        [`w-${rand()}`, squatter],
+      );
+
+      const done = await actions.perform('tok1');
+
+      expect(done?.title).toBe("Your email wasn't switched back");
+      expect(await exists(client, squatter)).toBe(true);
+      const after = await stateOf(client, id);
+      expect(after.email).toBe(b);
+      expect(after.sessions_revoked_at).toBeInstanceOf(Date);
     });
   });
 });

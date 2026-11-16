@@ -24,9 +24,21 @@ interface Row {
  */
 function fakeDb(
   row: Row | null,
-  opts: { taken?: boolean; uniqueViolation?: boolean } = {},
+  opts: {
+    taken?: boolean;
+    holder?: Holder;
+    holderHasData?: boolean;
+    uniqueViolation?: boolean;
+  } = {},
 ) {
+  // `taken` is someone's real account: verified, older than the link.
+  const holder: Holder | null =
+    opts.holder ??
+    (opts.taken
+      ? { id: 'someone-else', isEmailVerified: true, createdAfterLink: false }
+      : null);
   const writes: Record<string, unknown>[] = [];
+  const deleted: string[] = [];
   const select = jest.fn(() => {
     const b = {
       from: () => b,
@@ -37,7 +49,9 @@ function fakeDb(
             ? [{ email: row.email, pendingEmail: row.pendingEmail ?? null }]
             : [],
         ),
-      limit: () => Promise.resolve(opts.taken ? [{ id: 'someone-else' }] : []),
+      limit: () => ({
+        for: () => Promise.resolve(holder ? [holder] : []),
+      }),
     };
     return b;
   });
@@ -67,12 +81,32 @@ function fakeDb(
     },
     select,
     update,
+    delete: jest.fn(() => ({
+      where: () => {
+        deleted.push(holder?.id ?? '');
+        return Promise.resolve(undefined);
+      },
+    })),
+    // holdsNothing: the catalogue lists one referencing table, then the probe
+    // finds a row only when the holder has data.
+    execute: jest
+      .fn()
+      .mockResolvedValueOnce({ rows: [{ tbl: 'workspace', col: 'owner_id' }] })
+      .mockResolvedValueOnce({
+        rows: opts.holderHasData ? [{ '?column?': 1 }] : [],
+      }),
     transaction: jest.fn(),
   };
   db.transaction.mockImplementation((fn: (tx: typeof db) => Promise<unknown>) =>
     fn(db),
   );
-  return { db, writes, update };
+  return { db, writes, update, deleted };
+}
+
+interface Holder {
+  id: string;
+  isEmailVerified: boolean;
+  createdAfterLink: boolean;
 }
 
 function setup(
@@ -80,11 +114,13 @@ function setup(
   row: Row | null,
   opts: {
     taken?: boolean;
+    holder?: Holder;
+    holderHasData?: boolean;
     uniqueViolation?: boolean;
     resetSent?: boolean;
   } = {},
 ) {
-  const { db, writes, update } = fakeDb(row, opts);
+  const { db, writes, update, deleted } = fakeDb(row, opts);
   const tokens = { verifySecurity: jest.fn(() => claims) };
   const security = { revokeSessions: jest.fn().mockResolvedValue(undefined) };
   const auth = {
@@ -101,7 +137,7 @@ function setup(
     auth as unknown as AuthService,
     links,
   );
-  return { service, db, writes, update, security, auth, tokens };
+  return { service, db, writes, update, deleted, security, auth, tokens };
 }
 
 const NOT_ME: SecurityClaims = { uid: UID, act: 'not_me' };
@@ -288,18 +324,23 @@ describe('SecurityActionsService.perform (POST)', () => {
     expect(auth.issuePasswordReset).not.toHaveBeenCalled();
   });
 
-  it('refuses when another account has taken the old address since, and writes nothing', async () => {
-    const row = { id: UID, email: NEW };
-    const { service, writes, security } = setup(REVERT, row, { taken: true });
+  it('refuses when another real account holds the old address, but still signs out and cancels a pending change', async () => {
+    const row: Row = { id: UID, email: NEW, pendingEmail: 'x@evil.test' };
+    const { service, writes, security, auth, deleted } = setup(REVERT, row, {
+      taken: true,
+    });
 
     const done = await service.perform('tok');
 
     expect(done?.title).toBe("Your email wasn't switched back");
-    expect(writes).toEqual([]);
-    expect(security.revokeSessions).not.toHaveBeenCalled();
+    expect(writes.some((w) => 'email' in w)).toBe(false);
+    expect(row.pendingEmail).toBeNull();
+    expect(security.revokeSessions).toHaveBeenCalledWith(UID);
+    expect(auth.issuePasswordReset).not.toHaveBeenCalled();
+    expect(deleted).toEqual([]);
   });
 
-  it('a unique violation at the write (the old address registered meanwhile) refuses, not a 500', async () => {
+  it('a unique violation at the write (the old address registered meanwhile) refuses, not a 500, and signs out', async () => {
     const row = { id: UID, email: NEW };
     const { service, security } = setup(REVERT, row, { uniqueViolation: true });
 
@@ -307,8 +348,56 @@ describe('SecurityActionsService.perform (POST)', () => {
 
     expect(done?.title).toBe("Your email wasn't switched back");
     expect(row.email).toBe(NEW);
-    expect(security.revokeSessions).not.toHaveBeenCalled();
+    expect(security.revokeSessions).toHaveBeenCalledWith(UID);
   });
+
+  it('a squatter (unverified, registered after the link, holding nothing) is removed and the revert goes through', async () => {
+    const row = { id: UID, email: NEW };
+    const { service, security, auth, deleted } = setup(REVERT, row, {
+      holder: {
+        id: 'squatter',
+        isEmailVerified: false,
+        createdAfterLink: true,
+      },
+    });
+
+    const done = await service.perform('tok');
+
+    expect(deleted).toEqual(['squatter']);
+    expect(row.email).toBe(OLD);
+    expect(done?.title).toBe('Your account is secured');
+    expect(security.revokeSessions).toHaveBeenCalledWith(UID);
+    expect(auth.issuePasswordReset).toHaveBeenCalledWith({
+      id: UID,
+      email: OLD,
+    });
+  });
+
+  it.each([
+    ['verified', { isEmailVerified: true, createdAfterLink: true }, false],
+    [
+      'created before the link',
+      { isEmailVerified: false, createdAfterLink: false },
+      false,
+    ],
+    ['holding data', { isEmailVerified: false, createdAfterLink: true }, true],
+  ])(
+    'a holder that is %s blocks the revert: refused, signed out, never deleted',
+    async (_label, flags, holderHasData) => {
+      const row = { id: UID, email: NEW };
+      const { service, security, deleted } = setup(REVERT, row, {
+        holder: { id: 'holder', ...flags },
+        holderHasData,
+      });
+
+      const done = await service.perform('tok');
+
+      expect(done?.title).toBe("Your email wasn't switched back");
+      expect(row.email).toBe(NEW);
+      expect(deleted).toEqual([]);
+      expect(security.revokeSessions).toHaveBeenCalledWith(UID);
+    },
+  );
 
   it('a second POST of a used revert link says it is already done: no sign-out, no reset email, no write', async () => {
     const row = { id: UID, email: NEW };
