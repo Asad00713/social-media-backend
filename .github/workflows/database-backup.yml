@@ -1,0 +1,58 @@
+name: Database backup
+
+# Runs outside Railway on purpose. A backup that only runs inside the platform
+# it is protecting stops exactly when you need it most — a crash-looping
+# backend, an exhausted plan, a bad deploy. GitHub Actions keeps running
+# through all of those.
+on:
+  schedule:
+    # 02:30 UTC daily — after the 02:00/03:00 UTC crons the backend already
+    # runs, so the dump is not competing with them for the connection pool.
+    - cron: '30 2 * * *'
+  workflow_dispatch: # so a backup can always be taken by hand before anything risky
+
+concurrency:
+  # Never let two dumps of the same database overlap.
+  group: database-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # pg_dump refuses to dump from a server newer than itself, and Railway
+      # runs Postgres 18 — so install the 18 client explicitly rather than
+      # relying on whatever the runner image happens to ship.
+      - name: Install PostgreSQL 18 client
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+            https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-18
+          pg_dump --version
+
+      # Only the S3 client is needed; a full install pulls the whole backend.
+      - name: Install backup dependencies
+        run: npm install --no-save @aws-sdk/client-s3@^3.972.0
+
+      - name: Run backup
+        env:
+          DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_BUCKET: ${{ secrets.CLOUDFLARE_R2_BUCKET }}
+          BACKUP_RETENTION_DAYS: '30'
+        run: node scripts/backup-database.mjs
