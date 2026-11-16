@@ -56,6 +56,13 @@ export const DELAYED_LAG_MS = 10 * 60_000;
  *  only when half the channels are failing. */
 export const DELAYED_SYNC_SHARE = 0.5;
 
+/** Late platforms that, together, read as our own queue being behind:
+ *  three networks slowing down in the same half hour is not a coincidence. */
+export const QUEUE_BACKLOG_MIN_PLATFORMS = 3;
+
+/** ...and the share of platforms with a lag sample that must be late. */
+export const QUEUE_BACKLOG_SHARE = 0.5;
+
 /** Hysteresis: a platform already in a state keeps it until its numbers fall
  *  below this fraction of the bar that put it there, so a rate hovering at
  *  the bar does not flap between two states every two minutes. */
@@ -150,6 +157,11 @@ function median(values: number[]): number | null {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
+/** True when a platform already at (or above) `level` is measured again. */
+function holds(level: PlatformState, previous: PlatformState): boolean {
+  return stateRank(previous) >= stateRank(level);
+}
+
 /**
  * The bar a metric must reach for `level`. A platform already at (or above)
  * that level keeps it down to RECOVERY_FACTOR of the bar.
@@ -159,9 +171,55 @@ function bar(
   level: PlatformState,
   previous: PlatformState,
 ): number {
-  return stateRank(previous) >= stateRank(level)
-    ? entry * RECOVERY_FACTOR
-    : entry;
+  return holds(level, previous) ? entry * RECOVERY_FACTOR : entry;
+}
+
+/**
+ * Whether a sample is big and wide enough to call `level`. The same
+ * hold-until-clearly-better rule as the bars: a platform already at the
+ * level keeps it on RECOVERY_FACTOR of the minimum sample and one workspace
+ * fewer (never below two), so a count hovering at 3 workspaces does not
+ * flap the platform every two minutes.
+ */
+function enough(
+  sample: number,
+  workspaces: number,
+  minSample: number,
+  level: PlatformState,
+  previous: PlatformState,
+): boolean {
+  if (!holds(level, previous)) {
+    return sample >= minSample && workspaces >= MIN_DISTINCT_WORKSPACES;
+  }
+  return (
+    sample >= Math.ceil(minSample * RECOVERY_FACTOR) &&
+    workspaces >= Math.max(2, MIN_DISTINCT_WORKSPACES - 1)
+  );
+}
+
+export interface MeasureOptions {
+  /**
+   * Ignore the lag signal: most platforms are late together, which is our
+   * own publishing queue, not any one network (see measureAll).
+   */
+  ignoreLag?: boolean;
+}
+
+/** The lag numbers of one platform. */
+function lagOf(signals: PlatformSignals, previous: PlatformState) {
+  const lags = signals.lags.filter(
+    (l) => l.lagMs >= 0 && l.lagMs <= MAX_LAG_SAMPLE_MS,
+  );
+  const medianLag = median(lags.map((l) => l.lagMs));
+  const threshold = bar(DELAYED_LAG_MS, 'delayed', previous);
+  const workspaces = distinct(
+    lags.filter((l) => l.lagMs >= threshold).map((l) => l.workspaceId),
+  );
+  const late =
+    enough(lags.length, workspaces, MIN_LAG_SAMPLE, 'delayed', previous) &&
+    medianLag !== null &&
+    medianLag >= threshold;
+  return { lags, medianLag, workspaces, late };
 }
 
 /**
@@ -172,6 +230,7 @@ function bar(
 export function measurePlatform(
   signals: PlatformSignals,
   previous: PlatformState = 'operational',
+  options: MeasureOptions = {},
 ): Measurement {
   // Publish failures: only outcomes that say something about the network.
   const judged = signals.publishes
@@ -180,21 +239,16 @@ export function measurePlatform(
   const failed = judged.filter((o) => o.side === 'platform');
   const failureWorkspaces = distinct(failed.map((o) => o.ws));
   const failureRate = judged.length ? failed.length / judged.length : 0;
-  const publishJudgeable =
-    judged.length >= MIN_PUBLISH_SAMPLE &&
-    failureWorkspaces >= MIN_DISTINCT_WORKSPACES;
+  const publishEnough = (level: PlatformState) =>
+    enough(
+      judged.length,
+      failureWorkspaces,
+      MIN_PUBLISH_SAMPLE,
+      level,
+      previous,
+    );
 
-  // Lag of scheduled posts.
-  const lags = signals.lags.filter(
-    (l) => l.lagMs >= 0 && l.lagMs <= MAX_LAG_SAMPLE_MS,
-  );
-  const medianLag = median(lags.map((l) => l.lagMs));
-  const lagThreshold = bar(DELAYED_LAG_MS, 'delayed', previous);
-  const lagWorkspaces = distinct(
-    lags.filter((l) => l.lagMs >= lagThreshold).map((l) => l.workspaceId),
-  );
-  const lagJudgeable =
-    lags.length >= MIN_LAG_SAMPLE && lagWorkspaces >= MIN_DISTINCT_WORKSPACES;
+  const lag = lagOf(signals, previous);
 
   // Sync failures.
   const syncs = signals.syncs
@@ -203,42 +257,81 @@ export function measurePlatform(
   const syncFailed = syncs.filter((s) => s.side === 'platform');
   const syncWorkspaces = distinct(syncFailed.map((s) => s.ws));
   const syncShare = syncs.length ? syncFailed.length / syncs.length : 0;
-  const syncJudgeable =
-    syncs.length >= MIN_SYNC_SAMPLE &&
-    syncWorkspaces >= MIN_DISTINCT_WORKSPACES;
 
   const summary: PlatformSignalsSummary = {
     publishSample: judged.length,
     publishFailures: failed.length,
     publishFailureWorkspaces: failureWorkspaces,
-    lagSample: lags.length,
-    medianLagMs: medianLag,
-    lagWorkspaces,
+    lagSample: lag.lags.length,
+    medianLagMs: lag.medianLag,
+    lagWorkspaces: lag.workspaces,
     syncSample: syncs.length,
     syncFailures: syncFailed.length,
     syncFailureWorkspaces: syncWorkspaces,
   };
 
   if (
-    publishJudgeable &&
+    publishEnough('outage') &&
     failureRate >= bar(OUTAGE_FAILURE_RATE, 'outage', previous)
   ) {
     return { status: 'outage', reason: 'publish_failures', summary };
   }
   if (
-    publishJudgeable &&
+    publishEnough('delayed') &&
     failureRate >= bar(DELAYED_FAILURE_RATE, 'delayed', previous)
   ) {
     return { status: 'delayed', reason: 'publish_failures', summary };
   }
-  if (lagJudgeable && medianLag !== null && medianLag >= lagThreshold) {
+  if (lag.late && !options.ignoreLag) {
     return { status: 'delayed', reason: 'publish_lag', summary };
   }
   if (
-    syncJudgeable &&
+    enough(
+      syncs.length,
+      syncWorkspaces,
+      MIN_SYNC_SAMPLE,
+      'delayed',
+      previous,
+    ) &&
     syncShare >= bar(DELAYED_SYNC_SHARE, 'delayed', previous)
   ) {
     return { status: 'delayed', reason: 'sync_failures', summary };
   }
   return { status: 'operational', reason: null, summary };
+}
+
+/**
+ * Every platform at once. Lag is judged across platforms first: when at
+ * least QUEUE_BACKLOG_MIN_PLATFORMS platforms, and at least
+ * QUEUE_BACKLOG_SHARE of those with enough lag samples, are late together,
+ * the delay is our own publishing queue (one worker pool serves every
+ * network), so no platform is blamed for it.
+ */
+export function measureAll(
+  signals: Map<string, PlatformSignals>,
+  platforms: readonly string[],
+  previous: (platform: string) => PlatformState,
+): Map<string, Measurement> {
+  const empty: PlatformSignals = { publishes: [], lags: [], syncs: [] };
+  let judgeable = 0;
+  let late = 0;
+  for (const platform of platforms) {
+    const lag = lagOf(signals.get(platform) ?? empty, previous(platform));
+    if (lag.lags.length >= MIN_LAG_SAMPLE) judgeable += 1;
+    if (lag.late) late += 1;
+  }
+  const ignoreLag =
+    late >= QUEUE_BACKLOG_MIN_PLATFORMS &&
+    judgeable > 0 &&
+    late / judgeable >= QUEUE_BACKLOG_SHARE;
+  const out = new Map<string, Measurement>();
+  for (const platform of platforms) {
+    out.set(
+      platform,
+      measurePlatform(signals.get(platform) ?? empty, previous(platform), {
+        ignoreLag,
+      }),
+    );
+  }
+  return out;
 }

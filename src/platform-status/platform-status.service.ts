@@ -4,7 +4,7 @@ import type {
   PlatformIncidentRow,
   PlatformState,
 } from '../drizzle/schema/platform-status.schema';
-import { measurePlatform, type Measurement } from './lib/classify';
+import { measureAll, type Measurement } from './lib/classify';
 import {
   planStatus,
   type ActiveIncident,
@@ -56,19 +56,13 @@ export class PlatformStatusService {
   /** The two-minute job: measure, then reconcile with the incidents. */
   async recompute(now = new Date()): Promise<StatusChange[]> {
     const signals = await this.repo.loadSignals(STATUS_PLATFORMS, now);
-    return this.reconcile(now, (stored) => {
-      const measured = new Map<string, Measurement>();
-      for (const platform of STATUS_PLATFORMS) {
-        measured.set(
-          platform,
-          measurePlatform(
-            signals.get(platform) ?? { publishes: [], lags: [], syncs: [] },
-            stored.get(platform)?.measuredStatus ?? 'operational',
-          ),
-        );
-      }
-      return measured;
-    });
+    return this.reconcile(now, (stored) =>
+      measureAll(
+        signals,
+        STATUS_PLATFORMS,
+        (platform) => stored.get(platform)?.measuredStatus ?? 'operational',
+      ),
+    );
   }
 
   /**

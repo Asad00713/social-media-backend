@@ -2,6 +2,7 @@ import {
   DELAYED_LAG_MS,
   MIN_PUBLISH_SAMPLE,
   failureSide,
+  measureAll,
   measurePlatform,
   type LagSample,
   type PlatformSignals,
@@ -267,5 +268,91 @@ describe('measurePlatform: sync', () => {
     expect(measurePlatform(signals({ publishes, syncs })).status).toBe(
       'outage',
     );
+  });
+});
+
+describe('hysteresis on the sample and the workspaces', () => {
+  /** 10 platform-side failures + 10 successes, the failures from `n` workspaces. */
+  const halfFailing = (n: number): PlatformSignals =>
+    signals({
+      publishes: [
+        ...spread(10, n, (ws) => fail(ws)),
+        ...spread(10, 5, (ws) => ok(`ok-${ws}`)),
+      ],
+    });
+
+  it('needs 3 failing workspaces to enter a state', () => {
+    expect(measurePlatform(halfFailing(2), 'operational').status).toBe(
+      'operational',
+    );
+    expect(measurePlatform(halfFailing(3), 'operational').status).toBe(
+      'delayed',
+    );
+  });
+
+  it('keeps the state on 2 failing workspaces, drops it on 1', () => {
+    expect(measurePlatform(halfFailing(2), 'delayed').status).toBe('delayed');
+    expect(measurePlatform(halfFailing(1), 'delayed').status).toBe(
+      'operational',
+    );
+  });
+
+  it('keeps the state on half the minimum sample, not below', () => {
+    const small = (n: number) =>
+      signals({ publishes: spread(n, 3, (ws) => fail(ws)) });
+    expect(measurePlatform(small(5), 'operational').status).toBe('operational');
+    expect(measurePlatform(small(5), 'outage').status).toBe('outage');
+    expect(measurePlatform(small(4), 'outage').status).toBe('operational');
+  });
+});
+
+describe('measureAll: our own queue behind', () => {
+  const lateEverywhere = (minutes: number): PlatformSignals =>
+    signals({
+      lags: ['a', 'b', 'c', 'd', 'e'].map((ws) => ({
+        workspaceId: ws,
+        lagMs: minutes * 60_000,
+      })),
+    });
+  const operational = () => 'operational' as const;
+
+  it('does not blame any platform when most are late together', () => {
+    const platforms = ['instagram', 'facebook', 'tiktok', 'youtube'];
+    const all = new Map(platforms.map((p) => [p, lateEverywhere(20)]));
+    const out = measureAll(all, platforms, operational);
+    expect([...out.values()].map((m) => m.status)).toEqual([
+      'operational',
+      'operational',
+      'operational',
+      'operational',
+    ]);
+  });
+
+  it('still flags one platform that is late on its own', () => {
+    const platforms = ['instagram', 'facebook', 'tiktok', 'youtube'];
+    const map = new Map(
+      platforms.map((p) => [p, lateEverywhere(p === 'tiktok' ? 20 : 1)]),
+    );
+    const out = measureAll(map, platforms, operational);
+    expect(out.get('tiktok')).toMatchObject({
+      status: 'delayed',
+      reason: 'publish_lag',
+    });
+    expect(out.get('instagram')?.status).toBe('operational');
+  });
+
+  it('keeps failure-based states while the lag is ignored', () => {
+    const platforms = ['instagram', 'facebook', 'tiktok'];
+    const map = new Map(platforms.map((p) => [p, lateEverywhere(20)]));
+    map.set(
+      'tiktok',
+      signals({
+        ...lateEverywhere(20),
+        publishes: spread(10, 5, (ws) => fail(ws)),
+      }),
+    );
+    const out = measureAll(map, platforms, operational);
+    expect(out.get('tiktok')?.status).toBe('outage');
+    expect(out.get('instagram')?.status).toBe('operational');
   });
 });
