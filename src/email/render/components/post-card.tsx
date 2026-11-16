@@ -97,24 +97,30 @@ export function PostCard({
       <Row>
         <Column style={{ padding: '16px' }}>
           <Row>
+            {/* The icon and handle never part; a long time wraps instead. */}
             <Column
+              data-post-card-handle=""
               style={{
                 color: EMAIL_COLORS.heading,
                 fontSize: '14px',
                 lineHeight: '20px',
                 fontWeight: 600,
+                whiteSpace: 'nowrap',
+                verticalAlign: 'top',
               }}
             >
               <NetworkGlyph platform={platform} size={16} />
               <span style={{ verticalAlign: 'middle' }}>{handle}</span>
             </Column>
             <Column
+              data-post-card-when=""
               align="right"
               style={{
                 color: EMAIL_COLORS.muted,
                 fontSize: '13px',
                 lineHeight: '20px',
-                whiteSpace: 'nowrap',
+                paddingLeft: '12px',
+                verticalAlign: 'top',
               }}
             >
               {when}

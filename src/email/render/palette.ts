@@ -15,9 +15,9 @@ export const EMAIL_COLORS = {
   onPrimary: '#FFFFFF',
   link: '#2563EB',
   infoBg: '#F3F4F6',
-  warnBg: '#FEF3C7',
+  warnBg: '#FEF3E2',
   warnText: '#B45309',
-  dangerBg: '#FEE2E2',
+  dangerBg: '#FDECEC',
   dangerText: '#B91C1C',
   codeBg: '#F9FAFB',
 } as const;

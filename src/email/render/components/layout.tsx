@@ -25,11 +25,15 @@ interface EmailLayoutProps {
 /** The column width. Fixed, because Outlook for Windows ignores `max-width`. */
 const SHELL_WIDTH = 600;
 
+/** The card's inner padding at 600 (Figma A1, C1: 40). */
+const CARD_PADDING = 40;
+
 /**
  * Below the column width the shell follows the screen. At 375 the card goes
- * almost edge to edge and the button fills the width (Figma A1·m, C1·m,
- * C3·m). Clients that drop `<style>` keep the desktop look. Padding sits on
- * cells, never on tables: Outlook for Windows ignores table padding.
+ * almost edge to edge with 20 px inside it, and the button fills the width
+ * (measured on Figma A1·m, C1·m, C3·m). Clients that drop `<style>` keep the
+ * desktop look. Padding sits on cells, never on tables: Outlook for Windows
+ * ignores table padding.
  */
 const RESPONSIVE_CSS = `
 @media only screen and (max-width: ${SHELL_WIDTH + 40}px) {
@@ -81,7 +85,10 @@ export function EmailLayout({ preheader, footer, children }: EmailLayoutProps) {
                   }}
                 >
                   <Row>
-                    <Column className="email-card" style={{ padding: '32px' }}>
+                    <Column
+                      className="email-card"
+                      style={{ padding: `${CARD_PADDING}px` }}
+                    >
                       <Img
                         src={logoUrl}
                         width="120"

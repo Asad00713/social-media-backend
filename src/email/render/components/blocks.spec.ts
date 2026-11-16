@@ -60,6 +60,22 @@ describe('email blocks', () => {
     expect(unknown).not.toContain('network-myspace');
   });
 
+  it('PostCard keeps the icon and handle on one line and lets a long time wrap', async () => {
+    const html = await renderBlock(
+      createElement(PostCard, {
+        platform: 'instagram',
+        handle: '@lumierecafe',
+        when: 'Oct 26, 2026 at 6:30 PM GMT+5',
+        caption: 'x',
+      }),
+    );
+    const handle = html.match(/<td\b[^>]*data-post-card-handle[^>]*>/)?.[0];
+    const when = html.match(/<td\b[^>]*data-post-card-when[^>]*>/)?.[0];
+    expect(handle).toMatch(/white-space:nowrap/);
+    expect(when).toBeDefined();
+    expect(when).not.toMatch(/white-space:nowrap/);
+  });
+
   it('PostCard shows the thumbnail only when there is one', async () => {
     const withThumb = await renderBlock(
       createElement(PostCard, {
@@ -96,6 +112,17 @@ describe('email blocks', () => {
     );
     expect(html).toContain(`${ASSETS}/icon-warning.png`);
     expect(html).toContain('Heads up');
+  });
+
+  it('Callout tints warning #FEF3E2 and danger #FDECEC, as in Figma', async () => {
+    const warning = await renderBlock(
+      createElement(Callout, { tone: 'warning', children: 'W' }),
+    );
+    const danger = await renderBlock(
+      createElement(Callout, { tone: 'danger', children: 'D' }),
+    );
+    expect(warning).toMatch(/background-color:#FEF3E2/i);
+    expect(danger).toMatch(/background-color:#FDECEC/i);
   });
 
   it('EmailButton secondary has a border and no primary background', async () => {

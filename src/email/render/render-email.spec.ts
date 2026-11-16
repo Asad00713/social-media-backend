@@ -175,6 +175,13 @@ describe('renderEmail layout for Outlook', () => {
     expect(padded).toEqual([]);
   });
 
+  it('pads the card 40 px at 600 and 20 px on a phone (Figma A1, A1·m)', async () => {
+    const { html } = await renderEmail(allBlocks, {}, ctx);
+    const cell = html.match(/<td\b[^>]*class="email-card"[^>]*>/)?.[0];
+    expect(cell).toMatch(/style="[^"]*padding:40px/);
+    expect(html).toContain('.email-card { padding: 20px !important; }');
+  });
+
   it('gives the shell a fixed 600 px width', async () => {
     const { html } = await renderEmail(allBlocks, {}, ctx);
     const shell = html.match(/<table\b[^>]*class="email-shell"[^>]*>/)?.[0];
