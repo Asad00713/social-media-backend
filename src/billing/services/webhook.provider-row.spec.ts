@@ -425,7 +425,13 @@ const lookup = {
 };
 
 function makeService(): WebhookService {
-  return new WebhookService({} as never, {} as never, lookup as never);
+  // Payment alerts are not under test here (webhook.payment-alerts.spec.ts).
+  return new WebhookService(
+    {} as never,
+    {} as never,
+    lookup as never,
+    { paymentFailed: jest.fn(), paymentSucceeded: jest.fn() } as never,
+  );
 }
 
 /** Reach the private handler under test without going through the dispatcher. */
