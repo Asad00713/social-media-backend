@@ -29,8 +29,16 @@ export class ChatbotRateLimitGuard implements CanActivate, OnModuleDestroy {
     });
   }
 
+  /**
+   * A connection that is not ready is dropped: QUIT would sit in ioredis's
+   * offline queue and hold the shutdown up. A failed QUIT drops it too.
+   */
   async onModuleDestroy() {
-    await this.redis.quit();
+    if (this.redis.status !== 'ready') {
+      this.redis.disconnect();
+      return;
+    }
+    await this.redis.quit().catch(() => this.redis.disconnect());
   }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {

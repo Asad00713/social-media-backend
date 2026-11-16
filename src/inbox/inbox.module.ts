@@ -52,6 +52,7 @@ import { QUEUES } from '../queue/queue.module';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { EmailModule } from '../email/email.module';
+import { NotificationPreferencesModule } from '../notification-preferences/notification-preferences.module';
 import {
   CONVERSATION_API_CONTROLLERS,
   CONVERSATION_API_EXPORTS,
@@ -72,6 +73,8 @@ import {
     // global but imports ChannelsModule, which forwardRefs back here.
     forwardRef(() => NotificationsModule),
     EmailModule,
+    // The email preference is read before the throttle claim.
+    NotificationPreferencesModule,
     forwardRef(() => ChannelsModule),
     MediaModule,
     // Circular by design: scheduled messages push to calendars

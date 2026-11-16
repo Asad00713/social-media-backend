@@ -1,7 +1,16 @@
 import { Logger } from '@nestjs/common';
 import { AnalyticsEventsGateway } from './analytics-events.gateway';
 
-jest.mock('../drizzle/db', () => ({ db: {} }));
+// The session check at connect finds a user whose sessions were never revoked.
+jest.mock('../drizzle/db', () => ({
+  db: {
+    query: {
+      users: {
+        findFirst: () => Promise.resolve({ sessionsRevokedAt: null }),
+      },
+    },
+  },
+}));
 
 type ConnSocket = Parameters<AnalyticsEventsGateway['handleConnection']>[0];
 

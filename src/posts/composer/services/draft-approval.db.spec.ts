@@ -14,6 +14,7 @@ import {
 } from '../../../planner/testing/rollback-db';
 import { seedMember, seedWorkspace } from '../../../inbox/testing/inbox-db';
 import { posts, postHistory } from '../../../drizzle/schema/posts.schema';
+import { RecipientsService } from '../../../notifications/recipients.service';
 import { DraftApprovalService } from './draft-approval.service';
 import { DraftStoreService } from './draft-store.service';
 import { ComposerSchedulingService } from './composer-scheduling.service';
@@ -32,7 +33,36 @@ function harness(db: DbType) {
       id: opts.jobId,
     })),
   };
-  const approvals = new DraftApprovalService(db, notifications as any);
+  // The real recipients lookup; NotifyService is a double that only runs the
+  // bell, so the email path stays out of these approval-rule tests.
+  const notify = {
+    notify: jest.fn(async (input: any) => {
+      await input.bell?.();
+    }),
+  };
+  const links = { planner: () => 'https://app.test/planner' };
+  const approvals = new DraftApprovalService(
+    db,
+    notifications as any,
+    notify as any,
+    new RecipientsService(db),
+    links as any,
+  );
+  // The service fires its notifications without awaiting them. Hold on to
+  // each one as it starts so a test can wait for exactly those to finish. Plain
+  // assignment, not jest.spyOn, so jest.restoreAllMocks() leaves it in place.
+  const inflight: Promise<unknown>[] = [];
+  for (const name of ['notifyApprovers', 'notifyRequester']) {
+    const original = (approvals as any)[name].bind(approvals);
+    (approvals as any)[name] = (...args: unknown[]) => {
+      const done = original(...args);
+      inflight.push(done);
+      return done;
+    };
+  }
+  const settle = async () => {
+    await Promise.all(inflight.splice(0));
+  };
   const store = new DraftStoreService(db);
   const scheduling = new ComposerSchedulingService(
     db,
@@ -50,7 +80,15 @@ function harness(db: DbType) {
     db,
     { send: jest.fn() } as any, // PostReminderService
   );
-  return { notifications, queue, approvals, store, scheduling, orchestrator };
+  return {
+    notifications,
+    queue,
+    approvals,
+    store,
+    scheduling,
+    orchestrator,
+    settle,
+  };
 }
 
 const draftBody = (draftId: string, text = 'Iced latte is back') => ({
@@ -122,6 +160,7 @@ describeDb('Draft approvals (database)', () => {
         'MEMBER',
         true,
       );
+      await h.settle();
       expect(asked).toMatchObject({
         required: true,
         state: 'pending',
@@ -135,6 +174,7 @@ describeDb('Draft approvals (database)', () => {
 
       // A second "on" is a no-op: nobody is told twice.
       await h.approvals.setRequired(ws, id, member, 'MEMBER', true);
+      await h.settle();
       expect(h.notifications.approvalRequested).toHaveBeenCalledTimes(2);
 
       // The person waiting cannot simply switch it off.
@@ -163,6 +203,7 @@ describeDb('Draft approvals (database)', () => {
       const forAdmin = await h.approvals.get(ws, id, admin, 'ADMIN');
       expect(forAdmin.canApprove).toBe(true);
       const approved = await h.approvals.approve(ws, id, admin, 'ADMIN');
+      await h.settle();
       expect(approved).toMatchObject({
         state: 'approved',
         approvedBy: { id: admin, name: 'Sara' },
@@ -198,6 +239,7 @@ describeDb('Draft approvals (database)', () => {
       // Approved again, the exact content schedules, and the approval rides
       // along on the scheduled row.
       await h.approvals.approve(ws, id, admin, 'ADMIN');
+      await h.settle();
       const result = await h.scheduling.schedule(
         ws,
         member,
@@ -241,6 +283,7 @@ describeDb('Draft approvals (database)', () => {
       const id = randomUUID();
       await h.store.upsert(ws, admin, draftBody(id) as any, 'ADMIN');
       await h.approvals.setRequired(ws, id, admin, 'ADMIN', true);
+      await h.settle();
       // The requester is not told about their own request.
       expect(
         h.notifications.approvalRequested.mock.calls.map((c: any[]) => c[0]),
@@ -278,6 +321,7 @@ describeDb('Draft approvals (database)', () => {
       const id = randomUUID();
       await h.store.upsert(ws, member, draftBody(id) as any, 'MEMBER');
       await h.approvals.setRequired(ws, id, member, 'MEMBER', true);
+      await h.settle();
 
       // The draft is saved again between the approver's read and the write.
       const real = (h.approvals as any).findRow.bind(h.approvals);
@@ -310,6 +354,7 @@ describeDb('Draft approvals (database)', () => {
         [id],
       );
       const ok = await h.approvals.approve(ws, id, ownerId, 'OWNER');
+      await h.settle();
       expect(ok.state).toBe('approved');
     });
   });

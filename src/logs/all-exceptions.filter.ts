@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { LogWriterService } from './log-writer.service';
+import { redactTokenUrls } from './redact-token-urls';
 import { redactSensitivePath } from './redact-path';
 import { currentRequestId } from './request-context';
 
@@ -16,7 +17,8 @@ import { currentRequestId } from './request-context';
  * (the request's X-Request-Id, see request-context.ts) — and additionally
  * persists a row carrying the same id. 5xx are 'error'; 4xx are 'warn' (a validation 400 is worth seeing, not
  * worth alerting on). The DB write is fire-and-forget and can never change or
- * block the response.
+ * block the response. Token-bearing URLs (email and report links) are stored
+ * with the token replaced by [token].
  */
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
@@ -54,11 +56,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
       ).user;
       this.writer.write({
         level: status >= 500 ? 'error' : 'warn',
-        message,
+        message: redactTokenUrls(message),
         context: 'HTTP',
-        stack: stack ?? null,
+        stack: stack ? redactTokenUrls(stack) : null,
         // Some routes carry a bearer token in the path; never persist it.
-        path: request?.url ? redactSensitivePath(request.url) : null,
+        path: request?.url
+          ? redactTokenUrls(redactSensitivePath(request.url))
+          : null,
         method: request?.method ?? null,
         statusCode: status,
         userId: user?.userId ?? null,

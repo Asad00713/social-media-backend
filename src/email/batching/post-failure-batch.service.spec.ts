@@ -1,0 +1,810 @@
+import type { ConfigService } from '@nestjs/config';
+import type { Queue } from 'bullmq';
+import { NOTIFICATION_EVENTS } from '../../notification-preferences/notification-events';
+import type { PreferenceEventKey } from '../../notification-preferences/notification-events';
+import type { NotificationPreferencesService } from '../../notification-preferences/notification-preferences.service';
+import type { RecipientsService } from '../../notifications/recipients.service';
+import type { DbType } from '../../drizzle/db';
+import { AppLinks } from '../links/app-links';
+import type { EmailJobData } from '../queue/email-job';
+import type { EmailOutboxService } from '../queue/email-outbox.service';
+import { IDEMPOTENCY_KEY_RE } from '../queue/email-job';
+import { renderEmail } from '../render/render-email';
+import { getTemplate } from '../templates/registry';
+import type { PostFailedProps } from '../templates/publishing/post-failed';
+import type { PostsFailedProps } from '../templates/publishing/posts-failed';
+import type { RenderContext } from '../templates/types';
+import {
+  CLOSE_WINDOW_SCRIPT,
+  POST_FAILED_FLUSH_JOB,
+  POST_FAILURE_WINDOW_MS,
+  PostFailureBatchService,
+  type FailureEntry,
+  flushJobId,
+  type PostFailedFlushData,
+  type PostFailureRedis,
+} from './post-failure-batch.service';
+
+const U = '11111111-1111-4111-8111-111111111111';
+const WS = '22222222-2222-4222-8222-222222222222';
+const T0 = new Date('2026-11-14T13:00:00.000Z');
+
+/**
+ * In-memory Redis with the list, NX, TTL and RENAME semantics the batch
+ * relies on. Real RENAME carries the source's TTL; the close script then
+ * EXPIREs the batch, so the fake skips the carry and sets the script's TTL.
+ */
+class FakeRedis implements PostFailureRedis {
+  readonly lists = new Map<string, string[]>();
+  readonly strings = new Map<string, string>();
+  /** Seconds each key was last given to live. */
+  readonly ttls = new Map<string, number>();
+  /**
+   * Runs once, when the next close script is called and before it runs, so a
+   * spec can interleave another flush between a flush's start and its close.
+   */
+  beforeClose: (() => Promise<void>) | null = null;
+  /** Runs right after a window closes, so a spec can interleave a record(). */
+  afterClose: (() => Promise<void>) | null = null;
+
+  private has(key: string): boolean {
+    return this.lists.has(key) || this.strings.has(key);
+  }
+
+  rpush(key: string, value: string): Promise<number> {
+    const list = this.lists.get(key) ?? [];
+    list.push(value);
+    this.lists.set(key, list);
+    return Promise.resolve(list.length);
+  }
+
+  expire(key: string, seconds: number): Promise<number> {
+    if (!this.has(key)) return Promise.resolve(0);
+    this.ttls.set(key, seconds);
+    return Promise.resolve(1);
+  }
+
+  set(key: string, value: string, ...opts: unknown[]): Promise<'OK' | null> {
+    if (opts.includes('NX') && this.strings.has(key)) {
+      return Promise.resolve(null);
+    }
+    this.strings.set(key, value);
+    const ex = opts.indexOf('EX');
+    if (ex >= 0) this.ttls.set(key, Number(opts[ex + 1]));
+    return Promise.resolve('OK');
+  }
+
+  del(key: string): Promise<number> {
+    const had = this.lists.delete(key) || this.strings.delete(key);
+    this.ttls.delete(key);
+    return Promise.resolve(had ? 1 : 0);
+  }
+
+  /** CLOSE_WINDOW_SCRIPT, run as one step the way Redis runs a script. */
+  async eval(
+    script: string,
+    numKeys: number,
+    ...args: string[]
+  ): Promise<unknown> {
+    if (script !== CLOSE_WINDOW_SCRIPT || numKeys !== 4) {
+      throw new Error('unexpected script');
+    }
+    const before = this.beforeClose;
+    if (before) {
+      this.beforeClose = null;
+      await before();
+    }
+    const [open, list, batch, done, windowId, batchTtl, doneTtl] = args;
+    let result: number;
+    if (this.has(done)) {
+      result = -2;
+    } else if (this.has(batch)) {
+      result = 2;
+    } else {
+      const current = this.strings.get(open);
+      if (current !== undefined && current !== windowId) {
+        result = -1;
+      } else {
+        this.strings.delete(open);
+        this.ttls.delete(open);
+        const items = this.lists.get(list);
+        if (items) {
+          this.lists.delete(list);
+          this.lists.set(batch, items);
+          this.ttls.delete(list);
+          this.ttls.set(batch, Number(batchTtl));
+          result = 1;
+        } else {
+          result = 0;
+        }
+      }
+      if (result !== 1) {
+        this.strings.set(done, '1');
+        this.ttls.set(done, Number(doneTtl));
+      }
+    }
+    const hook = this.afterClose;
+    if (hook) {
+      this.afterClose = null;
+      await hook();
+    }
+    return result;
+  }
+
+  lrange(key: string): Promise<string[]> {
+    return Promise.resolve([...(this.lists.get(key) ?? [])]);
+  }
+}
+
+function entry(over: Partial<FailureEntry> = {}): FailureEntry {
+  return {
+    postId: 'post-1',
+    platform: 'instagram',
+    handle: '@lumierecafe',
+    caption: 'Iced caramel latte, one more week.',
+    thumbnailUrl: 'https://cdn.test/t.jpg',
+    scheduledFor: '2026-11-14T13:30:00.000Z',
+    reason: 'Video is longer than 90 seconds',
+    otherPublished: [],
+    ...over,
+  };
+}
+
+function make() {
+  const redis = new FakeRedis();
+  const queue = {
+    add: jest.fn<Promise<unknown>, unknown[]>(() => Promise.resolve({})),
+  };
+  const prefs = { shouldSend: jest.fn(() => Promise.resolve(true)) };
+  const outbox = {
+    process: jest.fn<
+      Promise<'sent' | 'skipped:pref' | 'skipped:suppressed'>,
+      [EmailJobData, number?]
+    >(() => Promise.resolve('sent')),
+  };
+  const recipients = {
+    user: jest.fn((id: string) =>
+      Promise.resolve({ id, email: 'sana@acme.test', name: 'Sana' }),
+    ),
+    workspace: jest.fn((id: string) =>
+      Promise.resolve({ id, name: 'Rehman Workspace', timezone: 'UTC' }),
+    ),
+  };
+  let onTime = 9;
+  const where = jest.fn(() => Promise.resolve([{ count: onTime }]));
+  const db = { select: jest.fn(() => ({ from: () => ({ where }) })) };
+  const links = new AppLinks({
+    get: () => undefined,
+  } as unknown as ConfigService);
+  const svc = new PostFailureBatchService(
+    redis,
+    queue as unknown as Queue,
+    prefs as unknown as NotificationPreferencesService,
+    outbox as unknown as EmailOutboxService,
+    recipients as unknown as RecipientsService,
+    links,
+    db as unknown as DbType,
+  );
+  return {
+    svc,
+    redis,
+    queue,
+    prefs,
+    outbox,
+    recipients,
+    db,
+    setOnTime: (n: number) => (onTime = n),
+  };
+}
+
+/** The windowId of the n-th scheduled flush. */
+function windowOf(
+  queue: { add: jest.Mock<Promise<unknown>, unknown[]> },
+  n = 0,
+): string {
+  return (queue.add.mock.calls[n][1] as PostFailedFlushData).windowId;
+}
+
+function sentProps<P>(
+  outbox: { process: jest.Mock<Promise<string>, [EmailJobData, number?]> },
+  n = 0,
+): P {
+  return outbox.process.mock.calls[n][0].props as P;
+}
+
+const CTX: RenderContext = {
+  assetBaseUrl: 'https://app.test/email',
+  footer: { reason: 'Why line', links: [] },
+};
+
+beforeEach(() => {
+  // Only the clock is fake: React Email's render needs real timers.
+  jest.useFakeTimers({
+    now: T0,
+    doNotFake: [
+      'nextTick',
+      'queueMicrotask',
+      'setImmediate',
+      'clearImmediate',
+      'setTimeout',
+      'clearTimeout',
+      'setInterval',
+      'clearInterval',
+    ],
+  });
+});
+
+afterEach(() => {
+  jest.useRealTimers();
+});
+
+describe('PostFailureBatchService.record', () => {
+  it('first failure opens a window and schedules one delayed flush with a colon-free jobId', async () => {
+    const { svc, queue, redis } = make();
+    await svc.record(U, WS, entry());
+
+    expect(queue.add).toHaveBeenCalledTimes(1);
+    expect(queue.add).toHaveBeenCalledWith(
+      'post-failed-flush',
+      expect.anything(),
+      expect.objectContaining({
+        delay: 600000,
+        jobId: expect.not.stringContaining(':') as unknown,
+      }),
+    );
+    const [name, data, opts] = queue.add.mock.calls[0] as unknown as [
+      string,
+      unknown,
+      Record<string, unknown>,
+    ];
+    expect(name).toBe(POST_FAILED_FLUSH_JOB);
+    expect(data).toEqual({
+      userId: U,
+      workspaceId: WS,
+      windowId: String(T0.getTime()),
+    });
+    expect(opts).toEqual({
+      jobId: `post-failed.${U}.${WS}.${T0.getTime()}`,
+      delay: POST_FAILURE_WINDOW_MS,
+      attempts: 5,
+      backoff: { type: 'exponential', delay: 2000 },
+    });
+    expect(IDEMPOTENCY_KEY_RE.test(opts.jobId as string)).toBe(true);
+    expect(redis.lists.get(`email:pf:${U}:${WS}`)).toHaveLength(1);
+  });
+
+  it('a second failure in the window schedules nothing new', async () => {
+    const { svc, queue, redis } = make();
+    await svc.record(U, WS, entry({ postId: 'a' }));
+    jest.setSystemTime(T0.getTime() + 60_000);
+    await svc.record(U, WS, entry({ postId: 'b' }));
+
+    expect(queue.add).toHaveBeenCalledTimes(1);
+    expect(redis.lists.get(`email:pf:${U}:${WS}`)).toHaveLength(2);
+  });
+
+  it('a failed schedule releases the window, so the next failure tries again', async () => {
+    const { svc, queue, redis } = make();
+    queue.add.mockRejectedValueOnce(new Error('redis down'));
+    await expect(svc.record(U, WS, entry())).rejects.toThrow('redis down');
+    expect(redis.strings.has(`email:pf-open:${U}:${WS}`)).toBe(false);
+
+    await svc.record(U, WS, entry({ postId: 'b' }));
+    expect(queue.add).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('PostFailureBatchService.flush', () => {
+  it('flush with one entry sends post-failed; three entries send posts-failed', async () => {
+    const { svc, queue, outbox } = make();
+    await svc.record(U, WS, entry({ otherPublished: ['Facebook'] }));
+    await expect(svc.flush(U, WS, windowOf(queue))).resolves.toBe('sent');
+
+    const one = outbox.process.mock.calls[0][0];
+    expect(one).toMatchObject({
+      template: 'post-failed',
+      to: { email: 'sana@acme.test', userId: U },
+      workspaceId: WS,
+      idempotencyKey: `post-failed.${U}.${WS}.${T0.getTime()}`,
+    });
+    expect(sentProps<PostFailedProps>(outbox)).toEqual({
+      platform: 'instagram',
+      platformName: 'Instagram',
+      handle: '@lumierecafe',
+      when: 'Nov 14, 2026 at 1:30 PM UTC',
+      caption: 'Iced caramel latte, one more week.',
+      thumbnailUrl: 'https://cdn.test/t.jpg',
+      reason: 'Video is longer than 90 seconds',
+      otherPublished: ['Facebook'],
+      editUrl: `http://localhost:3001/w/${WS}/planner?post=post-1`,
+    });
+
+    jest.setSystemTime(T0.getTime() + POST_FAILURE_WINDOW_MS + 1000);
+    await svc.record(U, WS, entry({ postId: 'a' }));
+    await svc.record(U, WS, entry({ postId: 'b', platform: 'tiktok' }));
+    await svc.record(U, WS, entry({ postId: 'c', platform: 'linkedin' }));
+    await expect(svc.flush(U, WS, windowOf(queue, 1))).resolves.toBe('sent');
+
+    const many = outbox.process.mock.calls[1][0];
+    expect(many.template).toBe('posts-failed');
+    expect(many.idempotencyKey).toBe(
+      `post-failed.${U}.${WS}.${T0.getTime() + POST_FAILURE_WINDOW_MS + 1000}`,
+    );
+    const props = sentProps<PostsFailedProps>(outbox, 1);
+    expect(props).toMatchObject({
+      count: 3,
+      more: 0,
+      otherOnTime: 9,
+      plannerUrl: `http://localhost:3001/w/${WS}/planner`,
+    });
+    expect(props.rows.map((r) => r.platform)).toEqual([
+      'instagram',
+      'tiktok',
+      'linkedin',
+    ]);
+    expect(props.rows[0]).toEqual({
+      platform: 'instagram',
+      handle: '@lumierecafe',
+      when: 'Nov 14, 2026 at 1:30 PM UTC',
+      title: 'Iced caramel latte, one more week.',
+      reason: 'Video is longer than 90 seconds',
+      thumbnailUrl: 'https://cdn.test/t.jpg',
+    });
+
+    const r = await renderEmail(getTemplate('posts-failed'), props, CTX);
+    expect(r.subject).toBe('3 posts didn’t publish today');
+    expect(r.preheader).toBe(
+      'Instagram, TikTok and LinkedIn each turned one down.',
+    );
+    expect(r.text).toContain(
+      'Each one needs a quick fix. Your other 9 posts went out on time.',
+    );
+  });
+
+  it('formats times in the workspace time zone', async () => {
+    const { svc, queue, outbox, recipients } = make();
+    recipients.workspace.mockResolvedValueOnce({
+      id: WS,
+      name: 'Rehman Workspace',
+      timezone: 'Asia/Karachi',
+    });
+    await svc.record(U, WS, entry());
+    await svc.flush(U, WS, windowOf(queue));
+    expect(sentProps<PostFailedProps>(outbox).when).toBe(
+      'Nov 14, 2026 at 6:30 PM GMT+5',
+    );
+  });
+
+  it('flush dedupes the same post', async () => {
+    const { svc, queue, outbox } = make();
+    await svc.record(U, WS, entry({ reason: 'first try' }));
+    await svc.record(U, WS, entry({ reason: 'second try' }));
+    await svc.flush(U, WS, windowOf(queue));
+
+    expect(outbox.process).toHaveBeenCalledTimes(1);
+    expect(outbox.process.mock.calls[0][0].template).toBe('post-failed');
+    expect(sentProps<PostFailedProps>(outbox).reason).toBe('second try');
+  });
+
+  it('keeps one post that failed on two networks as two rows, counted as 1 post', async () => {
+    const { svc, queue, outbox } = make();
+    await svc.record(U, WS, entry({ platform: 'instagram' }));
+    await svc.record(U, WS, entry({ platform: 'tiktok' }));
+    await svc.flush(U, WS, windowOf(queue));
+
+    expect(outbox.process.mock.calls[0][0].template).toBe('posts-failed');
+    const props = sentProps<PostsFailedProps>(outbox);
+    expect(props.count).toBe(1);
+    expect(props.rows.map((r) => r.platform)).toEqual(['instagram', 'tiktok']);
+    const r = await renderEmail(getTemplate('posts-failed'), props, CTX);
+    expect(r.subject).toBe('1 post didn’t publish today');
+    expect(r.text).toContain('1 post didn’t publish today');
+    expect(r.text).toContain(
+      'It needs a quick fix. Your other 9 posts went out on time.',
+    );
+    expect(r.text).not.toContain('Each one');
+    expect(r.preheader).toBe('Instagram and TikTok each turned one down.');
+  });
+
+  it('C1a counts distinct posts and names every network, hidden rows included', async () => {
+    const { svc, queue, outbox } = make();
+    for (let i = 0; i < 10; i += 1) {
+      await svc.record(U, WS, entry({ postId: `p${i}` }));
+    }
+    // Rows 11 and 12 are hidden behind "and 2 more".
+    await svc.record(U, WS, entry({ postId: 'p10', platform: 'tiktok' }));
+    await svc.record(U, WS, entry({ postId: 'p0', platform: 'linkedin' }));
+    await svc.flush(U, WS, windowOf(queue));
+
+    const props = sentProps<PostsFailedProps>(outbox);
+    expect(props.rows).toHaveLength(10);
+    expect(props.more).toBe(2);
+    expect(props.count).toBe(11);
+    expect(props.platforms).toEqual(['instagram', 'tiktok', 'linkedin']);
+    const r = await renderEmail(getTemplate('posts-failed'), props, CTX);
+    expect(r.subject).toBe('11 posts didn’t publish today');
+    expect(r.preheader).toBe(
+      'Instagram, TikTok and LinkedIn turned them down.',
+    );
+    expect(r.text).toContain('and 2 more');
+  });
+
+  it('a failure recorded during flush lands in a new window', async () => {
+    const { svc, queue, outbox, redis } = make();
+    await svc.record(U, WS, entry({ postId: 'a' }));
+    const first = windowOf(queue);
+    jest.setSystemTime(T0.getTime() + POST_FAILURE_WINDOW_MS);
+
+    // Right after the window closes: it opens a new window at once.
+    redis.afterClose = async () => {
+      await svc.record(U, WS, entry({ postId: 'b' }));
+    };
+    await svc.flush(U, WS, first);
+    expect(queue.add).toHaveBeenCalledTimes(2);
+    const second = windowOf(queue, 1);
+    expect(second).not.toBe(first);
+    expect(sentProps<PostFailedProps>(outbox).editUrl).toContain('post=a');
+
+    // Later in the new window: it joins the same list.
+    await svc.record(U, WS, entry({ postId: 'c' }));
+    expect(queue.add).toHaveBeenCalledTimes(2);
+    await svc.flush(U, WS, second);
+
+    const delivered = outbox.process.mock.calls.flatMap(([data]) => {
+      const p = data.props as Partial<PostFailedProps & PostsFailedProps>;
+      return p.rows ? p.rows.map((r) => r.title) : [p.caption];
+    });
+    // Every failure reaches the person exactly once.
+    expect(delivered).toHaveLength(3);
+    const keys = outbox.process.mock.calls.map(([d]) => d.idempotencyKey);
+    expect(new Set(keys).size).toBe(2);
+  });
+
+  it('flush skips a recipient removed from the workspace (shouldSend false)', async () => {
+    const { svc, queue, outbox, prefs, redis } = make();
+    await svc.record(U, WS, entry());
+    // Removed during the 10-minute window: the catalogue's membership check
+    // now answers no.
+    prefs.shouldSend.mockResolvedValueOnce(false);
+
+    await expect(svc.flush(U, WS, windowOf(queue))).resolves.toBe('skipped');
+    expect(prefs.shouldSend).toHaveBeenCalledWith(
+      U,
+      WS,
+      'post_failed',
+      'email',
+    );
+    expect(outbox.process).not.toHaveBeenCalled();
+    expect(redis.lists.size).toBe(0);
+  });
+
+  it('a stalled re-run of a finished flush leaves the next window alone', async () => {
+    const { svc, queue, outbox, redis } = make();
+    await svc.record(U, WS, entry({ postId: 'a' }));
+    const w1 = windowOf(queue);
+    await expect(svc.flush(U, WS, w1)).resolves.toBe('sent');
+
+    jest.setSystemTime(T0.getTime() + POST_FAILURE_WINDOW_MS + 1000);
+    await svc.record(U, WS, entry({ postId: 'b' }));
+    const w2 = windowOf(queue, 1);
+
+    // BullMQ re-runs W1 (a stalled job): its batch is gone and W2 is open.
+    expect(redis.strings.has(`email:pf-done:${U}:${WS}:${w1}`)).toBe(true);
+    await expect(svc.flush(U, WS, w1)).resolves.toBe('empty');
+    expect(outbox.process).toHaveBeenCalledTimes(1);
+    expect(redis.strings.get(`email:pf-open:${U}:${WS}`)).toBe(w2);
+    expect(redis.lists.get(`email:pf:${U}:${WS}`)).toHaveLength(1);
+
+    await expect(svc.flush(U, WS, w2)).resolves.toBe('sent');
+    expect(outbox.process).toHaveBeenCalledTimes(2);
+    expect(outbox.process.mock.calls[1][0].idempotencyKey).toBe(
+      flushJobId(U, WS, w2),
+    );
+    expect(sentProps<PostFailedProps>(outbox, 1).editUrl).toContain('post=b');
+  });
+
+  it('a re-run of a finished flush never renames, even with no open key', async () => {
+    const { svc, queue, outbox, redis } = make();
+    await svc.record(U, WS, entry({ postId: 'a' }));
+    const w1 = windowOf(queue);
+    await svc.flush(U, WS, w1);
+
+    jest.setSystemTime(T0.getTime() + POST_FAILURE_WINDOW_MS + 1000);
+    await svc.record(U, WS, entry({ postId: 'b' }));
+    const w2 = windowOf(queue, 1);
+    // W2's open key expires too, in a backlog.
+    redis.strings.delete(`email:pf-open:${U}:${WS}`);
+
+    await expect(svc.flush(U, WS, w1)).resolves.toBe('empty');
+    expect(redis.lists.get(`email:pf:${U}:${WS}`)).toHaveLength(1);
+
+    await expect(svc.flush(U, WS, w2)).resolves.toBe('sent');
+    expect(outbox.process).toHaveBeenCalledTimes(2);
+    expect(outbox.process.mock.calls[1][0].idempotencyKey).toBe(
+      flushJobId(U, WS, w2),
+    );
+    expect(sentProps<PostFailedProps>(outbox, 1).editUrl).toContain('post=b');
+  });
+
+  it('(c) an expired open key and no new failure: W1 still sends, once', async () => {
+    const { svc, queue, outbox, redis } = make();
+    await svc.record(U, WS, entry({ postId: 'a' }));
+    await svc.record(U, WS, entry({ postId: 'b' }));
+    const w1 = windowOf(queue);
+    jest.setSystemTime(T0.getTime() + 901_000);
+    redis.strings.delete(`email:pf-open:${U}:${WS}`);
+
+    await expect(svc.flush(U, WS, w1)).resolves.toBe('sent');
+    expect(outbox.process).toHaveBeenCalledTimes(1);
+    const data = outbox.process.mock.calls[0][0];
+    expect(data.idempotencyKey).toBe(flushJobId(U, WS, w1));
+    expect((data.props as PostsFailedProps).count).toBe(2);
+
+    // A stalled re-run sends nothing more, and nothing is left behind.
+    await expect(svc.flush(U, WS, w1)).resolves.toBe('empty');
+    expect(outbox.process).toHaveBeenCalledTimes(1);
+    expect(redis.lists.size).toBe(0);
+  });
+
+  it('(d) an expired open key, then W2 opens before W1 flushes: every failure once', async () => {
+    const { svc, queue, outbox, redis } = make();
+    await svc.record(U, WS, entry({ postId: 'a' }));
+    const w1 = windowOf(queue);
+    // A queue backlog: the 900 s open key expires before W1's flush runs.
+    jest.setSystemTime(T0.getTime() + 901_000);
+    redis.strings.delete(`email:pf-open:${U}:${WS}`);
+    await svc.record(U, WS, entry({ postId: 'b' }));
+    const w2 = windowOf(queue, 1);
+    expect(w2).not.toBe(w1);
+
+    // W2 owns the list, which holds W1's failure as well.
+    await expect(svc.flush(U, WS, w1)).resolves.toBe('empty');
+    expect(outbox.process).not.toHaveBeenCalled();
+
+    await expect(svc.flush(U, WS, w2)).resolves.toBe('sent');
+    expect(outbox.process).toHaveBeenCalledTimes(1);
+    const data = outbox.process.mock.calls[0][0];
+    expect(data.idempotencyKey).toBe(flushJobId(U, WS, w2));
+    const props = data.props as PostsFailedProps;
+    // W1's failure travels with W2's, and each reaches the person once.
+    expect(props.rows).toHaveLength(2);
+    expect(props.count).toBe(2);
+  });
+
+  it('returns empty when the window holds nothing', async () => {
+    const { svc, outbox } = make();
+    await expect(svc.flush(U, WS, String(T0.getTime()))).resolves.toBe('empty');
+    expect(outbox.process).not.toHaveBeenCalled();
+  });
+
+  it('a retry of the same flush resends the same batch under the same key', async () => {
+    const { svc, queue, outbox, redis } = make();
+    await svc.record(U, WS, entry());
+    const windowId = windowOf(queue);
+    outbox.process.mockRejectedValueOnce(new Error('resend 503'));
+    await expect(svc.flush(U, WS, windowId)).rejects.toThrow('resend 503');
+
+    // A failure after the first attempt belongs to a new window, not the retry.
+    jest.setSystemTime(T0.getTime() + POST_FAILURE_WINDOW_MS + 5000);
+    await svc.record(U, WS, entry({ postId: 'later' }));
+
+    await expect(svc.flush(U, WS, windowId, 1)).resolves.toBe('sent');
+    const [first, retry] = outbox.process.mock.calls;
+    expect(retry[0].idempotencyKey).toBe(first[0].idempotencyKey);
+    expect(retry[0].template).toBe('post-failed');
+    expect(retry[1]).toBe(1);
+    expect(redis.lists.get(`email:pf:${U}:${WS}`)).toHaveLength(1);
+    expect(redis.strings.has(`email:pf-open:${U}:${WS}`)).toBe(true);
+  });
+
+  it('the batch lives for a day, not for the list TTL it was renamed from', async () => {
+    const { svc, queue, outbox, redis } = make();
+    await svc.record(U, WS, entry());
+    const w1 = windowOf(queue);
+    const batch = `email:pf-flush:${U}:${WS}:${w1}`;
+    expect(redis.ttls.get(`email:pf:${U}:${WS}`)).toBe(1800);
+
+    outbox.process.mockRejectedValueOnce(new Error('resend 503'));
+    await expect(svc.flush(U, WS, w1)).rejects.toThrow('resend 503');
+    // Kept for the delayed retry, well past the list's 30 minutes.
+    expect(redis.lists.has(batch)).toBe(true);
+    expect(redis.ttls.get(batch)).toBe(86_400);
+  });
+
+  it('two copies of one flush: the second never overwrites the batch the first is sending', async () => {
+    const { svc, queue, outbox, redis } = make();
+    await svc.record(U, WS, entry({ postId: 'a' }));
+    const w1 = windowOf(queue);
+    const list = `email:pf:${U}:${WS}`;
+
+    let reachedSend!: () => void;
+    const atSend = new Promise<void>((resolve) => (reachedSend = resolve));
+    let releaseSend!: () => void;
+    outbox.process.mockImplementationOnce(() => {
+      reachedSend();
+      return new Promise((resolve) => (releaseSend = () => resolve('sent')));
+    });
+    let copyA!: Promise<string>;
+    // Copy B starts; before its close runs, copy A closes the window and is
+    // mid-send, and a new failure is pushed before its window opens.
+    redis.beforeClose = async () => {
+      copyA = svc.flush(U, WS, w1);
+      await atSend;
+      await redis.rpush(list, JSON.stringify(entry({ postId: 'b' })));
+    };
+    await expect(svc.flush(U, WS, w1)).resolves.toBe('sent');
+    releaseSend();
+    await expect(copyA).resolves.toBe('sent');
+
+    // Both copies sent A's batch under the one key; B's failure is untouched.
+    expect(outbox.process).toHaveBeenCalledTimes(2);
+    for (const [data] of outbox.process.mock.calls) {
+      expect(data.idempotencyKey).toBe(flushJobId(U, WS, w1));
+      expect((data.props as PostFailedProps).editUrl).toContain('post=a');
+    }
+    expect(redis.lists.get(list)).toHaveLength(1);
+    expect(redis.lists.has(`email:pf-flush:${U}:${WS}:${w1}`)).toBe(false);
+  });
+
+  it('two copies of one flush: the second, after the first finished, never takes an in-flight list', async () => {
+    const { svc, queue, outbox, redis } = make();
+    await svc.record(U, WS, entry({ postId: 'a' }));
+    const w1 = windowOf(queue);
+    const list = `email:pf:${U}:${WS}`;
+
+    // Copy B starts; before its close runs, copy A finishes the whole flush,
+    // and a new failure is pushed before its window opens.
+    redis.beforeClose = async () => {
+      await expect(svc.flush(U, WS, w1)).resolves.toBe('sent');
+      await redis.rpush(list, JSON.stringify(entry({ postId: 'b' })));
+    };
+    await expect(svc.flush(U, WS, w1)).resolves.toBe('empty');
+
+    expect(outbox.process).toHaveBeenCalledTimes(1);
+    expect(sentProps<PostFailedProps>(outbox).editUrl).toContain('post=a');
+    expect(redis.lists.get(list)).toHaveLength(1);
+    expect(redis.lists.has(`email:pf-flush:${U}:${WS}:${w1}`)).toBe(false);
+  });
+
+  it('a newer window or an empty one marks the flush done in the same step', async () => {
+    const { svc, queue, redis } = make();
+    await svc.record(U, WS, entry({ postId: 'a' }));
+    const w1 = windowOf(queue);
+    redis.strings.set(`email:pf-open:${U}:${WS}`, 'newer');
+
+    // Checked inside the close, before anything else could run.
+    redis.afterClose = () => {
+      expect(redis.strings.has(`email:pf-done:${U}:${WS}:${w1}`)).toBe(true);
+      return Promise.resolve();
+    };
+    await expect(svc.flush(U, WS, w1)).resolves.toBe('empty');
+    expect(redis.ttls.get(`email:pf-done:${U}:${WS}:${w1}`)).toBe(86_400);
+    expect(redis.lists.get(`email:pf:${U}:${WS}`)).toHaveLength(1);
+  });
+
+  it('15 failures → 10 rows and "and 5 more"', async () => {
+    const { svc, queue, outbox } = make();
+    for (let i = 0; i < 15; i += 1) {
+      await svc.record(U, WS, entry({ postId: `p${i}` }));
+    }
+    await svc.flush(U, WS, windowOf(queue));
+
+    const props = sentProps<PostsFailedProps>(outbox);
+    expect(props.count).toBe(15);
+    expect(props.rows).toHaveLength(10);
+    expect(props.more).toBe(5);
+    const r = await renderEmail(getTemplate('posts-failed'), props, CTX);
+    expect(r.subject).toBe('15 posts didn’t publish today');
+    expect(r.text).toContain('and 5 more');
+    expect(r.preheader).toBe('Instagram turned them down.');
+  });
+
+  it('omits "Your other N posts" when none went out today', async () => {
+    const { svc, queue, outbox, setOnTime } = make();
+    setOnTime(0);
+    await svc.record(U, WS, entry({ postId: 'a' }));
+    await svc.record(U, WS, entry({ postId: 'b' }));
+    await svc.flush(U, WS, windowOf(queue));
+
+    const props = sentProps<PostsFailedProps>(outbox);
+    expect(props.otherOnTime).toBe(0);
+    const r = await renderEmail(getTemplate('posts-failed'), props, CTX);
+    expect(r.text).toContain('Each one needs a quick fix.');
+    expect(r.text).not.toContain('went out on time');
+  });
+
+  it('empty caption renders (No caption); a 5000-char caption is truncated', async () => {
+    const { svc, queue, outbox } = make();
+    await svc.record(U, WS, entry({ caption: '' }));
+    await svc.flush(U, WS, windowOf(queue));
+    const blank = await renderEmail(
+      getTemplate('post-failed'),
+      sentProps<PostFailedProps>(outbox),
+      CTX,
+    );
+    expect(blank.html).toContain('(No caption)');
+
+    jest.setSystemTime(T0.getTime() + POST_FAILURE_WINDOW_MS + 1000);
+    const long = `<script>alert("x")</script> & ${'a'.repeat(5000)}`;
+    await svc.record(U, WS, entry({ caption: long, reason: 'r'.repeat(500) }));
+    await svc.flush(U, WS, windowOf(queue, 1));
+    const props = sentProps<PostFailedProps>(outbox, 1);
+    const r = await renderEmail(getTemplate('post-failed'), props, CTX);
+    expect(r.html).not.toContain('<script>');
+    expect(r.html).toContain('&lt;script&gt;');
+    expect(r.html).not.toContain('a'.repeat(280));
+    expect(r.html).toContain('…');
+    // The red callout carries the reason, cut to 200.
+    expect(r.html).toContain(`${'r'.repeat(199)}…`);
+    expect(r.html).not.toContain('r'.repeat(200));
+
+    jest.setSystemTime(T0.getTime() + 2 * POST_FAILURE_WINDOW_MS + 2000);
+    await svc.record(U, WS, entry({ postId: 'x', caption: '   ' }));
+    await svc.record(U, WS, entry({ postId: 'y', caption: long }));
+    await svc.flush(U, WS, windowOf(queue, 2));
+    const rows = sentProps<PostsFailedProps>(outbox, 2).rows;
+    expect(rows[0].title).toBe('(No caption)');
+    expect(Array.from(rows[1].title)).toHaveLength(60);
+    expect(rows[1].title.endsWith('…')).toBe(true);
+  });
+});
+
+describe('C1 / C1a copy', () => {
+  const c1: PostFailedProps = {
+    platform: 'instagram',
+    platformName: 'Instagram',
+    handle: '@lumierecafe',
+    when: 'Today, 6:30 PM',
+    caption: 'Iced caramel latte',
+    thumbnailUrl: null,
+    reason: 'Instagram didn’t accept the video',
+    otherPublished: ['Facebook', 'TikTok'],
+    editUrl: 'https://app.test/w/ws/planner?post=p1',
+  };
+
+  it('C1 says which networks went out, else asks for a fix', async () => {
+    const def = getTemplate('post-failed');
+    const r = await renderEmail(def, c1, CTX);
+    expect(r.subject).toBe('Your Instagram post didn’t publish');
+    expect(r.preheader).toBe(
+      'Instagram didn’t accept it. Edit it and we’ll try again.',
+    );
+    expect(r.text).toContain(
+      'The same post on Facebook and TikTok went out on time.',
+    );
+    expect(r.text).not.toContain('Fix it and publish again.');
+    expect(r.text).not.toContain('Why this happens');
+    expect(r.html).toContain('Edit post');
+    expect(r.html).toContain('icon-danger.png');
+
+    const alone = await renderEmail(def, { ...c1, otherPublished: [] }, CTX);
+    expect(alone.text).toContain('Fix it and publish again.');
+    expect(alone.text).not.toContain('went out on time');
+  });
+
+  it('C1a says "1 post" for one other post on time', async () => {
+    const props: PostsFailedProps = {
+      count: 2,
+      rows: [],
+      more: 0,
+      platforms: [],
+      otherOnTime: 1,
+      plannerUrl: 'https://app.test/w/ws/planner',
+    };
+    const r = await renderEmail(getTemplate('posts-failed'), props, CTX);
+    expect(r.text).toContain('Your other 1 post went out on time.');
+    expect(r.html).toContain('Open Planner');
+  });
+
+  it('both templates sit behind a toggleable preference, never a locked one', () => {
+    for (const id of ['post-failed', 'posts-failed']) {
+      const def = getTemplate(id);
+      expect(def.footer).toBe('notification');
+      expect(def.category).toBe('publishing');
+      expect(def.event).toBe('post_failed');
+      const rule = NOTIFICATION_EVENTS[def.event as PreferenceEventKey].email;
+      expect(rule).not.toBeNull();
+      expect(rule?.locked).toBe(false);
+    }
+  });
+});

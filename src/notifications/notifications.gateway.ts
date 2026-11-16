@@ -10,8 +10,13 @@ import {
 import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
-import { Logger } from '@nestjs/common';
+import { Inject, Logger } from '@nestjs/common';
+import { eq } from 'drizzle-orm';
 import type { Notification } from 'src/drizzle/schema';
+import type { DbType } from '../drizzle/db';
+import { DRIZZLE } from '../drizzle/drizzle.module';
+import { users } from '../drizzle/schema/users.schema';
+import { assertSessionLive } from '../auth/strategies/jwt.strategy';
 
 interface AuthenticatedSocket extends Socket {
   userId?: string;
@@ -38,6 +43,7 @@ export class NotificationsGateway
   constructor(
     private jwtService: JwtService,
     private configService: ConfigService,
+    @Inject(DRIZZLE) private readonly db: DbType,
   ) {}
 
   /**
@@ -57,8 +63,20 @@ export class NotificationsGateway
 
       // Verify JWT token
       const secret = this.configService.get<string>('JWT_ACCESS_SECRET');
-      const payload = this.jwtService.verify(token as string, { secret });
+      const payload = this.jwtService.verify<{ sub: string; iat?: number }>(
+        token as string,
+        { secret },
+      );
       const userId = payload.sub;
+
+      // A token from before a password change, reset or "This wasn't me" is
+      // refused, as on the HTTP side. Checked once, at connect.
+      const [account] = await this.db
+        .select({ sessionsRevokedAt: users.sessionsRevokedAt })
+        .from(users)
+        .where(eq(users.id, userId));
+      if (!account) throw new Error(`User ${userId} not found`);
+      assertSessionLive(payload.iat, account.sessionsRevokedAt);
 
       // Store userId on socket
       client.userId = userId;

@@ -130,6 +130,7 @@ interface Harness {
     changePlan: jest.Mock;
     cancel: jest.Mock;
   };
+  billingEmail: { planChanged: jest.Mock };
 }
 
 function makeService(): Harness {
@@ -155,7 +156,7 @@ function makeService(): Harness {
     getAddonQuantities: jest.fn().mockResolvedValue({}),
   };
 
-  const notificationEmitter = {
+  const billingEmail = {
     planChanged: jest.fn().mockResolvedValue(undefined),
   };
 
@@ -168,11 +169,11 @@ function makeService(): Harness {
     stripeService as never,
     usageService as never,
     lookup as never,
-    notificationEmitter as never,
+    billingEmail as never,
     providers as never,
   );
 
-  return { service, adapter };
+  return { service, adapter, billingEmail };
 }
 
 beforeEach(() => {
@@ -276,7 +277,7 @@ describe('changePlan routes a paid→paid change to the account’s provider', (
   });
 
   it('calls adapter.changePlan on a paid→paid downgrade rather than no-opping', async () => {
-    const { service, adapter } = makeService();
+    const { service, adapter, billingEmail } = makeService();
     stubPreview(service, false);
 
     selectResults = [
@@ -291,5 +292,19 @@ describe('changePlan routes a paid→paid change to the account’s provider', (
     // The bug: the local DB was updated to the new plan while the provider was
     // never told, so the customer kept being billed at the old price.
     expect(adapter.changePlan).toHaveBeenCalledWith(42, 'PRO');
+
+    // A scheduled downgrade is told as a FUTURE change (it only applies at
+    // period end), not as "you're now on ...".
+    expect(billingEmail.planChanged).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'user-1',
+        kind: 'downgrade_scheduled',
+        fromPlan: 'Basic',
+        toPlan: 'Pro',
+        endsOn: LS_SUBSCRIPTION.currentPeriodEnd,
+        nextCharge: null,
+        provider: 'lemonsqueezy',
+      }),
+    );
   });
 });

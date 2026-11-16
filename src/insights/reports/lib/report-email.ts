@@ -1,6 +1,12 @@
 import type { InsightsOverviewDto } from '../../dto/insights.dto';
 import type { Brief } from '../../lib/brief';
-import { escapeHtml } from './escape-html';
+import type { AppLinks } from '../../../email/links/app-links';
+import { renderEmail } from '../../../email/render/render-email';
+import {
+  insightReport,
+  reportFooterReason,
+  type InsightReportProps,
+} from '../../../email/templates/reports/insight-report';
 import { windowLabel } from './report-format';
 
 export interface ReportEmailInput {
@@ -29,8 +35,6 @@ export interface ReportEmail {
 
 /** What a total reads as when the app has no number for it. */
 const NO_VALUE = '—';
-
-const FONT = "-apple-system,'Segoe UI',Helvetica,Arial,sans-serif";
 
 type Totals = NonNullable<ReportEmailInput['totals']>;
 
@@ -61,82 +65,51 @@ export function totalsOf(kpis: InsightsOverviewDto['kpis']): Totals {
   };
 }
 
-function totalsHtml(totals: Totals): string {
-  const cells = TOTAL_LABELS.map(
-    ([key, label]) =>
-      `<td width="25%" style="padding:12px 8px;text-align:center;border:1px solid #e5e7eb;">` +
-      `<div style="font-size:12px;color:#6b7280;">${label}</div>` +
-      `<div style="font-size:20px;font-weight:600;color:#111827;">${formatTotal(totals[key])}</div>` +
-      `</td>`,
-  ).join('');
-  return (
-    `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 20px;">` +
-    `<tr>${cells}</tr></table>`
-  );
-}
+/** What a report email needs from the app's links: images, help and privacy. */
+export type ReportEmailLinks = Pick<AppLinks, 'assetBase' | 'help' | 'privacy'>;
 
 /**
  * The scheduled report email: the report's name, its window, the In brief
- * line, four totals and a button to the live report. The PDF rides along as
- * an attachment, added by the caller. Inline styles only, as mail clients
- * strip the rest.
+ * line, four totals and a button to the live report, in the shared email
+ * layout. The PDF rides along as an attachment, added by the caller. Its
+ * footer is the report's own: why you got it, and its one-click unsubscribe.
  */
-export function reportEmail(i: ReportEmailInput): ReportEmail {
+export async function reportEmail(
+  i: ReportEmailInput,
+  links: ReportEmailLinks,
+): Promise<ReportEmail> {
   const { totals } = i;
-  // Typed by a person: blank counts as not written.
-  const briefText = i.briefText?.trim() || null;
-  const note = i.note?.trim() || null;
-  const label = windowLabel(i.window.from, i.window.to);
-  const subject = `${i.reportName}: ${label}`;
-  const footer = `You get this because ${i.workspaceName} added you to this report.`;
-  const unsubscribeLabel = 'Stop receiving this report';
-  const buttonLabel = 'Open the report';
-
-  const html = [
-    `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(subject)}</title></head><body style="margin:0;padding:24px 12px;background:#f3f4f6;font-family:${FONT};">`,
-    `<div style="max-width:600px;margin:0 auto;background:#ffffff;padding:32px;border-radius:8px;">`,
-    i.logoUrl
-      ? `<img src="${escapeHtml(i.logoUrl)}" alt="${escapeHtml(i.workspaceName)}" style="display:block;max-height:48px;max-width:200px;margin:0 0 20px;">`
-      : '',
-    `<h1 style="margin:0 0 4px;font-size:22px;color:#111827;">${escapeHtml(i.reportName)}</h1>`,
-    `<p style="margin:0 0 20px;font-size:14px;color:#6b7280;">${escapeHtml(label)}</p>`,
-    briefText
-      ? `<p style="margin:0 0 4px;font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;">In brief</p>` +
-        `<p style="margin:0 0 20px;font-size:15px;line-height:1.5;color:#111827;">${escapeHtml(briefText)}</p>`
-      : '',
-    totals ? totalsHtml(totals) : '',
-    i.shareUrl
-      ? `<p style="margin:0 0 20px;"><a href="${escapeHtml(i.shareUrl)}" style="display:inline-block;padding:10px 20px;background:#111827;color:#ffffff;text-decoration:none;border-radius:6px;font-size:14px;">${buttonLabel}</a></p>`
-      : '',
-    note
-      ? `<p style="margin:0 0 20px;font-size:14px;line-height:1.5;color:#374151;white-space:pre-line;">${escapeHtml(note)}</p>`
-      : '',
-    `<hr style="border:0;border-top:1px solid #e5e7eb;margin:24px 0 16px;">`,
-    `<p style="margin:0 0 8px;font-size:12px;color:#6b7280;">${escapeHtml(footer)}</p>`,
-    `<p style="margin:0;font-size:12px;"><a href="${escapeHtml(i.unsubscribeUrl)}" style="color:#6b7280;">${unsubscribeLabel}</a></p>`,
-    `</div></body></html>`,
-  ].join('');
-
-  const text = [
-    i.reportName,
-    label,
-    briefText ? `In brief: ${briefText}` : null,
-    totals
-      ? TOTAL_LABELS.map(
-          ([key, name]) => `${name}: ${formatTotal(totals[key])}`,
-        ).join('\n')
+  const props: InsightReportProps = {
+    reportName: i.reportName,
+    workspaceName: i.workspaceName,
+    windowLabel: windowLabel(i.window.from, i.window.to),
+    logoUrl: i.logoUrl,
+    // Typed by a person: blank counts as not written.
+    briefText: i.briefText?.trim() || null,
+    totals: totals
+      ? TOTAL_LABELS.map(([key, label]) => ({
+          label,
+          value: formatTotal(totals[key]),
+        }))
       : null,
-    i.shareUrl ? `${buttonLabel}: ${i.shareUrl}` : null,
-    note,
-    `---\n${footer}\n${unsubscribeLabel}: ${i.unsubscribeUrl}`,
-  ]
-    .filter((part): part is string => part !== null && part !== '')
-    .join('\n\n');
-
+    shareUrl: i.shareUrl,
+    note: i.note?.trim() || null,
+  };
+  const rendered = await renderEmail(insightReport, props, {
+    assetBaseUrl: links.assetBase(),
+    footer: {
+      reason: reportFooterReason(i.workspaceName),
+      links: [
+        { label: 'Stop receiving this report', href: i.unsubscribeUrl },
+        { label: 'Help center', href: links.help() },
+        { label: 'Privacy', href: links.privacy() },
+      ],
+    },
+  });
   return {
-    subject,
-    html,
-    text,
+    subject: rendered.subject,
+    html: rendered.html,
+    text: rendered.text,
     headers: {
       'List-Unsubscribe': `<${i.unsubscribeUrl}>`,
       'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',

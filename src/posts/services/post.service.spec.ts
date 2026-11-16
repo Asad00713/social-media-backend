@@ -72,6 +72,11 @@ function make() {
     loadPostLinks: jest.fn(async () => []),
     deleteEventsForLinks: jest.fn(async () => undefined),
   };
+  const failureNotifier = {
+    onPublishOutcome: jest.fn<Promise<undefined>, [any, string]>(
+      async () => undefined,
+    ),
+  };
   const svc = new PostService(
     channels as any,
     { getPublisher: () => publisher } as any,
@@ -84,8 +89,17 @@ function make() {
     { syncFromPost: jest.fn(async () => undefined) } as any,
     { enforceQueueLimit: jest.fn(async () => undefined) } as any,
     { send: jest.fn() } as any, // PostReminderService
+    failureNotifier as any,
   );
-  return { svc, jobs, removed, publishingQueue, publisher, rate };
+  return {
+    svc,
+    jobs,
+    removed,
+    publishingQueue,
+    publisher,
+    rate,
+    failureNotifier,
+  };
 }
 
 const baseRow = (over: any = {}) => ({
@@ -231,5 +245,53 @@ describe('PostService.publishPost retry', () => {
     const final = updates[updates.length - 1];
     expect(final.status).toBe('published');
     expect(final.publishedAt).toBeInstanceOf(Date);
+  });
+});
+
+describe('PostService.publishPost tells the failure notifier the outcome', () => {
+  const scheduledRow = () =>
+    baseRow({
+      status: 'scheduled',
+      targets: [{ channelId: '1', platform: 'instagram', status: 'scheduled' }],
+    });
+
+  it('hands the final post and the trigger to the notifier', async () => {
+    const { svc, publisher, failureNotifier } = make();
+    publisher.publish.mockRejectedValueOnce(new Error('video too long'));
+    currentRow = scheduledRow();
+    await svc.publishPost('p1', 'w1', 'u1', { triggeredBy: 'scheduler' });
+    expect(failureNotifier.onPublishOutcome).toHaveBeenCalledTimes(1);
+    const [sent, triggeredBy] = failureNotifier.onPublishOutcome.mock.calls[0];
+    expect(triggeredBy).toBe('scheduler');
+    expect(sent.status).toBe('failed');
+    expect(sent.targets[0]).toMatchObject({
+      status: 'failed',
+      errorMessage: 'video too long',
+    });
+  });
+
+  it('passes "user" for a person pressing Publish now', async () => {
+    const { svc, failureNotifier } = make();
+    currentRow = scheduledRow();
+    await svc.publishPost('p1', 'w1', 'u1');
+    expect(failureNotifier.onPublishOutcome.mock.calls[0][1]).toBe('user');
+  });
+
+  it('a notifier that fails or hangs neither fails nor holds up the publish', async () => {
+    const { svc, publisher, failureNotifier } = make();
+    publisher.publish.mockRejectedValueOnce(new Error('video too long'));
+    failureNotifier.onPublishOutcome.mockImplementationOnce(
+      () => new Promise<undefined>(() => undefined),
+    );
+    currentRow = scheduledRow();
+    await expect(
+      svc.publishPost('p1', 'w1', 'u1', { triggeredBy: 'scheduler' }),
+    ).resolves.toMatchObject({ status: 'failed' });
+
+    failureNotifier.onPublishOutcome.mockRejectedValueOnce(new Error('boom'));
+    currentRow = scheduledRow();
+    await expect(
+      svc.publishPost('p1', 'w1', 'u1', { triggeredBy: 'scheduler' }),
+    ).resolves.toBeDefined();
   });
 });

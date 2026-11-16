@@ -105,6 +105,7 @@ export class ReportsPublicController {
   private noStore(res: Response): void {
     res.setHeader('Cache-Control', 'private, no-store');
     res.setHeader('X-Robots-Tag', 'noindex');
+    res.setHeader('Referrer-Policy', 'no-referrer');
   }
 
   /** First line of an HTML handler, so even a 500 carries them. */

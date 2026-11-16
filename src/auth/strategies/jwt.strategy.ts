@@ -8,6 +8,25 @@ import type { UserRole } from '../../drizzle/schema';
 export interface JwtPayload {
   sub: string;
   email: string;
+  /** Issued-at, whole seconds. Set on every token we sign. */
+  iat?: number;
+}
+
+/**
+ * Refuses a token issued before the user's sessions were revoked (a password
+ * change or reset, "This wasn't me"). `iat` has whole seconds only, so a token
+ * from the revocation second itself passes: that is the fresh pair the
+ * password change hands back. Shared by the access and refresh strategies and
+ * the notifications socket handshake.
+ */
+export function assertSessionLive(
+  iat: number | undefined,
+  sessionsRevokedAt: Date | null,
+): void {
+  if (!sessionsRevokedAt) return;
+  if ((iat ?? 0) < Math.floor(sessionsRevokedAt.getTime() / 1000)) {
+    throw new UnauthorizedException('Session ended');
+  }
 }
 
 export interface JwtUser {
@@ -55,6 +74,10 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       });
     }
 
-    return { userId: payload.sub, email: payload.email, role: user.role };
+    assertSessionLive(payload.iat, user.sessionsRevokedAt);
+
+    // The address from the row, not the claim: the claim is frozen at sign-in
+    // and goes stale after an email change.
+    return { userId: payload.sub, email: user.email, role: user.role };
   }
 }

@@ -52,6 +52,8 @@
 /* eslint-disable @typescript-eslint/no-unsafe-call */
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 
+import { Logger } from '@nestjs/common';
+
 interface Row {
   [column: string]: unknown;
 }
@@ -145,7 +147,7 @@ function predicateFrom(condition: unknown): Predicate {
   }
   const chunks = flatten(top);
 
-  const pairs: { column: string; value: unknown }[] = [];
+  const pairs: { column: string; value: unknown; isGt?: boolean }[] = [];
   for (let i = 0; i < chunks.length; i++) {
     const chunk: any = chunks[i];
     if (isColumn(chunk)) {
@@ -163,8 +165,12 @@ function predicateFrom(condition: unknown): Predicate {
         while (i + 1 < chunks.length && !isColumn(chunks[i + 1])) i++;
         continue;
       }
-      if (!opText.includes('=')) {
-        throw new Error(`The db fake only understands '=', saw "${opText}".`);
+      // '>' is drizzle's gt(): the failed-payments window reads it.
+      const isGt = !opText.includes('=') && opText.includes('>');
+      if (!opText.includes('=') && !isGt) {
+        throw new Error(
+          `The db fake only understands '=' and '>', saw "${opText}".`,
+        );
       }
       // The bound value is a drizzle `Param`, not the raw literal.
       const param = chunks[i + 2] as any;
@@ -172,7 +178,7 @@ function predicateFrom(condition: unknown): Predicate {
         param && typeof param === 'object' && 'value' in param
           ? param.value
           : param;
-      pairs.push({ column: camel(chunk.name), value });
+      pairs.push({ column: camel(chunk.name), value, isGt });
       i += 2;
     }
   }
@@ -186,6 +192,13 @@ function predicateFrom(condition: unknown): Predicate {
   return (row: Row) =>
     pairs.every((p) => {
       const actual = row[p.column];
+      if (p.isGt) {
+        return (
+          actual instanceof Date &&
+          p.value instanceof Date &&
+          actual.getTime() > p.value.getTime()
+        );
+      }
       // Dates compare by value; ids arrive as numbers or strings.
       if (actual instanceof Date && p.value instanceof Date) {
         return actual.getTime() === p.value.getTime();
@@ -229,7 +242,18 @@ function makeDb(): any {
         values: (v: Row | Row[]) => {
           const incoming = Array.isArray(v) ? v : [v];
           for (const row of incoming) {
-            rowsOf(target).push({ id: rowsOf(target).length + 1, ...row });
+            rowsOf(target).push({
+              id: rowsOf(target).length + 1,
+              // A column default the real table fills in.
+              ...(target === 'failed_payments'
+                ? {
+                    createdAt: new Date(),
+                    resolved: false,
+                    featuresRestricted: false,
+                  }
+                : {}),
+              ...row,
+            });
           }
           return chain;
         },
@@ -246,10 +270,12 @@ function makeDb(): any {
       const target = tableName(t);
       let patch: Row = {};
       let match: Predicate = () => true;
-      const apply = (): void => {
-        for (const row of rowsOf(target)) {
-          if (match(row)) Object.assign(row, patch);
-        }
+      /** The rows the WHERE matched, as one atomic step like Postgres's. */
+      let updated: Row[] = [];
+      const apply = (): Row[] => {
+        const hit = rowsOf(target).filter((row) => match(row));
+        for (const row of hit) Object.assign(row, patch);
+        return hit;
       };
       const chain: any = {
         set: (v: Row) => {
@@ -258,9 +284,10 @@ function makeDb(): any {
         },
         where: (c: unknown) => {
           match = predicateFrom(c);
-          apply();
+          updated = apply();
           return chain;
         },
+        returning: () => Promise.resolve(updated.map((row) => ({ ...row }))),
         then: (resolve: (v: unknown) => unknown) => {
           apply();
           return Promise.resolve([]).then(resolve);
@@ -424,14 +451,35 @@ const lookup = {
   applyLimitsToAllWorkspaces: jest.fn().mockResolvedValue(undefined),
 };
 
+/** The email service has its own spec; here only what the webhook hands it. */
+const billingEmail = {
+  paymentFailed: jest.fn().mockResolvedValue(undefined),
+  trialEnding: jest.fn().mockResolvedValue(undefined),
+  planChanged: jest.fn().mockResolvedValue(undefined),
+  planName: jest.fn((code: string) =>
+    Promise.resolve(code === 'PRO' ? 'Pro' : code),
+  ),
+};
+
 function makeService(): WebhookService {
   // Payment alerts are not under test here (webhook.payment-alerts.spec.ts).
   return new WebhookService(
     {} as never,
     {} as never,
     lookup as never,
+    billingEmail as never,
     { paymentFailed: jest.fn(), paymentSucceeded: jest.fn() } as never,
   );
+}
+
+/** The same, for the handlers that also take Stripe's `previous_attributes`. */
+function call2(
+  service: WebhookService,
+  handler: string,
+  payload: unknown,
+  previous: unknown,
+): Promise<void> {
+  return (service as any)[handler](payload, previous) as Promise<void>;
 }
 
 /** Reach the private handler under test without going through the dispatcher. */
@@ -635,5 +683,429 @@ describe('customer.subscription.updated', () => {
     });
 
     expect(rowsOf('provider_subscriptions')).toHaveLength(0);
+  });
+});
+
+// ------------------------------------------------------------ billing emails
+
+describe('billing emails', () => {
+  // The "skipped: boom" warnings are the behaviour under test, not output.
+  let warn: jest.SpyInstance;
+  beforeEach(() => {
+    warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+  });
+  afterEach(() => warn.mockRestore());
+
+  // The bank's reason is deliberately in the payload: the email must ignore
+  // it (it is a PaymentIntent field, not an Invoice one).
+  const FAILED_INVOICE = {
+    id: 'in_1',
+    amount_due: 2900,
+    currency: 'usd',
+    attempt_count: 2,
+    next_payment_attempt: 1790000000,
+    last_payment_error: { message: 'Your card has insufficient funds.' },
+  };
+
+  function seedInvoice(): void {
+    rowsOf('invoices').push({
+      id: 7,
+      stripeInvoiceId: 'in_1',
+      subscriptionId: SUBSCRIPTION_ID,
+    });
+    rowsOf('payment_methods').push({
+      id: 1,
+      stripeCustomerId: 'cus_live',
+      cardBrand: 'visa',
+      cardLast4: '4242',
+      isDefault: true,
+      createdAt: new Date('2026-09-01'),
+    });
+  }
+
+  it('the email is mandatory: still sent when the bell and toast stay silent (billing_alert app off)', async () => {
+    seedInvoice();
+    const silent = { paymentFailed: jest.fn().mockResolvedValue(false) };
+    const service = new WebhookService(
+      {} as never,
+      {} as never,
+      lookup as never,
+      billingEmail as never,
+      silent as never,
+    );
+
+    await call(service, 'handleInvoicePaymentFailed', FAILED_INVOICE);
+
+    expect(silent.paymentFailed).toHaveBeenCalledTimes(1);
+    expect(billingEmail.paymentFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed payment emails the payer with the invoice, card and next try', async () => {
+    seedInvoice();
+
+    await call(makeService(), 'handleInvoicePaymentFailed', FAILED_INVOICE);
+
+    expect(billingEmail.paymentFailed).toHaveBeenCalledTimes(1);
+    expect(billingEmail.paymentFailed.mock.calls[0][0]).toEqual({
+      userId: 'user-1',
+      planName: 'Pro',
+      amountCents: 2900,
+      currency: 'usd',
+      cardLast4: '4242',
+      cardBrand: 'visa',
+      reason: null,
+      nextAttempt: new Date(1790000000 * 1000),
+      dedupeKey: 'payment-failed.in_1.2',
+    });
+  });
+
+  it('the same failure delivered twice carries one key; the next attempt a new one', async () => {
+    seedInvoice();
+    const service = makeService();
+
+    await call(service, 'handleInvoicePaymentFailed', FAILED_INVOICE);
+    await call(service, 'handleInvoicePaymentFailed', FAILED_INVOICE);
+    await call(service, 'handleInvoicePaymentFailed', {
+      ...FAILED_INVOICE,
+      attempt_count: 3,
+    });
+
+    const keys = billingEmail.paymentFailed.mock.calls.map(
+      (c) => (c[0] as { dedupeKey: string }).dedupeKey,
+    );
+    expect(keys).toEqual([
+      'payment-failed.in_1.2',
+      'payment-failed.in_1.2',
+      'payment-failed.in_1.3',
+    ]);
+  });
+
+  const fail = (service: WebhookService, attempt: number) =>
+    call(service, 'handleInvoicePaymentFailed', {
+      ...FAILED_INVOICE,
+      attempt_count: attempt,
+    });
+
+  it('the third unresolved failure restricts the account and emails payment_restricted', async () => {
+    seedInvoice();
+    const service = makeService();
+
+    await fail(service, 1);
+    await fail(service, 2);
+    expect(billingEmail.planChanged).not.toHaveBeenCalled();
+
+    await fail(service, 3);
+
+    expect(billingEmail.planChanged).toHaveBeenCalledTimes(1);
+    expect(billingEmail.planChanged.mock.calls[0][0]).toMatchObject({
+      userId: 'user-1',
+      kind: 'payment_restricted',
+      fromPlan: 'Pro',
+      toPlan: 'Free',
+    });
+  });
+
+  it('the 4th and 5th failures of the same episode send no second "moved to Free"', async () => {
+    seedInvoice();
+    const service = makeService();
+
+    for (const attempt of [1, 2, 3, 4, 5]) await fail(service, attempt);
+
+    expect(billingEmail.planChanged).toHaveBeenCalledTimes(1);
+    // Each failure still gets its own "payment didn't go through" email.
+    expect(billingEmail.paymentFailed).toHaveBeenCalledTimes(5);
+    // The limits are still re-applied on every failure past the third.
+    expect(lookup.applyLimitsToAllWorkspaces).toHaveBeenCalledTimes(3);
+  });
+
+  it('a new episode, after the old failures were resolved, restricts and emails again', async () => {
+    seedInvoice();
+    const service = makeService();
+    for (const attempt of [1, 2, 3]) await fail(service, attempt);
+    expect(billingEmail.planChanged).toHaveBeenCalledTimes(1);
+
+    // A payment succeeded: `handleInvoicePaymentSucceeded` resolves them.
+    for (const row of rowsOf('failed_payments')) row.resolved = true;
+    for (const attempt of [1, 2, 3]) await fail(service, attempt);
+
+    expect(billingEmail.planChanged).toHaveBeenCalledTimes(2);
+  });
+
+  it('a flagged failure older than 30 days does not block a new episode', async () => {
+    seedInvoice();
+    const service = makeService();
+    // Unpaid and flagged, from an episode outside the 30-day window.
+    rowsOf('failed_payments').push({
+      id: 1,
+      subscriptionId: SUBSCRIPTION_ID,
+      resolved: false,
+      featuresRestricted: true,
+      createdAt: new Date(Date.now() - 40 * 24 * 60 * 60 * 1000),
+    });
+
+    for (const attempt of [1, 2, 3]) await fail(service, attempt);
+
+    expect(billingEmail.planChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('two failure webhooks arriving together send one "moved to Free"', async () => {
+    seedInvoice();
+    const service = makeService();
+    await fail(service, 1);
+    await fail(service, 2);
+
+    // The 3rd and 4th failures race: each reads the episode as unrestricted.
+    await Promise.all([fail(service, 3), fail(service, 4)]);
+
+    expect(billingEmail.planChanged).toHaveBeenCalledTimes(1);
+    // The restriction itself is still applied by both.
+    expect(lookup.applyLimitsToAllWorkspaces).toHaveBeenCalledTimes(2);
+    expect(
+      rowsOf('failed_payments').every((r) => r.featuresRestricted === true),
+    ).toBe(true);
+  });
+
+  it('applyPaymentFailureRestrictions emails payment_restricted with a period-stable key', async () => {
+    const service = makeService();
+    const failure = (id: number): Row => ({
+      id,
+      subscriptionId: SUBSCRIPTION_ID,
+      resolved: false,
+      featuresRestricted: false,
+      createdAt: new Date(),
+    });
+
+    rowsOf('failed_payments').push(failure(1));
+    await (service as any).applyPaymentFailureRestrictions(
+      SUBSCRIPTION_ID,
+      'user-1',
+    );
+    // A second episode in the same billing period.
+    rowsOf('failed_payments')[0].resolved = true;
+    rowsOf('failed_payments').push(failure(2));
+    await (service as any).applyPaymentFailureRestrictions(
+      SUBSCRIPTION_ID,
+      'user-1',
+    );
+
+    const key = `plan-changed.user-1.payment_restricted.sub_live.${new Date('2026-10-01').getTime()}`;
+    const keys = billingEmail.planChanged.mock.calls.map(
+      (c) => (c[0] as { dedupeKey: string }).dedupeKey,
+    );
+    expect(keys).toEqual([key, key]);
+  });
+
+  it('a mail failure never fails the webhook or loses the failure record', async () => {
+    seedInvoice();
+    billingEmail.paymentFailed.mockRejectedValueOnce(new Error('boom'));
+
+    await expect(
+      call(makeService(), 'handleInvoicePaymentFailed', FAILED_INVOICE),
+    ).resolves.toBeUndefined();
+
+    expect(rowsOf('failed_payments')).toHaveLength(1);
+    expect(rowsOf('subscriptions')[0].status).toBe('past_due');
+  });
+
+  describe('trial_will_end', () => {
+    const inDays = (days: number) =>
+      Math.floor(Date.now() / 1000) + days * 24 * 60 * 60;
+    const trial = (over: Record<string, unknown> = {}) => ({
+      id: 'sub_live',
+      status: 'trialing',
+      cancel_at_period_end: false,
+      trial_end: inDays(3),
+      default_payment_method: null,
+      ...over,
+    });
+
+    it('a normal trial is handed to the email service, with the card state', async () => {
+      const event = trial();
+      await call(makeService(), 'handleTrialWillEnd', event);
+      await call(
+        makeService(),
+        'handleTrialWillEnd',
+        trial({ default_payment_method: 'pm_1', trial_end: event.trial_end }),
+      );
+
+      const base = {
+        userId: 'user-1',
+        subscriptionId: SUBSCRIPTION_ID,
+        trialEnd: new Date(event.trial_end * 1000),
+        planCode: 'PRO',
+      };
+      expect(billingEmail.trialEnding.mock.calls.map((c) => c[0])).toEqual([
+        { ...base, hasCard: false },
+        { ...base, hasCard: true },
+      ]);
+    });
+
+    it('sends nothing for a trial that was ended early', async () => {
+      // Ending a trial now moves the end to now (or the past) and the status
+      // off `trialing`: nobody should be told to "choose a plan".
+      await call(
+        makeService(),
+        'handleTrialWillEnd',
+        trial({ status: 'active', trial_end: inDays(-1) }),
+      );
+      await call(
+        makeService(),
+        'handleTrialWillEnd',
+        trial({ trial_end: inDays(-1) }),
+      );
+      await call(
+        makeService(),
+        'handleTrialWillEnd',
+        trial({ status: 'active' }),
+      );
+
+      expect(billingEmail.trialEnding).not.toHaveBeenCalled();
+    });
+
+    it('sends nothing for a trial that is set to cancel', async () => {
+      await call(
+        makeService(),
+        'handleTrialWillEnd',
+        trial({ cancel_at_period_end: true }),
+      );
+
+      expect(billingEmail.trialEnding).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('cancellation', () => {
+    const update = (cancel: boolean) => ({
+      id: 'sub_live',
+      status: 'active',
+      cancel_at_period_end: cancel,
+      items: { data: [{ id: 'si_1', current_period_end: 1790000000 }] },
+    });
+    const previously = (cancel: boolean | undefined) =>
+      cancel === undefined ? undefined : { cancel_at_period_end: cancel };
+
+    function sent(): Array<{ kind: string; dedupeKey: string }> {
+      return billingEmail.planChanged.mock.calls.map(
+        (c) => c[0] as { kind: string; dedupeKey: string },
+      );
+    }
+
+    it('Stripe saying false -> true emails cancel_scheduled', async () => {
+      await call2(
+        makeService(),
+        'handleSubscriptionUpdated',
+        update(true),
+        previously(false),
+      );
+
+      expect(sent()).toHaveLength(1);
+      expect(billingEmail.planChanged.mock.calls[0][0]).toMatchObject({
+        userId: 'user-1',
+        kind: 'cancel_scheduled',
+        fromPlan: 'Pro',
+        toPlan: 'Free',
+        endsOn: new Date(1790000000 * 1000),
+      });
+    });
+
+    it('an in-app cancel still emails: our row was written before the webhook arrived', async () => {
+      // `downgradeToFree` and `cancelSubscription` store cancelAtPeriodEnd
+      // themselves, so by the time Stripe's event lands our row says true.
+      rowsOf('subscriptions')[0].cancelAtPeriodEnd = true;
+
+      await call2(
+        makeService(),
+        'handleSubscriptionUpdated',
+        update(true),
+        previously(false),
+      );
+
+      expect(sent().map((s) => s.kind)).toEqual(['cancel_scheduled']);
+    });
+
+    it('the same event delivered again carries the same key', async () => {
+      const service = makeService();
+      for (let i = 0; i < 2; i++) {
+        await call2(
+          service,
+          'handleSubscriptionUpdated',
+          update(true),
+          previously(false),
+        );
+      }
+
+      const [first, second] = sent();
+      expect(second.dedupeKey).toBe(first.dedupeKey);
+    });
+
+    it('an update that did not change the flag sends nothing', async () => {
+      const service = makeService();
+      await call2(
+        service,
+        'handleSubscriptionUpdated',
+        update(true),
+        previously(undefined),
+      );
+      await call2(service, 'handleSubscriptionUpdated', update(true), {
+        status: 'trialing',
+      });
+      await call2(
+        service,
+        'handleSubscriptionUpdated',
+        update(false),
+        previously(true),
+      );
+
+      expect(sent()).toHaveLength(0);
+    });
+
+    it('applying a scheduled downgrade at renewal sends no second email', async () => {
+      Object.assign(rowsOf('subscriptions')[0], {
+        scheduledPlanCode: 'BASIC',
+        scheduledChangeAt: new Date(1789000000 * 1000),
+      });
+      rowsOf('plans').push({ id: 1, code: 'BASIC', name: 'Basic' });
+
+      await call2(
+        makeService(),
+        'handleSubscriptionUpdated',
+        {
+          id: 'sub_live',
+          status: 'active',
+          cancel_at_period_end: false,
+          items: {
+            data: [
+              {
+                id: 'si_1',
+                current_period_start: 1790000000,
+                current_period_end: 1792600000,
+              },
+            ],
+          },
+        },
+        { current_period_start: 1787400000 },
+      );
+
+      expect(rowsOf('subscriptions')[0].planCode).toBe('BASIC');
+      expect(billingEmail.planChanged).not.toHaveBeenCalled();
+    });
+  });
+
+  it('subscription.deleted emails ended with the plan that ended', async () => {
+    await call(makeService(), 'handleSubscriptionDeleted', {
+      id: 'sub_live',
+      status: 'canceled',
+      items: { data: [{ id: 'si_1', current_period_end: 1790000000 }] },
+    });
+
+    expect(rowsOf('subscriptions')[0].planCode).toBe('FREE');
+    expect(billingEmail.planChanged).toHaveBeenCalledTimes(1);
+    expect(billingEmail.planChanged.mock.calls[0][0]).toMatchObject({
+      userId: 'user-1',
+      kind: 'ended',
+      fromPlan: 'Pro',
+      toPlan: 'Free',
+    });
   });
 });

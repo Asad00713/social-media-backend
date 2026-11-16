@@ -134,6 +134,7 @@ const notifier = {
 const realtime = { emitToUser: jest.fn() };
 const lookup = { getPrimaryWorkspaceId: jest.fn() };
 const paymentMethods = { getDefaultPaymentMethod: jest.fn() };
+const prefs = { shouldSend: jest.fn() };
 
 function make(): PaymentAlertsService {
   return new PaymentAlertsService(
@@ -141,6 +142,7 @@ function make(): PaymentAlertsService {
     realtime as never,
     lookup as never,
     paymentMethods as never,
+    prefs as never,
   );
 }
 
@@ -171,6 +173,43 @@ beforeEach(() => {
   paymentMethods.getDefaultPaymentMethod.mockResolvedValue({
     brand: 'visa',
     last4: '4242',
+  });
+  prefs.shouldSend.mockResolvedValue(true);
+});
+
+describe('paymentFailed and the billing_alert in-app preference', () => {
+  it('asks the owner’s in-app billing_alert switch for the workspace the bell links to', async () => {
+    await expect(make().paymentFailed(FAILED)).resolves.toBe(true);
+    expect(prefs.shouldSend).toHaveBeenCalledWith(
+      USER,
+      WS,
+      'billing_alert',
+      'app',
+    );
+    expect(notifier.paymentFailed).toHaveBeenCalledTimes(1);
+    expect(realtime.emitToUser).toHaveBeenCalledTimes(1);
+  });
+
+  it('switched off: no bell and no toast, and the failure is still recorded', async () => {
+    prefs.shouldSend.mockResolvedValue(false);
+    await expect(make().paymentFailed(FAILED)).resolves.toBe(false);
+    expect(notifier.paymentFailed).not.toHaveBeenCalled();
+    expect(realtime.emitToUser).not.toHaveBeenCalled();
+    // Kept, so a redelivery stays quiet and a later recovery is recognised.
+    expect(alertsTable).toEqual([
+      expect.objectContaining({ alertKey: FAILED.alertKey, kind: 'failed' }),
+    ]);
+  });
+
+  it('an owner with no workspace is asked at account level', async () => {
+    lookup.getPrimaryWorkspaceId.mockResolvedValue(null);
+    await make().paymentFailed(FAILED);
+    expect(prefs.shouldSend).toHaveBeenCalledWith(
+      USER,
+      null,
+      'billing_alert',
+      'app',
+    );
   });
 });
 

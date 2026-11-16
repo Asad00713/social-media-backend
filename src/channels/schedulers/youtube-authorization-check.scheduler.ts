@@ -1,8 +1,8 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { and, eq, sql } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
-import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
+import { ChannelHealthNotifier } from '../services/channel-health-notifier.service';
 import { ChannelService } from '../services/channel.service';
 import { YouTubeService } from '../services/youtube.service';
 
@@ -47,6 +47,7 @@ export class YoutubeAuthorizationCheckScheduler {
     @Inject(DRIZZLE) private readonly db: any,
     private readonly channelService: ChannelService,
     private readonly youtube: YouTubeService,
+    private readonly health: ChannelHealthNotifier,
   ) {}
 
   @Cron(CronExpression.EVERY_WEEK, {
@@ -68,7 +69,9 @@ export class YoutubeAuthorizationCheckScheduler {
       }>;
 
       if (rows.length === 0) {
-        this.logger.verbose('YouTube authorization check: no channels to verify');
+        this.logger.verbose(
+          'YouTube authorization check: no channels to verify',
+        );
         return;
       }
 
@@ -93,21 +96,11 @@ export class YoutubeAuthorizationCheckScheduler {
             // Genuine 401/403/invalid_grant — this IS proof the user revoked
             // us, not a transient failure.
             revoked++;
-            await this.db
-              .update(socialMediaChannels)
-              .set({
-                connectionStatus: 'expired',
-                lastError:
-                  'YouTube authorization is no longer valid — reconnect to continue',
-                updatedAt: new Date(),
-              })
-              .where(
-                and(
-                  eq(socialMediaChannels.id, Number(row.id)),
-                  // Disconnected meanwhile: it keeps that status.
-                  eq(socialMediaChannels.connectionStatus, 'connected'),
-                ),
-              );
+            await this.health.markExpired(Number(row.id), {
+              lastError:
+                'YouTube authorization is no longer valid — reconnect to continue',
+              updatedAt: new Date(),
+            });
 
             this.logger.warn(
               `YouTube channel ${row.id} is no longer authorized — marked expired`,

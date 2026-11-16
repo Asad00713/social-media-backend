@@ -1,6 +1,9 @@
+import { createHash } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EmailService } from '../../email/email.service';
+import { AppLinks } from '../../email/links/app-links';
+import { EmailSuppressionRepository } from '../../email/suppression/email-suppression.repository';
 import {
   GotenbergClient,
   GotenbergError,
@@ -27,6 +30,11 @@ import { ReportsRepository } from './reports.repository';
 import { ReportsService } from './reports.service';
 
 export { REPORT_SEND_JOB, type ReportSendJob } from './report-send.job';
+
+/** A stable, address-free stand-in for a recipient in an idempotency key. */
+function recipientHash(email: string): string {
+  return createHash('sha256').update(email).digest('hex').slice(0, 12);
+}
 
 export type ReportSendOutcome =
   | 'sent'
@@ -70,6 +78,8 @@ export class ReportSendService {
     private readonly emailService: EmailService,
     private readonly tokens: ReportTokensService,
     private readonly config: ConfigService,
+    private readonly links: AppLinks,
+    private readonly suppressions: EmailSuppressionRepository,
   ) {}
 
   async run(
@@ -78,6 +88,8 @@ export class ReportSendService {
       updateData(data: ReportSendJob): Promise<void>;
       /** BullMQ's count of attempts already finished; absent means a single attempt. */
       attemptsMade?: number;
+      /** When BullMQ created the job: the same on every retry of it. */
+      timestamp?: number;
       opts?: { attempts?: number };
     },
     now = new Date(),
@@ -179,20 +191,50 @@ export class ReportSendService {
         note: payload.note,
       };
       const replyTo = team.find((t) => t.isOwner)?.email;
+      // Names this send for Resend's idempotency: a scheduled run is its slot,
+      // a Send now is its job. Both are the same on every retry.
+      const runAtMs =
+        (expected ?? undefined)?.getTime() ?? job.timestamp ?? now.getTime();
 
       const failures: string[] = [];
       const sent = [...done];
       let pauseMs = PAUSE_BETWEEN_SENDS_MS;
       for (const [i, to] of pending.entries()) {
+        // An address that bounced or complained gets nothing more, as in the
+        // outbox: skipped, not counted as a failure (no retry can fix it).
+        if (await this.suppressions.isSuppressed(to)) {
+          this.logger.warn(
+            `Report ${row.id}: a recipient is suppressed (bounced or complained), skipped`,
+          );
+          continue;
+        }
         if (i > 0) await this.pause(pauseMs);
         const unsubscribeUrl = `${this.apiOrigin()}/reports/unsubscribe/${this.tokens.unsubscribeToken(row.id, to)}`;
-        const result = await this.emailService.sendEmail({
-          to,
-          ...reportEmail({ ...common, unsubscribeUrl }),
-          replyTo,
-          attachments,
-        });
-        if (result.success === true) {
+        const { subject, html, text, headers } = await reportEmail(
+          { ...common, unsubscribeUrl },
+          this.links,
+        );
+        const result = await this.emailService.deliver(
+          { to, subject, html, text, headers, replyTo, attachments },
+          {
+            idempotencyKey: `report.${row.id}.${runAtMs}.${recipientHash(to)}`,
+            tags: { category: 'reports', template: 'insight-report' },
+          },
+        );
+        // The unsubscribe token carries its issue time, so a retry after a lost
+        // response sends the same key with a different body. Resend refuses
+        // that, which means an earlier attempt already delivered this one
+        // (the same rule as email-outbox.service.ts).
+        const alreadySent =
+          result.success !== true &&
+          result.errorCode === 'invalid_idempotent_request' &&
+          (job.attemptsMade ?? 0) > 0;
+        if (alreadySent) {
+          this.logger.log(
+            `Report ${row.id}: a recipient was already sent by an earlier attempt`,
+          );
+        }
+        if (result.success === true || alreadySent) {
           sent.push(to);
           await job.updateData({ ...data, sent: [...sent] });
           pauseMs = PAUSE_BETWEEN_SENDS_MS;

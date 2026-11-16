@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Inject,
   Injectable,
@@ -36,7 +37,10 @@ export type PublicUser = Pick<
   | 'avatarColor'
   | 'createdAt'
   | 'updatedAt'
->;
+> & {
+  /** False for a Google-only account; the hash itself never leaves the server. */
+  hasPassword: boolean;
+};
 
 /**
  * The columns a relational query selects to build a `PublicUser`.
@@ -63,10 +67,19 @@ const PUBLIC_USER_COLUMNS = {
   updatedAt: true,
 } as const;
 
+/**
+ * `hasPassword`, computed in SQL next to PUBLIC_USER_COLUMNS, so a public read
+ * never loads the password hash at all.
+ */
+const PUBLIC_USER_EXTRAS = (fields: { password: typeof users.password }) => ({
+  hasPassword: sql<boolean>`${fields.password} is not null`.as('has_password'),
+});
+
 /** Narrow a full row to the public shape. Counterpart to PUBLIC_USER_COLUMNS
  *  for the paths that write and get the whole row back. */
-function toPublicUser(row: User): PublicUser {
+export function toPublicUser(row: User): PublicUser {
   return {
+    hasPassword: row.password !== null,
     id: row.id,
     email: row.email,
     name: row.name,
@@ -123,6 +136,7 @@ export class UsersService {
   async findAll(): Promise<PublicUser[]> {
     const allUsers = await this.db.query.users.findMany({
       columns: PUBLIC_USER_COLUMNS,
+      extras: PUBLIC_USER_EXTRAS,
     });
 
     return allUsers;
@@ -132,6 +146,7 @@ export class UsersService {
     const user = await this.db.query.users.findFirst({
       where: eq(users.id, id),
       columns: PUBLIC_USER_COLUMNS,
+      extras: PUBLIC_USER_EXTRAS,
     });
 
     if (!user) {
@@ -141,10 +156,12 @@ export class UsersService {
     return user;
   }
 
-  async findOneWithSuspension(
-    id: string,
-  ): Promise<
-    PublicUser & { isActive: boolean; suspendedReason: string | null }
+  async findOneWithSuspension(id: string): Promise<
+    PublicUser & {
+      isActive: boolean;
+      suspendedReason: string | null;
+      sessionsRevokedAt: Date | null;
+    }
   > {
     const user = await this.db.query.users.findFirst({
       where: eq(users.id, id),
@@ -152,7 +169,9 @@ export class UsersService {
         ...PUBLIC_USER_COLUMNS,
         isActive: true,
         suspendedReason: true,
+        sessionsRevokedAt: true,
       },
+      extras: PUBLIC_USER_EXTRAS,
     });
 
     if (!user) {
@@ -277,6 +296,7 @@ export class UsersService {
 
   async resetPassword(userId: string, newPassword: string): Promise<void> {
     const hashedPassword = await bcrypt.hash(newPassword, 10);
+    const now = new Date();
     // Use raw SQL to avoid Drizzle timestamp null mapping issues
     await this.db.execute(sql`
             UPDATE users
@@ -284,7 +304,9 @@ export class UsersService {
                 password = ${hashedPassword},
                 password_reset_token = NULL,
                 password_reset_token_expires_at = NULL,
-                updated_at = ${new Date()}
+                -- Ends every session in the same write (migration 0070).
+                sessions_revoked_at = ${now},
+                updated_at = ${now}
             WHERE id = ${userId}
         `);
   }
@@ -299,7 +321,30 @@ export class UsersService {
     return user;
   }
 
+  /**
+   * Profile fields only. Email and password have flows of their own (a code to
+   * the new address; the current password), so an old client that still sends
+   * them fails loudly instead of having the field silently dropped.
+   */
   async update(id: string, updateUserDto: UpdateUserDto): Promise<PublicUser> {
+    const { email, password, ...profile } = updateUserDto;
+    if (email !== undefined) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'USE_EMAIL_CHANGE_FLOW',
+        message: 'Change your email from Settings → Profile.',
+      });
+    }
+    if (password !== undefined) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'USE_PASSWORD_CHANGE_FLOW',
+        message: 'Change your password from Settings → Profile.',
+      });
+    }
+
     const user = await this.findOne(id);
 
     if (!user) {
@@ -307,13 +352,9 @@ export class UsersService {
     }
 
     const updateData: Partial<NewUser> = {
-      ...updateUserDto,
+      ...profile,
       updatedAt: new Date(),
     };
-
-    if (updateUserDto.password) {
-      updateData.password = await bcrypt.hash(updateUserDto.password, 10);
-    }
 
     const [updatedUser] = await this.db
       .update(users)
@@ -451,6 +492,11 @@ export class UsersService {
    * Google proved the mailbox, so the address is verified. The sub is linked
    * only when the row has none, and a name only fills an empty one — a name
    * the person typed themselves is never overwritten by Google's.
+   *
+   * `clearPassword` (pre-hijack) also ends every session in the same write:
+   * whoever registered the address before its owner loses the sessions they
+   * opened. The clock is read before the UPDATE, so the session Google
+   * sign-in mints right after is issued in or after the revocation second.
    */
   async applyGoogleSignIn(
     userId: string,
@@ -460,6 +506,7 @@ export class UsersService {
       clearPassword: boolean;
     },
   ): Promise<void> {
+    const now = new Date();
     await this.db.execute(sql`
       UPDATE users
       SET
@@ -467,7 +514,8 @@ export class UsersService {
         google_sub = COALESCE(google_sub, ${input.googleSub}),
         name = COALESCE(name, ${input.name}),
         password = CASE WHEN ${input.clearPassword} THEN NULL ELSE password END,
-        updated_at = ${new Date()}
+        sessions_revoked_at = CASE WHEN ${input.clearPassword} THEN ${now} ELSE sessions_revoked_at END,
+        updated_at = ${now}
       WHERE id = ${userId}
     `);
   }

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { EmailModule } from '../email/email.module';
+import { ContactAckLimiter } from './contact-ack-limiter';
 import { ContactController } from './contact.controller';
 import { ContactService } from './contact.service';
 
@@ -14,6 +15,6 @@ import { ContactService } from './contact.service';
 @Module({
   imports: [ConfigModule, EmailModule],
   controllers: [ContactController],
-  providers: [ContactService],
+  providers: [ContactService, ContactAckLimiter],
 })
 export class ContactModule {}

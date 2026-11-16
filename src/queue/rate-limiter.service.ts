@@ -409,9 +409,15 @@ export class RateLimiterService {
   }
 
   /**
-   * Clean up on module destroy
+   * Clean up on module destroy. A connection that is not ready is dropped:
+   * QUIT would sit in ioredis's offline queue and hold the shutdown up. A
+   * failed QUIT drops it too.
    */
   async onModuleDestroy() {
-    await this.redis.quit();
+    if (this.redis.status !== 'ready') {
+      this.redis.disconnect();
+      return;
+    }
+    await this.redis.quit().catch(() => this.redis.disconnect());
   }
 }

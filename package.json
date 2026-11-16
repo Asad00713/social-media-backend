@@ -7,12 +7,12 @@
   "license": "UNLICENSED",
   "scripts": {
     "build": "nest build",
-    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+    "format": "prettier --write \"src/**/*.{ts,tsx}\" \"test/**/*.ts\"",
     "start": "node dist/src/main",
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
     "start:nest": "nest start",
-    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
+    "lint": "eslint \"{src,apps,libs,test}/**/*.{ts,tsx}\" --fix",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
@@ -27,7 +27,8 @@
     "library:backfill-sizes": "node dist/src/media-library/scripts/backfill-file-sizes",
     "library:migrate-documents-to-r2": "node dist/src/media-library/scripts/migrate-documents-to-r2",
     "db:push": "echo \"REFUSING: db:push rewrites the schema with no migration record. Write a numbered .sql migration and use db:migrate:sql.\" && exit 1",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "email:preview": "ts-node -r tsconfig-paths/register src/email/preview/write-previews.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.191",
@@ -49,10 +50,12 @@
     "@nestjs/schedule": "^6.0.1",
     "@nestjs/throttler": "^6.5.0",
     "@nestjs/websockets": "^11.1.12",
+    "@react-email/components": "^1.0.12",
     "@slack/web-api": "^7.16.0",
     "@tavily/core": "^0.6.4",
     "axios": "^1.13.2",
     "bcrypt": "^6.0.0",
+    "bowser": "^2.15.0",
     "bullmq": "^5.66.4",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.3",
@@ -71,11 +74,14 @@
     "passport-jwt": "^4.0.1",
     "passport-local": "^1.0.0",
     "pg": "^8.22.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
     "reflect-metadata": "^0.2.2",
     "resend": "^6.7.0",
     "rxjs": "^7.8.1",
     "socket.io": "^4.8.3",
     "stripe": "^20.1.0",
+    "svix": "^1.84.1",
     "twitter-text": "3.1.0",
     "undici": "6.24.1",
     "uuid": "^13.0.0",
@@ -99,6 +105,8 @@
     "@types/passport-jwt": "^4.0.1",
     "@types/passport-local": "^1.0.38",
     "@types/pg": "^8.20.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "@types/supertest": "^6.0.2",
     "@types/uuid": "^10.0.0",
     "@types/yazl": "^3.3.1",
@@ -122,7 +130,8 @@
     "moduleFileExtensions": [
       "js",
       "json",
-      "ts"
+      "ts",
+      "tsx"
     ],
     "rootDir": "src",
     "modulePaths": [
@@ -130,10 +139,15 @@
     ],
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
-      "^.+\\.(t|j)s$": "ts-jest"
+      "^.+\\.(t|j)sx?$": "ts-jest",
+      "[/\\\\]@react-email[/\\\\]render[/\\\\]dist[/\\\\]node[/\\\\]index\\.cjs$": "<rootDir>/../test/transforms/inline-dynamic-imports.cjs"
     },
+    "transformIgnorePatterns": [
+      "^(?!.*/@react-email/render/).*/node_modules/"
+    ],
     "collectCoverageFrom": [
-      "**/*.(t|j)s"
+      "**/*.(t|j)s",
+      "**/*.tsx"
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"

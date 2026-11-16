@@ -5,14 +5,20 @@ import {
   HttpStatus,
   Post,
   ServiceUnavailableException,
+  UseGuards,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
+import { AppLinks } from '../email/links/app-links';
+import { ReportsPublicThrottlerGuard } from '../insights/reports/reports-public-throttler.guard';
 import { ContactService } from './contact.service';
 import { CreateContactDto } from './dto';
 
 @Controller('contact')
 export class ContactController {
-  constructor(private readonly contactService: ContactService) {}
+  constructor(
+    private readonly contactService: ContactService,
+    private readonly links: AppLinks,
+  ) {}
 
   /**
    * Accept a message from the marketing site's contact form.
@@ -20,11 +26,14 @@ export class ContactController {
    * Deliberately unauthenticated — the people most likely to use it do not have
    * an account yet — so it is rate limited instead: five submissions per IP per
    * ten minutes, which is far more than a person needs and far less than a
-   * script wants. The DTO also carries a honeypot field for the automated
+   * script wants. The limit is keyed on the caller from X-Forwarded-For: the
+   * app sets no `trust proxy`, so `req.ip` is the edge for everyone and the
+   * default guard would share one bucket. The DTO also carries a honeypot field for the automated
    * traffic that does get through.
    */
   @Post()
   @HttpCode(HttpStatus.OK)
+  @UseGuards(ReportsPublicThrottlerGuard)
   @Throttle({ default: { limit: 5, ttl: 600_000 } })
   async submit(@Body() dto: CreateContactDto) {
     const { delivered } = await this.contactService.submit(dto);
@@ -34,13 +43,14 @@ export class ContactController {
       // 503 rather than 500: the enquiry itself was fine, the mail transport
       // was not, and the client can honestly say "try emailing us directly".
       throw new ServiceUnavailableException(
-        'We could not deliver your message right now. Please email info@schedura.ai directly.',
+        `We could not deliver your message right now. Please email ${this.links.supportEmail()} directly.`,
       );
     }
 
     return {
       success: true,
-      message: 'Thanks — your message reached us. We reply within one business day.',
+      message:
+        'Thanks — your message reached us. We reply within one business day.',
     };
   }
 }

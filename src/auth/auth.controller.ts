@@ -5,13 +5,15 @@ import {
   HttpCode,
   HttpException,
   HttpStatus,
+  Headers,
   Ip,
+  Req,
   Res,
   UseGuards,
   Get,
 } from '@nestjs/common';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import {
   AdminChallengeService,
@@ -32,12 +34,19 @@ import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { CreateUserDto } from 'src/users/dto/create-user.dto';
 import { SkipLaunchGate } from './decorators/skip-launch-gate.decorator';
+import {
+  deviceCookieOf,
+  readOrMintDeviceId,
+  setDeviceCookie,
+} from './devices/device-cookie';
+import { KnownDevicesService } from './devices/known-devices.service';
 
 @Controller('auth')
 export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly adminChallengeService: AdminChallengeService,
+    private readonly knownDevices: KnownDevicesService,
   ) {}
 
   // ==================== Admin sign-in second factor ====================
@@ -108,6 +117,8 @@ export class AuthController {
   async register(
     @Body() createUserDto: CreateUserDto,
     @Ip() ip: string,
+    @Req() request: Request,
+    @Headers('user-agent') userAgent: string | undefined,
     @Res({ passthrough: true }) response: Response,
   ) {
     const { accessToken, user, message } =
@@ -124,6 +135,16 @@ export class AuthController {
       sameSite: 'none', // Required for cross-origin cookies
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
+    // Only once the session exists: the signup browser is the first known
+    // device, recorded without an email.
+    const device = readOrMintDeviceId(deviceCookieOf(request.cookies));
+    setDeviceCookie(response, device.id);
+    this.knownDevices.track(
+      user.id,
+      device.id,
+      { ip, userAgent: userAgent ?? null },
+      { silent: true },
+    );
 
     return {
       accessToken,
@@ -137,6 +158,8 @@ export class AuthController {
   async login(
     @Body() loginDto: LoginDto,
     @Ip() ip: string,
+    @Req() request: Request,
+    @Headers('user-agent') userAgent: string | undefined,
     @Res({ passthrough: true }) response: Response,
   ) {
     const { accessToken, user } = await this.authService.login(loginDto, ip);
@@ -151,6 +174,14 @@ export class AuthController {
       secure: true, // Always true for cross-origin cookies
       sameSite: 'none', // Required for cross-origin cookies
       maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+    // Only once the session exists: a failed sign-in or a failed token mint
+    // records no device and sends no A6.
+    const device = readOrMintDeviceId(deviceCookieOf(request.cookies));
+    setDeviceCookie(response, device.id);
+    this.knownDevices.track(user.id, device.id, {
+      ip,
+      userAgent: userAgent ?? null,
     });
 
     return {
@@ -275,7 +306,15 @@ export class AuthController {
   @Post('reset-password')
   @HttpCode(HttpStatus.OK)
   @SkipLaunchGate()
-  async resetPassword(@Body() dto: ResetPasswordDto) {
-    return this.authService.resetPassword(dto.token, dto.password);
+  async resetPassword(
+    @Body() dto: ResetPasswordDto,
+    @Ip() ip: string | undefined,
+    @Headers('user-agent') userAgent: string | undefined,
+  ) {
+    // The request context feeds A5's Device and Location rows.
+    return this.authService.resetPassword(dto.token, dto.password, {
+      ip: ip ?? null,
+      userAgent: userAgent ?? null,
+    });
   }
 }

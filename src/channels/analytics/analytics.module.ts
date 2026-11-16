@@ -10,6 +10,7 @@ import { ChannelLookupRepoProvider } from './guards/channel-ownership.guard';
 import { QUEUES } from '../../queue/queue.module';
 import { WorkspaceRoleModule } from '../../workspace-members/workspace-role.module';
 import { FirstWeekTriggerModule } from '../../first-week/first-week-trigger.module';
+import { ChannelHealthModule } from '../channel-health.module';
 import { ChannelSnapshotsDispatcherProcessor } from './processors/channel-snapshots-dispatcher.processor';
 import { ChannelProfileSnapshotHandler } from './handlers/channel-profile-snapshot.handler';
 import { PostMetricSnapshotHandler } from './handlers/post-metric-snapshot.handler';
@@ -52,6 +53,8 @@ import { TwitterAnalyticsAdapter } from './adapters/twitter/twitter-analytics.ad
     // The capability guard only; not WorkspaceMembersModule (see its docs).
     WorkspaceRoleModule,
     FirstWeekTriggerModule,
+    // The profile snapshot marks a channel expired through the notifier.
+    ChannelHealthModule,
   ],
   controllers: [
     AnalyticsController,

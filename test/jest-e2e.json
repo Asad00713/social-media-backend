@@ -1,9 +1,11 @@
 {
-  "moduleFileExtensions": ["js", "json", "ts"],
+  "moduleFileExtensions": ["js", "json", "ts", "tsx"],
   "rootDir": ".",
   "testEnvironment": "node",
   "testRegex": ".e2e-spec.ts$",
   "transform": {
-    "^.+\\.(t|j)s$": "ts-jest"
-  }
+    "^.+\\.(t|j)sx?$": "ts-jest",
+    "[/\\\\]@react-email[/\\\\]render[/\\\\]dist[/\\\\]node[/\\\\]index\\.cjs$": "<rootDir>/transforms/inline-dynamic-imports.cjs"
+  },
+  "transformIgnorePatterns": ["^(?!.*/@react-email/render/).*/node_modules/"]
 }

@@ -75,6 +75,7 @@ function make(status: string) {
     {} as never,
     postService as never,
     {} as never,
+    {} as never,
   );
   return { processor, postService };
 }

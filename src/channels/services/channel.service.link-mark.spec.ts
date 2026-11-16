@@ -88,6 +88,7 @@ function make() {
     {} as never,
     { ownerOf: jest.fn(async () => 'owner-1') } as never,
     {} as never,
+    {} as never,
   );
   // Not under test here: the billing counter and the orphaned-target re-link.
   (svc as any).incrementChannelCount = jest.fn(async () => undefined);

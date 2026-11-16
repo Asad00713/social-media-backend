@@ -4,6 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import { UsersService } from '../../users/users.service';
 import { normalizeEmail } from '../../users/normalize-email';
 import { LoginActivityService } from '../services/login-activity.service';
+import { WelcomeEmailService } from '../welcome-email.service';
 import {
   generateCodeChallenge,
   generateCodeVerifier,
@@ -30,7 +31,8 @@ interface StatePayload {
 
 export interface GoogleCallbackResult {
   redirectUrl: string;
-  session: { userId: string; email: string } | null;
+  /** `isNewAccount`: the create branch; its first device is recorded silently. */
+  session: { userId: string; email: string; isNewAccount: boolean } | null;
   mode: GoogleAuthMode;
 }
 
@@ -44,6 +46,7 @@ export class GoogleAuthService {
     private readonly config: ConfigService,
     private readonly users: UsersService,
     private readonly loginActivity: LoginActivityService,
+    private readonly welcomeEmail: WelcomeEmailService,
   ) {}
 
   start(mode: GoogleAuthMode): {
@@ -159,7 +162,13 @@ export class GoogleAuthService {
           googleSub: claims.sub,
         });
         await this.loginActivity.recordSync(created.id, ip);
-        return this.succeed(mode, created.id, created.email);
+        // F1: fire and forget, it never rejects and never delays the sign-up.
+        void this.welcomeEmail.send({
+          id: created.id,
+          email: created.email,
+          name: created.name,
+        });
+        return this.succeed(mode, created.id, created.email, true);
       }
 
       await this.users.applyGoogleSignIn(decision.user.id, {
@@ -167,14 +176,16 @@ export class GoogleAuthService {
         name: claims.name,
         // Pre-hijack: an unverified row's password was never proven to belong to
         // the mailbox owner (anyone could have registered their address). Google
-        // has now proven it, so the password goes; the owner can set one again
-        // via Forgot password or Profile.
+        // has now proven it, so the password goes and every session the
+        // squatter opened ends with it (same UPDATE). The owner can set a
+        // password again only via Forgot password: PATCH /users/:id no longer
+        // takes one, and POST /users/me/password answers PASSWORD_NOT_SET.
         clearPassword: !decision.user.isEmailVerified,
       });
       await this.loginActivity.record(decision.user.id, ip);
       // The stored email, not Google's spelling: the session's email claim is
       // compared against the allowlist and shown back to the user.
-      return this.succeed(mode, decision.user.id, decision.user.email);
+      return this.succeed(mode, decision.user.id, decision.user.email, false);
     } catch (error) {
       this.logger.warn(
         `Google sign-in failed after exchange: ${error instanceof Error ? error.message : 'unknown'}`,
@@ -187,10 +198,11 @@ export class GoogleAuthService {
     mode: GoogleAuthMode,
     userId: string,
     email: string,
+    isNewAccount: boolean,
   ): GoogleCallbackResult {
     return {
       redirectUrl: this.done('success', mode),
-      session: { userId, email },
+      session: { userId, email, isNewAccount },
       mode,
     };
   }

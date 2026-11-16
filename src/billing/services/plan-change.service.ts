@@ -28,7 +28,11 @@ import { createStripeSubscriptionDirect } from '../providers/stripe-direct-subsc
 import { writeStripeBasePlanRow } from '../providers/stripe-provider-row.util';
 import { clearStaleStripeSubscription } from '../providers/stripe-stale-subscription.util';
 import { invoiceStripeProrationsImmediately } from '../providers/stripe-immediate-invoice.util';
-import { NotificationEmitterService } from '../../notifications/notification-emitter.service';
+import {
+  BillingEmailService,
+  billingEmailKey,
+  formatMonthlyPrice,
+} from './billing-email.service';
 
 export interface PlanChangePreview {
   currentPlan: {
@@ -86,7 +90,7 @@ export class PlanChangeService {
     private stripeService: StripeService,
     private usageService: UsageService,
     private readonly lookup: SubscriptionLookupService,
-    private notificationEmitter: NotificationEmitterService,
+    private billingEmail: BillingEmailService,
     private readonly providers: ProviderRegistryService,
   ) {}
 
@@ -575,20 +579,31 @@ export class PlanChangeService {
       `Plan changed for workspace ${workspaceId}: ${oldPlanCode} -> ${newPlanCode}`,
     );
 
-    // 10. Send notification to user about plan change
-    try {
-      await this.notificationEmitter.planChanged(
+    // 10. Tell the user: the in-app bell and the email. Never throws, so a
+    //     notification problem cannot fail a plan change that already happened.
+    //     The key ends in the clock, not the period end: two changes inside one
+    //     period (Basic -> Pro, then Pro -> Max) are two different emails.
+    const changeKind = preview.isUpgrade ? 'upgraded' : 'downgraded';
+    await this.billingEmail.planChanged({
+      userId,
+      kind: changeKind,
+      fromPlan: preview.currentPlan.name,
+      toPlan: preview.newPlan.name,
+      billed: formatMonthlyPrice(target.basePriceCents),
+      // A subscription created just now carries its own period end.
+      nextCharge:
+        (subscriptionUpdateData as { currentPeriodEnd?: Date })
+          .currentPeriodEnd ?? sub.currentPeriodEnd,
+      endsOn: null,
+      provider: adapter.name,
+      dedupeKey: billingEmailKey(
+        'plan-changed',
         userId,
-        preview.currentPlan.name,
-        preview.newPlan.name,
-      );
-      this.logger.log(`Notification sent to user ${userId} about plan change`);
-    } catch (error) {
-      this.logger.error(
-        `Failed to send plan change notification: ${error.message}`,
-      );
-      // Don't fail the plan change if notification fails
-    }
+        changeKind,
+        newStripeSubscriptionId ?? sub.stripeSubscriptionId ?? `sub${sub.id}`,
+        Date.now(),
+      ),
+    });
 
     return {
       success: true,
@@ -940,17 +955,26 @@ export class PlanChangeService {
       `Scheduled downgrade for user ${sub.userId}: ${oldPlanCode} -> ${target.code} at ${sub.currentPeriodEnd?.toISOString() ?? 'period end'}`,
     );
 
-    try {
-      await this.notificationEmitter.planChanged(
+    // The plan only changes at period end, so this says so (the applying
+    // webhook sends nothing more). Never throws; see the note on step 10 of
+    // `changePlan` for the key.
+    await this.billingEmail.planChanged({
+      userId,
+      kind: 'downgrade_scheduled',
+      fromPlan: preview.currentPlan.name,
+      toPlan: preview.newPlan.name,
+      billed: formatMonthlyPrice(target.basePriceCents),
+      nextCharge: null,
+      endsOn: sub.currentPeriodEnd,
+      provider: adapter.name,
+      dedupeKey: billingEmailKey(
+        'plan-changed',
         userId,
-        preview.currentPlan.name,
-        preview.newPlan.name,
-      );
-    } catch (error: any) {
-      this.logger.error(
-        `Failed to send plan change notification: ${error.message}`,
-      );
-    }
+        'downgrade_scheduled',
+        sub.stripeSubscriptionId ?? `sub${sub.id}`,
+        Date.now(),
+      ),
+    });
 
     return {
       success: true,
