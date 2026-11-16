@@ -4,6 +4,7 @@ import type {
   FailureEntry,
   PostFailureBatchService,
 } from '../../email/batching/post-failure-batch.service';
+import type { EmailOnceService } from '../../email/email-once.service';
 import type { NotificationEmitterService } from '../../notifications/notification-emitter.service';
 import type {
   NotifyInput,
@@ -27,7 +28,9 @@ interface ChannelRow {
   accountName: string;
 }
 
-function make(opts: { creatorIsMember?: boolean } = {}) {
+function make(
+  opts: { creatorIsMember?: boolean; onceKeys?: Set<string> } = {},
+) {
   let channelRows: ChannelRow[] = [
     { id: 1, username: 'lumierecafe', accountName: 'Lumiere Cafe' },
     { id: 2, username: null, accountName: 'Lumière Café' },
@@ -76,6 +79,16 @@ function make(opts: { creatorIsMember?: boolean } = {}) {
       Promise.resolve(opts.creatorIsMember === false ? null : 'MEMBER'),
     ),
   };
+  // Every claim wins unless a test passes its own key set (EmailOnceService).
+  const once = {
+    claim: jest.fn((key: string, _ttl: number) => {
+      const keys = opts.onceKeys;
+      if (!keys) return Promise.resolve(true);
+      if (keys.has(key)) return Promise.resolve(false);
+      keys.add(key);
+      return Promise.resolve(true);
+    }),
+  };
   const svc = new PublishFailureNotifier(
     db as unknown as DbType,
     batch as unknown as PostFailureBatchService,
@@ -83,9 +96,11 @@ function make(opts: { creatorIsMember?: boolean } = {}) {
     recipients as unknown as RecipientsService,
     emitter as unknown as NotificationEmitterService,
     roles as unknown as WorkspaceRoleService,
+    once as unknown as EmailOnceService,
   );
   return {
     svc,
+    once,
     db,
     batch,
     notify,
@@ -463,5 +478,41 @@ describe('PublishFailureNotifier.onFinalJobFailure', () => {
       svc.onFinalJobFailure('post-1', new Error('x')),
     ).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalled();
+  });
+});
+
+describe('PublishFailureNotifier bell dedupe', () => {
+  it('a scheduler failure then the final job failure rings the bell once per person, and still records both for the email window', async () => {
+    const { svc, emitter, batch, once, setPost } = make({
+      onceKeys: new Set<string>(),
+    });
+    const failed = post();
+    setPost(failed);
+
+    await svc.onPublishOutcome(failed, 'scheduler');
+    await svc.onFinalJobFailure('post-1', new Error('Job timed out'));
+
+    // creator, owner, admin: one bell each for (post-1, channel 1).
+    expect(emitter.postFailed).toHaveBeenCalledTimes(3);
+    // The email window dedupes these itself at flush time.
+    expect(batch.record).toHaveBeenCalledTimes(6);
+    expect(once.claim).toHaveBeenCalledWith(
+      'post-failed-bell.post-1.1.creator',
+      600,
+    );
+  });
+
+  it('a second channel of the same post rings its own bell', async () => {
+    const { svc, emitter } = make({ onceKeys: new Set<string>() });
+    const failed = post({
+      targets: [
+        { channelId: '1', platform: 'instagram', status: 'failed' },
+        { channelId: '3', platform: 'facebook', status: 'failed' },
+      ],
+    });
+
+    await svc.onPublishOutcome(failed, 'scheduler');
+
+    expect(emitter.postFailed).toHaveBeenCalledTimes(6);
   });
 });

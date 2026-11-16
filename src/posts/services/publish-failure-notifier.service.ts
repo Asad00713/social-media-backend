@@ -5,10 +5,12 @@ import { DRIZZLE } from '../../drizzle/drizzle.module';
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 import { posts, type MediaItem } from '../../drizzle/schema/posts.schema';
 import {
+  POST_FAILURE_WINDOW_MS,
   PostFailureBatchService,
   postTitle,
   type FailureEntry,
 } from '../../email/batching/post-failure-batch.service';
+import { EmailOnceService } from '../../email/email-once.service';
 import { networkName } from '../../email/render/components/post-card';
 import { NotificationEmitterService } from '../../notifications/notification-emitter.service';
 import { NotifyService } from '../../notifications/notify.service';
@@ -39,6 +41,12 @@ export interface NotifiablePost {
 }
 
 const NOTIFY_STATUSES = new Set(['failed', 'partially_published']);
+/**
+ * One bell per (post, channel, person) per failure episode: publishPost's
+ * outcome and the job's final failure both report the same failure seconds
+ * apart. The episode is the email window, which dedupes the same pair.
+ */
+const BELL_ONCE_TTL_S = POST_FAILURE_WINDOW_MS / 1000;
 /** Shown instead of a message that was never meant for people. */
 export const GENERIC_REASON = "Schedura couldn't publish it.";
 /** What publishPost stores when the thrown value was not an Error. */
@@ -113,6 +121,7 @@ export class PublishFailureNotifier {
     private readonly recipients: RecipientsService,
     private readonly emitter: NotificationEmitterService,
     private readonly roles: WorkspaceRoleService,
+    private readonly once: EmailOnceService,
   ) {}
 
   /** A person pressing "Publish now" sees the result on screen: no email. */
@@ -217,18 +226,25 @@ export class PublishFailureNotifier {
         otherPublished,
       };
       for (const userId of userIds) {
-        await this.notify.notify({
-          userId,
-          workspaceId: ws,
-          event: 'post_failed',
-          bell: () =>
-            this.emitter.postFailed(
-              userId,
-              networkName(target.platform),
-              postTitle(entry.caption),
-              entry.reason,
-            ),
-        });
+        // Fails open: with Redis down a rare second bell beats a missing one.
+        const firstBell = await this.once.claim(
+          `post-failed-bell.${post.id}.${String(target.channelId)}.${userId}`,
+          BELL_ONCE_TTL_S,
+        );
+        if (firstBell) {
+          await this.notify.notify({
+            userId,
+            workspaceId: ws,
+            event: 'post_failed',
+            bell: () =>
+              this.emitter.postFailed(
+                userId,
+                networkName(target.platform),
+                postTitle(entry.caption),
+                entry.reason,
+              ),
+          });
+        }
         try {
           await this.batch.record(userId, ws, entry);
         } catch (err) {
