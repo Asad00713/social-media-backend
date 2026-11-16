@@ -52,11 +52,11 @@ beforeEach(() => {
 afterEach(() => jest.restoreAllMocks());
 
 describe('EmailProcessor', () => {
-  it('consumes the email queue at 4 jobs at once and 8 sends a second', () => {
+  it('consumes the email queue at 4 jobs at once and 5 sends a second', () => {
     expect(QUEUES.EMAIL).toBe('email');
     expect(
       Reflect.getMetadata('bullmq:worker_metadata', EmailProcessor),
-    ).toEqual({ concurrency: 4, limiter: { max: 8, duration: 1000 } });
+    ).toEqual({ concurrency: 4, limiter: { max: 5, duration: 1000 } });
   });
 
   it('hands a send job to the outbox with its attempt count', async () => {

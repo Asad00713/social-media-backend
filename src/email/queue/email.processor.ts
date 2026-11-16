@@ -12,14 +12,16 @@ import { EMAIL_JOB_SEND, type EmailJobData } from './email-job';
 import { EmailOutboxService } from './email-outbox.service';
 
 /**
- * Consumes the `email` queue at 8 sends a second (spec §9). BullMQ keeps the
- * limiter's counter in Redis, per queue, so every worker on every replica
- * shares the one 8/s budget. Job names: `send`, and `post-failed-flush`
- * (the C1/C1a window closing).
+ * Consumes the `email` queue at 5 sends a second. BullMQ keeps the limiter's
+ * counter in Redis, per queue, so every worker on every replica shares the
+ * one 5/s budget. Resend's default is 10/s per team, and sendNow (codes,
+ * resets, invites, contact), reports and leads call it outside this limiter:
+ * 5 leaves them headroom. Job names: `send`, and `post-failed-flush` (the
+ * C1/C1a window closing).
  */
 @Processor(QUEUES.EMAIL, {
   concurrency: 4,
-  limiter: { max: 8, duration: 1000 },
+  limiter: { max: 5, duration: 1000 },
 })
 export class EmailProcessor extends WorkerHost {
   private readonly logger = new Logger(EmailProcessor.name);

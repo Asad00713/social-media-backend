@@ -502,7 +502,7 @@ isSuppressed(email: string): Promise<boolean>; suppress(email: string, reason: '
   - `plain`: `def.footerReason(props)`, links `Help center · Privacy`.
   - `def.footerReason` overrides line 1 for every kind.
   - The workspace name comes from one `select name from workspace where id`.
-- **Queue:** `@Processor(QUEUES.EMAIL, { concurrency: 4, limiter: { max: 8, duration: 1000 } })`. Jobs are added with `{ jobId: key, attempts: 5, backoff: { type: 'exponential', delay: 2000 }, delay: delayMs }`.
+- **Queue:** `@Processor(QUEUES.EMAIL, { concurrency: 4, limiter: { max: 5, duration: 1000 } })` (lowered from 8 in the final fix wave, so sendNow, reports and leads keep headroom under Resend's default 10/s per team). Jobs are added with `{ jobId: key, attempts: 5, backoff: { type: 'exponential', delay: 2000 }, delay: delayMs }`.
 - **Retryable** Resend `error.name` ∈ `rate_limit_exceeded`, `concurrent_idempotent_requests`, `application_error`, `internal_server_error`, or `statusCode >= 500`, or `statusCode === null` (a network error). Everything else is unrecoverable (`UnrecoverableError` from `bullmq`).
 - **Guard order** in `process`:
   1. `def = getTemplate(data.template)`;
