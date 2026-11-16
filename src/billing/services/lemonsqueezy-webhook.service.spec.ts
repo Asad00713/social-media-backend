@@ -256,10 +256,13 @@ function makeDb(): any {
       const target = tableName(t);
       let patch: Row = {};
       let match: Predicate = () => true;
+      let matched: Row[] = [];
+      // Match and patch in ONE synchronous step, as a single UPDATE
+      // statement does: a conditional update (`... AND status = 'past_due'`)
+      // can then be won by exactly one of two concurrent callers.
       const apply = (): void => {
-        for (const row of rowsOf(target)) {
-          if (match(row)) Object.assign(row, patch);
-        }
+        matched = rowsOf(target).filter((row) => match(row));
+        for (const row of matched) Object.assign(row, patch);
       };
       const chain: any = {
         set: (v: Row) => {
@@ -271,6 +274,19 @@ function makeDb(): any {
           apply();
           return chain;
         },
+        returning: (projection?: Record<string, unknown>) =>
+          Promise.resolve(
+            matched.map((row) => {
+              if (!projection) return row;
+              const out: Row = {};
+              for (const [alias, column] of Object.entries(projection)) {
+                const name = (column as any)?.name;
+                out[alias] =
+                  typeof name === 'string' ? row[camel(name)] : undefined;
+              }
+              return out;
+            }),
+          ),
         then: (resolve: (v: unknown) => unknown) => {
           apply();
           return Promise.resolve([]).then(resolve);
@@ -325,8 +341,16 @@ const lookup = {
   applyLimitsToAllWorkspaces: jest.fn().mockResolvedValue(undefined),
 };
 
+const paymentAlerts = {
+  paymentFailed: jest.fn().mockResolvedValue(true),
+  paymentSucceeded: jest.fn().mockResolvedValue(true),
+};
+
 function make(): LemonSqueezyWebhookService {
-  return new LemonSqueezyWebhookService(lookup as never);
+  return new LemonSqueezyWebhookService(
+    lookup as never,
+    paymentAlerts as never,
+  );
 }
 
 /** A paying Lemon Squeezy account: a base plan and one add-on subscription. */
@@ -1097,6 +1121,122 @@ describe('payment events (a subscription INVOICE, not a subscription)', () => {
     });
 
     expect(accountRow().status).toBe('active');
+  });
+});
+
+// ------------------------------------------------------------ owner alerts
+
+describe('payment alerts to the billing owner', () => {
+  function failedInvoice(updatedAt: string): unknown {
+    return {
+      meta: {},
+      data: {
+        id: 'ls_invoice_9',
+        type: 'subscription-invoices',
+        attributes: {
+          subscription_id: LS_SUB,
+          status: 'failed',
+          card_brand: 'visa',
+          card_last_four: '4242',
+          total: 2900,
+          updated_at: updatedAt,
+        },
+      },
+    };
+  }
+
+  it('a failure alerts the owner with the declined card, keyed on invoice + attempt', async () => {
+    await make().handleEvent(
+      'subscription_payment_failed',
+      failedInvoice('2026-11-15T10:00:00.000000Z'),
+    );
+
+    expect(paymentAlerts.paymentFailed).toHaveBeenCalledWith({
+      userId: 'user-1',
+      provider: 'lemonsqueezy',
+      alertKey: 'lemonsqueezy:failed:ls_invoice_9:2026-11-15T10:00:00.000000Z',
+      amountMinor: 2900,
+      card: { brand: 'visa', last4: '4242' },
+      reason: null,
+    });
+    // The alert follows the billing write; it does not replace it.
+    expect(accountRow().status).toBe('past_due');
+  });
+
+  it('a redelivery carries the same key; a retry carries a new one', async () => {
+    const first = failedInvoice('2026-11-15T10:00:00.000000Z');
+    await make().handleEvent('subscription_payment_failed', first);
+    await make().handleEvent('subscription_payment_failed', first);
+    await make().handleEvent(
+      'subscription_payment_failed',
+      failedInvoice('2026-11-18T10:00:00.000000Z'),
+    );
+
+    const keys = paymentAlerts.paymentFailed.mock.calls.map(
+      (c: [{ alertKey: string }]) => c[0].alertKey,
+    );
+    expect(keys[0]).toBe(keys[1]);
+    expect(keys[2]).not.toBe(keys[0]);
+  });
+
+  it('a recovery reports the dunning its own write ended', async () => {
+    accountRow().status = 'past_due';
+
+    await make().handleEvent('subscription_payment_recovered', invoice(LS_SUB));
+
+    expect(paymentAlerts.paymentSucceeded).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'user-1',
+        provider: 'lemonsqueezy',
+        alertKey: 'lemonsqueezy:recovered:ls_invoice_9',
+        planCode: 'PRO',
+        wasPastDue: true,
+      }),
+    );
+    expect(accountRow().status).toBe('active');
+  });
+
+  it('success + recovered arriving together: only ONE sees the dunning end, both share a key', async () => {
+    // Lemon Squeezy sends both events for one invoice. Run them concurrently:
+    // a read-then-write let both read past_due and both announce.
+    accountRow().status = 'past_due';
+
+    await Promise.all([
+      make().handleEvent('subscription_payment_success', invoice(LS_SUB)),
+      make().handleEvent('subscription_payment_recovered', invoice(LS_SUB)),
+    ]);
+
+    const calls = paymentAlerts.paymentSucceeded.mock.calls.map(
+      (c: [{ wasPastDue: boolean; alertKey: string }]) => c[0],
+    );
+    expect(calls).toHaveLength(2);
+    expect(calls.filter((c) => c.wasPastDue)).toHaveLength(1);
+    // The claim on this shared key is what keeps the second one silent even
+    // when the alert service's own fallback says "recovery".
+    expect(new Set(calls.map((c) => c.alertKey)).size).toBe(1);
+    expect(accountRow().status).toBe('active');
+  });
+
+  it('an ordinary renewal reports no dunning', async () => {
+    await make().handleEvent('subscription_payment_success', invoice(LS_SUB));
+
+    expect(paymentAlerts.paymentSucceeded).toHaveBeenCalledWith(
+      expect.objectContaining({ wasPastDue: false }),
+    );
+    expect(paymentAlerts.paymentFailed).not.toHaveBeenCalled();
+  });
+
+  it('an add-on, a refund and an expired account alert nobody', async () => {
+    await make().handleEvent(
+      'subscription_payment_failed',
+      invoice(LS_ADDON_SUB),
+    );
+    await make().handleEvent('subscription_payment_refunded', invoice(LS_SUB));
+    baseRow().providerStatus = 'expired';
+    await make().handleEvent('subscription_payment_failed', invoice(LS_SUB));
+
+    expect(paymentAlerts.paymentFailed).not.toHaveBeenCalled();
+    expect(paymentAlerts.paymentSucceeded).not.toHaveBeenCalled();
   });
 });
 

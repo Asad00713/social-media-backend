@@ -1,6 +1,14 @@
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { WorkspaceMembersService } from './workspace-members.service';
 
+/** The service's transactions (and savepoints) run the callback on the same mock. */
+function withTx<T extends Record<string, any>>(db: T): T {
+  const out: any = db;
+  out.execute = jest.fn().mockResolvedValue(undefined);
+  out.transaction = (fn: (tx: unknown) => unknown) => fn(out);
+  return out;
+}
+
 describe('WorkspaceMembersService.inviteMember email', () => {
   it('sends an invitation email after creating the invitation', async () => {
     const invitationRow = {
@@ -10,7 +18,7 @@ describe('WorkspaceMembersService.inviteMember email', () => {
       token: 'tok123',
       expiresAt: new Date('2026-08-02T00:00:00Z'),
     };
-    const db: any = {
+    const db: any = withTx({
       query: {
         workspace: {
           findFirst: jest
@@ -18,13 +26,18 @@ describe('WorkspaceMembersService.inviteMember email', () => {
             .mockResolvedValue({ id: 'ws1', ownerId: 'owner1', name: 'Acme' }),
         },
         users: { findFirst: jest.fn().mockResolvedValue(undefined) },
-        workspaceInvitation: { findFirst: jest.fn().mockResolvedValue(undefined) },
+        workspaceInvitation: {
+          findFirst: jest.fn().mockResolvedValue(undefined),
+          findMany: jest.fn().mockResolvedValue([]),
+        },
       },
       insert: () => ({
         values: () => ({ returning: () => Promise.resolve([invitationRow]) }),
       }),
+    });
+    const usageService: any = {
+      getWorkspaceUsage: jest.fn().mockResolvedValue({ membersLimit: 5, membersCount: 1 }),
     };
-    const usageService: any = { enforceMemberLimit: jest.fn().mockResolvedValue(undefined) };
     const emailService: any = {
       sendWorkspaceInvitation: jest.fn().mockResolvedValue({ success: true }),
     };
@@ -94,7 +107,7 @@ describe('WorkspaceMembersService.acceptInvitation auto-verify + onboarding', ()
       inviter: { id: 'owner1', name: 'Sam' },
     };
     const acceptedRow = { ...invitationRow, status: 'ACCEPTED' };
-    const db: any = {
+    const db: any = withTx({
       query: {
         workspaceInvitation: {
           findFirst: jest
@@ -113,7 +126,7 @@ describe('WorkspaceMembersService.acceptInvitation auto-verify + onboarding', ()
           where: () => ({ returning: () => Promise.resolve([acceptedRow]) }),
         }),
       }),
-    };
+    });
     const usageService: any = {
       incrementMemberCount: jest.fn().mockResolvedValue(undefined),
     };
@@ -141,7 +154,7 @@ describe('WorkspaceMembersService.acceptInvitation auto-verify + onboarding', ()
 
 describe('WorkspaceMembersService.batchInvite seat gate', () => {
   it('rejects the whole batch when it exceeds remaining seats', async () => {
-    const db: any = {
+    const db: any = withTx({
       query: {
         workspace: { findFirst: jest.fn().mockResolvedValue({ id: 'w', ownerId: 'owner', name: 'Acme' }) },
         users: { findFirst: jest.fn().mockResolvedValue(undefined) },
@@ -153,7 +166,7 @@ describe('WorkspaceMembersService.batchInvite seat gate', () => {
       insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: 'i', email: 'x', role: 'MEMBER', token: 't', expiresAt: new Date() }]) }) }),
       // count of accepted members:
       select: () => ({ from: () => ({ where: () => Promise.resolve([{ count: 1 }]) }) }),
-    };
+    });
     const usageService: any = {
       getWorkspaceUsage: jest.fn().mockResolvedValue({ membersLimit: 2, membersCount: 1, membersAvailable: 1 }),
     };
@@ -223,17 +236,17 @@ describe('WorkspaceMembersService.inviteMember email case', () => {
           { id: 'i', email: 'sara@x.com', role: 'MEMBER', token: 't', expiresAt: new Date() },
         ]),
     });
-    const db: any = {
+    const db: any = withTx({
       query: {
         workspace: { findFirst: jest.fn().mockResolvedValue({ id: 'ws1', ownerId: 'owner1', name: 'A' }) },
         users: { findFirst: userFind },
-        workspaceInvitation: { findFirst: invFind },
+        workspaceInvitation: { findFirst: invFind, findMany: jest.fn().mockResolvedValue([]) },
       },
       insert: () => ({ values }),
-    };
+    });
     const service = new WorkspaceMembersService(
       db,
-      { enforceMemberLimit: jest.fn() } as any,
+      { getWorkspaceUsage: jest.fn().mockResolvedValue({ membersLimit: 5, membersCount: 1 }) } as any,
       { sendWorkspaceInvitation: jest.fn().mockResolvedValue({}) } as any,
       {} as any,
       { isPlatformSuperAdmin: jest.fn().mockResolvedValue(false) } as any,

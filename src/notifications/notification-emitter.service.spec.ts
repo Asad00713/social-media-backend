@@ -114,3 +114,45 @@ describe('NotificationEmitterService inbox notifications', () => {
     });
   });
 });
+
+describe('NotificationEmitterService.paymentFailed', () => {
+  function build() {
+    const notifications = {
+      create: jest.fn().mockResolvedValue({ id: 'n1' }),
+      getUnreadCount: jest.fn().mockResolvedValue(1),
+    };
+    const gateway = {
+      sendNotificationToUser: jest.fn(),
+      sendUnreadCountUpdate: jest.fn(),
+    };
+    const emitter = new NotificationEmitterService(
+      notifications as any,
+      gateway as any,
+    );
+    return { emitter, notifications };
+  }
+
+  it('ends the default sentence with exactly one full stop', async () => {
+    const { emitter, notifications } = build();
+    await emitter.paymentFailed('u1', 29, undefined, {
+      actionUrl: '/w/w1/settings/billing',
+    });
+    expect(notifications.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message:
+          'Your payment of $29.00 failed. Please update your payment method.',
+        actionUrl: '/w/w1/settings/billing',
+      }),
+    );
+  });
+
+  it('names a reason once, with one full stop', async () => {
+    const { emitter, notifications } = build();
+    await emitter.paymentFailed('u1', 29, 'Your card was declined');
+    expect(notifications.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'Your payment of $29.00 failed: Your card was declined.',
+      }),
+    );
+  });
+});

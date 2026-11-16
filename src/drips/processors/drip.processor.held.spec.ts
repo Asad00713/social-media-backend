@@ -90,11 +90,12 @@ beforeEach(() => {
 });
 
 describe('DripProcessor on a paused channel', () => {
-  it('publishes with onPaused: hold', async () => {
+  it('publishes with onPaused: hold, as a publish nobody pressed', async () => {
     const { processor, postService } = make('scheduled');
     await processor.process(job);
     expect(postService.publishPost).toHaveBeenCalledWith('post-1', 'w1', 'u1', {
       onPaused: 'hold',
+      trigger: 'scheduled',
     });
   });
 

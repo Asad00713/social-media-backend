@@ -26,6 +26,7 @@ export const QUEUES = {
   REPORTS: 'reports',
   // Finalize of a soft-disconnected channel when its undo window closes.
   CHANNEL_DISCONNECT: 'channel-disconnect',
+  PLATFORM_STATUS: 'platform-status',
 } as const;
 
 @Module({
@@ -85,6 +86,7 @@ export const QUEUES = {
       { name: QUEUES.INBOX_RESYNC },
       { name: QUEUES.REPORTS },
       { name: QUEUES.CHANNEL_DISCONNECT },
+      { name: QUEUES.PLATFORM_STATUS },
     ),
   ],
   providers: [RateLimiterService],

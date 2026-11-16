@@ -72,4 +72,23 @@ describe('describeFailure', () => {
       'myspace is limiting how often you can post. Wait a little, then retry.',
     );
   });
+
+  it('a reminder that could not be sent is our failure, not the platform', () => {
+    const expected = {
+      message:
+        "We couldn't send your reminder to post on Instagram. Retry to send it again.",
+      needsReconnect: false,
+    };
+    expect(
+      describeFailure({ platform: 'instagram', errorCode: 'reminder_failed' }),
+    ).toEqual(expected);
+    // Stored before the code existed: read from its message, never as
+    // "We couldn't reach Instagram".
+    expect(
+      describeFailure({
+        platform: 'instagram',
+        errorMessage: 'Could not send your reminder: network down',
+      }),
+    ).toEqual(expected);
+  });
 });

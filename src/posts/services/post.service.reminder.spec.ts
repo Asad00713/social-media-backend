@@ -175,6 +175,8 @@ describe('PostService.publishPost with "Remind me"', () => {
     expect(ig).toMatchObject({
       status: 'failed',
       errorMessage: 'Could not send your reminder: db down',
+      // Our own notification, never read as a platform failure.
+      errorCode: 'reminder_failed',
     });
     expect(li.status).toBe('published');
     expect(publisher.publish).toHaveBeenCalledTimes(1);
