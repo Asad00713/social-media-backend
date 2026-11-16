@@ -32,6 +32,8 @@ import { readMigrations } from './runner';
  * 0067 creates channel_connect_links with foreign keys to workspace and users
  * (SHARE ROW EXCLUSIVE on each) and adds three columns plus a foreign key to
  * social_media_channels (ACCESS EXCLUSIVE).
+ * 0080 adds removed_at / removed_by to workspace_invitations (ACCESS
+ * EXCLUSIVE) and a foreign key to users (SHARE ROW EXCLUSIVE).
  * 0083 creates platform_incidents with a foreign key to users (SHARE ROW
  * EXCLUSIVE). 0086 builds an index on posts (SHARE) with a tighter bound of
  * its own, checked below.
@@ -53,6 +55,7 @@ const FILES = [
   '0065_release_locked_integrations.sql',
   '0066_insight_reports.sql',
   '0067_channel_connect_links.sql',
+  '0080_member_soft_removal.sql',
   '0083_platform_status.sql',
 ];
 
