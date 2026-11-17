@@ -53,6 +53,12 @@ export const workspace = pgTable('workspace', {
 
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
+
+  // Soft delete (migration 0088). A workspace cascades to 50 foreign-keyed
+  // tables — channels, campaigns, inbox, analytics, billing — so a hard
+  // delete took all of it with no undo. Kept for 30 days, then purged.
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  deletedById: uuid('deleted_by_id'),
 });
 
 // Reverse of usersRelations.ownedWorkspaces — also powers `with: { owner }`

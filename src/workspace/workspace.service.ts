@@ -23,6 +23,7 @@ import { resolveWorkspaceLimits } from 'src/billing/services/limit-resolver.util
 import { getNextTokenResetDate } from 'src/billing/services/token-reset.util';
 import { LibrarySamplesService } from 'src/media-library/samples/library-samples.service';
 import { rescheduleWorkspaceReports } from '../insights/reports/lib/reschedule';
+import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 type GetAllREsponse = {
   // Omits the Maestro BYOK credential — it must never reach a client.
@@ -181,7 +182,7 @@ export class WorkspaceService {
       const [ownedCount] = await this.db
         .select({ n: count() })
         .from(workspace)
-        .where(eq(workspace.ownerId, userId));
+        .where(and(eq(workspace.ownerId, userId), liveWorkspaces()));
       const isFirst = Number(ownedCount?.n ?? 0) === 1;
 
       const limits = resolveWorkspaceLimits(plan, addons, isFirst);
@@ -257,7 +258,7 @@ export class WorkspaceService {
     const [{ count }] = await this.db
       .select({ count: sql<number>`count(*)` })
       .from(workspace)
-      .where(and(...conditions));
+      .where(and(...conditions, liveWorkspaces()));
 
     return {
       data: workspaces,
@@ -465,7 +466,21 @@ export class WorkspaceService {
       );
     }
 
-    await this.db.delete(workspace).where(eq(workspace.id, workspaceId));
+    // Soft delete (migration 0088). A hard DELETE here cascaded to 50
+    // foreign-keyed tables — channels, campaigns, inbox, analytics, billing —
+    // in one statement, with no undo short of restoring the whole database.
+    // The row is marked instead; WorkspacePurgeService performs the real
+    // delete 30 days later, and until then the workspace can be brought back
+    // by clearing these two columns.
+    //
+    // Everything below this line still runs: the slot is released, limits
+    // re-derive, pooled channels come back. To the rest of the system and to
+    // the user, the workspace is gone the moment this returns — only the rows
+    // survive.
+    await this.db
+      .update(workspace)
+      .set({ deletedAt: new Date(), deletedById: userId })
+      .where(and(eq(workspace.id, workspaceId), liveWorkspaces()));
 
     // Remaining workspaces re-derive their limits: deleting the primary one
     // promotes the next-oldest, and nothing else recomputes the fan-out.
@@ -509,7 +524,11 @@ export class WorkspaceService {
       .select({ n: count() })
       .from(workspace)
       .where(
-        and(eq(workspace.ownerId, userId), ne(workspace.id, excludingId)),
+        and(
+          eq(workspace.ownerId, userId),
+          ne(workspace.id, excludingId),
+          liveWorkspaces(),
+        ),
       );
     return Number(row?.n ?? 0);
   }

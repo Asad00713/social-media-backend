@@ -1,8 +1,9 @@
 import { NotFoundException } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { workspace } from '../../drizzle/schema/workspace.schema';
 import { safeTimeZone } from '../../first-week/lib/first-week-slots';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 export {
   addDays,
@@ -60,7 +61,7 @@ export async function loadWorkspaceTimezone(
   const rows = await db
     .select({ timezone: workspace.timezone })
     .from(workspace)
-    .where(eq(workspace.id, workspaceId));
+    .where(and(eq(workspace.id, workspaceId), liveWorkspaces()));
   if (rows.length === 0) throw new NotFoundException('Workspace not found');
   return safeTimeZone(rows[0].timezone);
 }

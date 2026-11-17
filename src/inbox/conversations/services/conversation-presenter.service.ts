@@ -170,7 +170,7 @@ export class ConversationPresenter {
            WHERE s.inbox_conversation_id = c.id
              AND s.status IN ('pending', 'failed')
         ))::int AS scheduled,
-        (SELECT w.timezone FROM workspace w WHERE w.id = ${workspaceId}::uuid)
+        (SELECT w.timezone FROM workspace w WHERE w.id = ${workspaceId}::uuid AND w.deleted_at IS NULL)
           AS timezone
       FROM inbox_conversations c
       WHERE c.workspace_id = ${workspaceId}::uuid AND c.archived_at IS NULL

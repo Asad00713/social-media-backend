@@ -9,7 +9,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { Response } from 'express';
 import { SkipLaunchGate } from '../../auth/decorators/skip-launch-gate.decorator';
 import type { DbType } from '../../drizzle/db';
@@ -31,6 +31,7 @@ import {
   sendPage,
   setPageHeaders,
 } from './email-pages';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 /** What the GET and the POST both need to know about a verified link. */
 interface UnsubscribeTarget {
@@ -182,7 +183,7 @@ export class EmailPublicController {
     const [ws] = await this.db
       .select({ name: workspace.name })
       .from(workspace)
-      .where(eq(workspace.id, claims.ws))
+      .where(and(eq(workspace.id, claims.ws), liveWorkspaces()))
       .limit(1);
     return ws ? { label, workspaceName: ws.name } : null;
   }

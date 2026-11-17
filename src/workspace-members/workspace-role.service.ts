@@ -4,6 +4,7 @@ import type { DbType } from 'src/drizzle/db';
 import { DRIZZLE } from 'src/drizzle/drizzle.module';
 import { users, workspace, workspaceInvitation } from 'src/drizzle/schema';
 import type { WorkspaceRole } from './role-capabilities';
+import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 @Injectable()
 export class WorkspaceRoleService {
@@ -14,7 +15,7 @@ export class WorkspaceRoleService {
     userId: string,
   ): Promise<WorkspaceRole | null> {
     const ws = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
     });
     if (!ws) return null;
     if (ws.ownerId === userId) return 'OWNER';

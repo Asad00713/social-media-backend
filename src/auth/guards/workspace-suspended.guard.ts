@@ -8,11 +8,12 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { isUUID } from 'class-validator';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import { subscriptions, workspace } from '../../drizzle/schema';
 import { SKIP_SUSPEND_CHECK } from '../decorators/skip-suspend-check.decorator';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 /**
  * Stripe statuses that HARD-suspend a workspace: billing has failed terminally
@@ -94,7 +95,7 @@ export class WorkspaceSuspendedGuard implements CanActivate {
         ownerId: workspace.ownerId,
       })
       .from(workspace)
-      .where(eq(workspace.id, workspaceId))
+      .where(and(eq(workspace.id, workspaceId), liveWorkspaces()))
       .limit(1);
 
     const ws = wsRows[0];

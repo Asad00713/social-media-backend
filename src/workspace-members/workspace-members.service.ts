@@ -34,6 +34,7 @@ import { RecipientsService } from 'src/notifications/recipients.service';
 import { UsersService } from 'src/users/users.service';
 import { WorkspaceRoleService } from './workspace-role.service';
 import { normalizeEmail } from 'src/users/normalize-email';
+import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -133,7 +134,7 @@ export class WorkspaceMembersService {
   ) {
     // 1. Check workspace exists and user has permission
     const workspaceData = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
     });
 
     if (!workspaceData) {
@@ -262,7 +263,7 @@ export class WorkspaceMembersService {
   ) {
     // permission: owner or admin (same check as inviteMember)
     const workspaceData = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
     });
     if (!workspaceData) throw new NotFoundException('Workspace not found');
     const isOwner = workspaceData.ownerId === currentUserId;
@@ -511,7 +512,7 @@ export class WorkspaceMembersService {
   // Get pending invitations for a workspace
   async getPendingInvitations(workspaceId: string, currentUserId: string) {
     const workspaceData = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
     });
 
     if (!workspaceData) {
@@ -606,7 +607,7 @@ export class WorkspaceMembersService {
     }
 
     const workspaceData = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
     });
 
     if (!workspaceData) {
@@ -636,7 +637,7 @@ export class WorkspaceMembersService {
   // Get all members (only ACCEPTED invitations)
   async getMembers(workspaceId: string, currentUserId: string) {
     const workspaceData = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
     });
 
     if (!workspaceData) {
@@ -704,7 +705,7 @@ export class WorkspaceMembersService {
     currentUserId: string,
   ) {
     const workspaceData = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
     });
 
     if (!workspaceData) {
@@ -752,7 +753,7 @@ export class WorkspaceMembersService {
     currentUserId: string,
   ) {
     const workspaceData = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
     });
 
     if (!workspaceData) {
@@ -857,7 +858,7 @@ export class WorkspaceMembersService {
     currentUserId: string,
   ) {
     const workspaceData = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
     });
     if (!workspaceData) {
       throw new NotFoundException('Workspace not found');

@@ -16,7 +16,8 @@ import {
   aiUsageLog,
   usageEvents,
 } from '../../drizzle/schema';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 // Token costs per operation
 export const AI_OPERATION_COSTS: Record<string, number> = {
@@ -96,7 +97,7 @@ export class AiTokenService {
    */
   private async resolveOwnerId(workspaceId: string): Promise<string | null> {
     const row = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
       columns: { ownerId: true },
     });
     return row?.ownerId ?? null;

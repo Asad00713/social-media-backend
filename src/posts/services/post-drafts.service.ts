@@ -29,6 +29,7 @@ import { isViewer, type CallerRole } from '../guest-rules';
 import { buildDuplicate, type DuplicateOptions } from '../lib/duplicate-post';
 import { decodeDraftCursor, encodeDraftCursor } from '../lib/draft-cursor';
 import { PlannerPostsService } from './planner-posts.service';
+import { liveWorkspaces } from '../soft-delete/soft-delete';
 
 /** Ready drafts first. */
 const readySql = sql<number>`(${posts.readyAt} IS NOT NULL)::int`;
@@ -205,7 +206,7 @@ export class PostDraftsService {
     const [owner] = await this.db
       .select({ id: workspace.ownerId })
       .from(workspace)
-      .where(eq(workspace.id, workspaceId));
+      .where(and(eq(workspace.id, workspaceId), liveWorkspaces()));
     const invited = await this.db
       .select({ id: workspaceInvitation.userId })
       .from(workspaceInvitation)

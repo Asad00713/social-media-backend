@@ -25,6 +25,7 @@ import {
   messageToEventInput,
   postToEventInput,
 } from '../calendar-sync.mapper';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 // Calendar channel platforms that participate in app→calendar push.
 const CALENDAR_PLATFORMS = ['google_calendar', 'outlook_calendar'] as const;
@@ -512,7 +513,13 @@ export class CalendarPushSyncService {
     const [owned] = await db
       .select({ id: workspace.id })
       .from(workspace)
-      .where(and(eq(workspace.id, workspaceId), eq(workspace.ownerId, userId)));
+      .where(
+        and(
+          eq(workspace.id, workspaceId),
+          eq(workspace.ownerId, userId),
+          liveWorkspaces(),
+        ),
+      );
     if (owned) return;
 
     const [member] = await db

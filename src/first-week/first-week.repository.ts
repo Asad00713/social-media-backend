@@ -24,6 +24,7 @@ import {
   type ChannelLite,
   type SourceCandidate,
 } from './lib/first-week-targets';
+import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 export type PostRow = typeof posts.$inferSelect;
 export type NewDraftRow = typeof posts.$inferInsert;
@@ -59,7 +60,7 @@ export class FirstWeekRepository {
     const [row] = await this.db
       .select({ createdAt: workspace.createdAt })
       .from(workspace)
-      .where(eq(workspace.id, workspaceId))
+      .where(and(eq(workspace.id, workspaceId), liveWorkspaces()))
       .limit(1);
     return row?.createdAt ?? null;
   }
@@ -73,7 +74,7 @@ export class FirstWeekRepository {
         logo: workspace.logo,
       })
       .from(workspace)
-      .where(eq(workspace.id, workspaceId))
+      .where(and(eq(workspace.id, workspaceId), liveWorkspaces()))
       .limit(1);
     return row ?? null;
   }

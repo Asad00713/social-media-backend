@@ -20,6 +20,7 @@ import {
   type WorkspaceRole,
 } from '../../../workspace-members/role-capabilities';
 import { InboxSettingsService } from './inbox-settings.service';
+import { liveWorkspaces } from '../../../posts/soft-delete/soft-delete';
 
 /** Anything older than this is a backfill or re-poll, not news. */
 const NEW_INBOUND_MAX_AGE_MS = 60 * 60 * 1000;
@@ -238,7 +239,7 @@ export class InboxNotifyService {
     const [row] = await this.db
       .select({ name: workspace.name })
       .from(workspace)
-      .where(eq(workspace.id, workspaceId));
+      .where(and(eq(workspace.id, workspaceId), liveWorkspaces()));
     return row?.name ?? 'your workspace';
   }
 

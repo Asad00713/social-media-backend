@@ -14,6 +14,7 @@ import { TokenTrackingService } from './services/token-tracking.service';
 import { LLMRouterService } from './llm/llm-router.service';
 import { LLMMessage } from './llm/llm-provider.interface';
 import type { ChatMessage } from '../drizzle/schema/chatbot.schema';
+import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 /** Provider access per plan tier. */
 const PLAN_PROVIDERS: Record<string, string[]> = {
@@ -300,7 +301,7 @@ export class ChatbotService {
     const [ws] = await db
       .select({ preferredAiProvider: workspace.preferredAiProvider })
       .from(workspace)
-      .where(eq(workspace.id, workspaceId))
+      .where(and(eq(workspace.id, workspaceId), liveWorkspaces()))
       .limit(1);
     return ws?.preferredAiProvider || null;
   }
@@ -316,7 +317,7 @@ export class ChatbotService {
     const [ws] = await db
       .select()
       .from(workspace)
-      .where(eq(workspace.id, workspaceId))
+      .where(and(eq(workspace.id, workspaceId), liveWorkspaces()))
       .limit(1);
 
     if (!ws) throw new NotFoundException('Workspace not found');
@@ -670,7 +671,7 @@ export class ChatbotService {
           ownerId: workspace.ownerId,
         })
         .from(workspace)
-        .where(eq(workspace.id, workspaceId))
+        .where(and(eq(workspace.id, workspaceId), liveWorkspaces()))
         .limit(1);
 
       const preferred = ws?.preferredAiProvider;

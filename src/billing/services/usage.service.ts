@@ -18,6 +18,7 @@ import { SubscriptionLookupService } from './subscription-lookup.service';
 import { AccountChannelsService } from './account-channels.service';
 import { resolveMaxWorkspaces } from './limit-resolver.util';
 import { channelLimitReached } from './channel-limit.error';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 export type ResourceType = 'CHANNEL' | 'MEMBER' | 'WORKSPACE' | 'POST';
 export type EventType =
@@ -131,7 +132,7 @@ export class UsageService {
     const userWorkspaces = await db
       .select({ id: workspace.id })
       .from(workspace)
-      .where(eq(workspace.ownerId, userId));
+      .where(and(eq(workspace.ownerId, userId), liveWorkspaces()));
 
     const subscription = await this.lookup.findByUserId(userId);
 

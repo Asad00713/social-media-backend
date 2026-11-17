@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import { plans } from '../../drizzle/schema/billing.schema';
@@ -18,6 +18,7 @@ import { TRIAL_ENDING } from '../../email/templates/billing/trial-ending';
 import { NotificationEmitterService } from '../../notifications/notification-emitter.service';
 import { NotifyService } from '../../notifications/notify.service';
 import { RecipientsService } from '../../notifications/recipients.service';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 export interface PaymentFailedInput {
   userId: string;
@@ -392,7 +393,7 @@ export class BillingEmailService {
       const [owned] = await this.db
         .select({ id: workspace.id })
         .from(workspace)
-        .where(eq(workspace.ownerId, userId))
+        .where(and(eq(workspace.ownerId, userId), liveWorkspaces()))
         .orderBy(asc(workspace.createdAt), asc(workspace.id))
         .limit(1);
       info = owned ? await this.recipients.workspace(owned.id) : null;

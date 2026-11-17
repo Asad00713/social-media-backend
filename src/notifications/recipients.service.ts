@@ -5,6 +5,7 @@ import { DRIZZLE } from '../drizzle/drizzle.module';
 import { users } from '../drizzle/schema/users.schema';
 import { workspace } from '../drizzle/schema/workspace.schema';
 import { workspaceInvitation } from '../drizzle/schema/workspace-invitation.schema';
+import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 export interface Recipient {
   id: string;
@@ -74,7 +75,7 @@ export class RecipientsService {
         timezone: workspace.timezone,
       })
       .from(workspace)
-      .where(eq(workspace.id, workspaceId));
+      .where(and(eq(workspace.id, workspaceId), liveWorkspaces()));
     return row ?? null;
   }
 

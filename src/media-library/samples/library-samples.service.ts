@@ -98,7 +98,7 @@ export class LibrarySamplesService {
         has_samples: boolean;
       }>(sql`
         SELECT
-          EXISTS (SELECT 1 FROM workspace WHERE id = ${workspaceId}::uuid) AS has_workspace,
+          EXISTS (SELECT 1 FROM workspace WHERE id = ${workspaceId}::uuid AND deleted_at IS NULL) AS has_workspace,
           (EXISTS (SELECT 1 FROM media_categories WHERE workspace_id = ${workspaceId}::uuid AND is_sample)
            OR EXISTS (SELECT 1 FROM media_items WHERE workspace_id = ${workspaceId}::uuid AND is_sample)
            OR EXISTS (SELECT 1 FROM media_templates WHERE workspace_id = ${workspaceId}::uuid AND is_sample)
