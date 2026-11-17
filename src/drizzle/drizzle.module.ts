@@ -53,6 +53,6 @@ export const DRIZZLE_POOL = 'DRIZZLE_POOL';
       useFactory: () => new DatabaseLifecycleService(standalonePool),
     },
   ],
-  exports: [DRIZZLE],
+  exports: [DRIZZLE, DRIZZLE_POOL],
 })
 export class DrizzleModule {}
