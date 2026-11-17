@@ -611,7 +611,7 @@ describe('WorkspaceMembersService.resendInvitation', () => {
 
   function resendDb(
     row: Record<string, unknown> | undefined,
-    opts: { sibling?: boolean } = {},
+    opts: { sibling?: boolean; ownerEmail?: string; member?: boolean } = {},
   ) {
     const set = jest.fn();
     const db: any = withTx({
@@ -621,13 +621,33 @@ describe('WorkspaceMembersService.resendInvitation', () => {
             .fn()
             .mockResolvedValue({ id: 'ws1', ownerId: 'owner1', name: 'Acme' }),
         },
-        workspaceInvitation: {
-          // 1st call: the row; 2nd: a sibling PENDING invite; 3rd: the view.
+        // 1st call: the workspace owner; 2nd: the account behind the address.
+        users: {
           findFirst: jest
             .fn()
-            .mockResolvedValueOnce(row)
-            .mockResolvedValueOnce(opts.sibling ? { id: 'other' } : undefined)
+            .mockResolvedValueOnce({
+              id: 'owner1',
+              email: opts.ownerEmail ?? 'rehman@lumierecafe.pk',
+            })
+            .mockResolvedValueOnce(
+              opts.member
+                ? { id: 'user-9', email: 'sana@lumierecafe.pk' }
+                : undefined,
+            )
             .mockResolvedValue(undefined),
+        },
+        workspaceInvitation: {
+          // 1st call: the row; then (an account exists) its ACCEPTED row;
+          // then a sibling PENDING invite; last, the view.
+          findFirst: [
+            row,
+            // Only asked when an account exists behind the address.
+            ...(opts.member ? [{ id: 'acc-1' }] : []),
+            opts.sibling ? { id: 'other' } : undefined,
+          ].reduce(
+            (fn, value) => fn.mockResolvedValueOnce(value),
+            jest.fn().mockResolvedValue(undefined),
+          ),
           findMany: jest.fn().mockResolvedValue([]),
         },
       },
@@ -749,6 +769,48 @@ describe('WorkspaceMembersService.resendInvitation', () => {
       ),
     ).rejects.toThrow(/SEAT_LIMIT_EXCEEDED/);
     expect(set).not.toHaveBeenCalled();
+  });
+
+  it('the workspace owner is 409 and nothing is written', async () => {
+    const { db, set } = resendDb(
+      {
+        ...base,
+        status: 'EXPIRED',
+        expiresAt: new Date(Date.now() - DAY_MS),
+      },
+      { ownerEmail: ' SANA@lumierecafe.pk ' },
+    );
+    const mail = makeMail();
+    const err = await build(db, usageWith(5, 1), {}, noRole, mail)
+      .resendInvitation('ws1', 'inv1', 'owner1')
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ConflictException);
+    expect((err as ConflictException).message).toBe(
+      'User is already the workspace owner',
+    );
+    expect(set).not.toHaveBeenCalled();
+    expect(mail.outbox.sendNow).not.toHaveBeenCalled();
+  });
+
+  it('someone who has since joined is 409 and nothing is written', async () => {
+    const { db, set } = resendDb(
+      {
+        ...base,
+        status: 'PENDING',
+        expiresAt: new Date(Date.now() - DAY_MS),
+      },
+      { member: true },
+    );
+    const mail = makeMail();
+    const err = await build(db, usageWith(5, 1), {}, noRole, mail)
+      .resendInvitation('ws1', 'inv1', 'owner1')
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ConflictException);
+    expect((err as ConflictException).message).toBe(
+      'User is already a member of this workspace',
+    );
+    expect(set).not.toHaveBeenCalled();
+    expect(mail.outbox.sendNow).not.toHaveBeenCalled();
   });
 
   it('another live invite to the same address is 409 INVITATION_ALREADY_PENDING', async () => {

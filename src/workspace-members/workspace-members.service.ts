@@ -563,21 +563,54 @@ export class WorkspaceMembersService {
       );
     }
 
-    // PENDING rows, and EXPIRED ones (stored, or PENDING past their expiry)
-    // for 30 days after they lapsed, so a lapsed invite can be resent. The
-    // cutoff is a JS Date: expires_at is a timestamp without zone, and the
-    // driver writes a Date and compares it the same way.
+    // Every stored-PENDING row stays listed, however long ago it lapsed (it
+    // still holds a seat, so it must stay resendable and cancellable); one
+    // past its expiry reads EXPIRED. Stored-EXPIRED rows are listed for 30
+    // days after they lapsed, and not at all once the address has been
+    // re-invited (a live PENDING row) or has joined (a member or the owner),
+    // as Resend would only refuse them. The cutoff is a JS Date: expires_at
+    // is a timestamp without zone, and the driver writes a Date and compares
+    // it the same way; the raw-SQL bound goes in as a UTC ISO string for the
+    // same reason.
     const now = Date.now();
+    const nowIso = new Date(now).toISOString();
+    const outerEmail = sql`lower(btrim(${workspaceInvitation.email}))`;
+    const supersededByAnother = sql`(
+      EXISTS (
+        SELECT 1 FROM workspace_invitations live
+        WHERE live.workspace_id = ${workspaceInvitation.workspaceId}
+          AND live.id <> ${workspaceInvitation.id}
+          AND live.status = 'PENDING'
+          AND live.expires_at > ${nowIso}::timestamp
+          AND lower(btrim(live.email)) = ${outerEmail}
+      )
+      OR EXISTS (
+        SELECT 1 FROM workspace_invitations joined
+        JOIN users joined_user ON joined_user.id = joined.user_id
+        WHERE joined.workspace_id = ${workspaceInvitation.workspaceId}
+          AND joined.status = 'ACCEPTED'
+          AND lower(btrim(joined_user.email)) = ${outerEmail}
+      )
+      OR EXISTS (
+        SELECT 1 FROM workspace owned
+        JOIN users owner_user ON owner_user.id = owned.owner_id
+        WHERE owned.id = ${workspaceInvitation.workspaceId}
+          AND lower(btrim(owner_user.email)) = ${outerEmail}
+      )
+    )`;
     const invitations = await this.db.query.workspaceInvitation.findMany({
       where: and(
         eq(workspaceInvitation.workspaceId, workspaceId),
         or(
           eq(workspaceInvitation.status, 'PENDING'),
-          eq(workspaceInvitation.status, 'EXPIRED'),
-        ),
-        gt(
-          workspaceInvitation.expiresAt,
-          new Date(now - EXPIRED_INVITATION_VISIBLE_DAYS * DAY_MS),
+          and(
+            eq(workspaceInvitation.status, 'EXPIRED'),
+            gt(
+              workspaceInvitation.expiresAt,
+              new Date(now - EXPIRED_INVITATION_VISIBLE_DAYS * DAY_MS),
+            ),
+            sql`NOT ${supersededByAnother}`,
+          ),
         ),
       ),
       // The token is the accept link's secret: Copy invite link reads it
@@ -641,6 +674,32 @@ export class WorkspaceMembersService {
         row.status === 'EXPIRED' || row.expiresAt.getTime() <= Date.now();
       if (lapsed) {
         const email = normalizeEmail(row.email);
+        // createInvitation's guards, which a re-invite goes through: the
+        // owner and an existing member have no invitation to get back.
+        const owner = await tx.query.users.findFirst({
+          where: eq(users.id, workspaceData.ownerId),
+        });
+        if (owner && normalizeEmail(owner.email) === email) {
+          throw new ConflictException('User is already the workspace owner');
+        }
+        const invitee = await tx.query.users.findFirst({
+          where: sql`lower(${users.email}) = ${email}`,
+        });
+        if (invitee) {
+          const membership = await tx.query.workspaceInvitation.findFirst({
+            where: and(
+              eq(workspaceInvitation.workspaceId, workspaceId),
+              eq(workspaceInvitation.userId, invitee.id),
+              eq(workspaceInvitation.status, 'ACCEPTED'),
+            ),
+            columns: { id: true },
+          });
+          if (membership) {
+            throw new ConflictException(
+              'User is already a member of this workspace',
+            );
+          }
+        }
         // Never two live invitations to one address (createInvitation's rule).
         const sibling = await tx.query.workspaceInvitation.findFirst({
           where: and(

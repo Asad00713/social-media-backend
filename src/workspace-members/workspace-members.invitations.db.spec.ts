@@ -184,7 +184,7 @@ describeDb('WorkspaceMembersService invitations list (database)', () => {
     });
   });
 
-  it('a PENDING row past its expiry reads EXPIRED; one 40 days past is gone', async () => {
+  it('a PENDING row past its expiry reads EXPIRED however long ago (it holds a seat); a stored EXPIRED one 40 days past is gone', async () => {
     await run(ROOMY, async (service, client) => {
       const owner = await seedUser(client, 'Owner');
       const ws = await seedWorkspace(client, owner.id);
@@ -192,9 +192,16 @@ describeDb('WorkspaceMembersService invitations list (database)', () => {
         status: 'PENDING',
         expiresInMs: -2 * DAY_MS,
         invitedBy: owner.id,
+        createdAtMsAgo: 1 * DAY_MS,
       });
-      await seedInvitation(client, ws, {
+      const oldPending = await seedInvitation(client, ws, {
         status: 'PENDING',
+        expiresInMs: -40 * DAY_MS,
+        invitedBy: owner.id,
+        createdAtMsAgo: 2 * DAY_MS,
+      });
+      const oldExpired = await seedInvitation(client, ws, {
+        status: 'EXPIRED',
         expiresInMs: -40 * DAY_MS,
         invitedBy: owner.id,
       });
@@ -203,6 +210,88 @@ describeDb('WorkspaceMembersService invitations list (database)', () => {
 
       expect(list.map((i) => [i.id, i.status])).toEqual([
         [lapsedPending.id, 'EXPIRED'],
+        [oldPending.id, 'EXPIRED'],
+      ]);
+      expect(list.map((i) => i.id)).not.toContain(oldExpired.id);
+    });
+  });
+
+  it('an EXPIRED row is hidden once its address has a live invite, joined, or is the owner', async () => {
+    await run(ROOMY, async (service, client) => {
+      const owner = await seedUser(client, 'Owner');
+      const member = await seedUser(client, 'Member');
+      const ws = await seedWorkspace(client, owner.id);
+      const lonely = await seedInvitation(client, ws, {
+        status: 'EXPIRED',
+        expiresInMs: -3 * DAY_MS,
+        invitedBy: owner.id,
+        createdAtMsAgo: 1 * DAY_MS,
+      });
+      // Re-invited: a live PENDING invite to the same address (other case).
+      const reinvitedEmail = `re-${rand()}@example.test`;
+      await seedInvitation(client, ws, {
+        status: 'EXPIRED',
+        expiresInMs: -3 * DAY_MS,
+        invitedBy: owner.id,
+        email: reinvitedEmail,
+      });
+      const live = await seedInvitation(client, ws, {
+        status: 'PENDING',
+        expiresInMs: 5 * DAY_MS,
+        invitedBy: owner.id,
+        email: reinvitedEmail.toUpperCase(),
+        createdAtMsAgo: 2 * DAY_MS,
+      });
+      // Joined since: an ACCEPTED row of the account behind the address.
+      await seedInvitation(client, ws, {
+        status: 'EXPIRED',
+        expiresInMs: -3 * DAY_MS,
+        invitedBy: owner.id,
+        email: ` ${member.email.toUpperCase()} `,
+      });
+      await client.query(
+        `INSERT INTO workspace_invitations
+           (workspace_id, email, user_id, role, status, token, expires_at, accepted_at)
+         VALUES ($1, $2, $3, 'MEMBER', 'ACCEPTED', $4, $5::timestamp, $5::timestamp)`,
+        [
+          ws,
+          member.email,
+          member.id,
+          rand() + rand(),
+          new Date().toISOString(),
+        ],
+      );
+      // An old invite to the owner's own address.
+      await seedInvitation(client, ws, {
+        status: 'EXPIRED',
+        expiresInMs: -3 * DAY_MS,
+        invitedBy: owner.id,
+        email: owner.email,
+      });
+      // A live PENDING row that itself lapsed does not supersede an EXPIRED one.
+      const staleEmail = `stale-${rand()}@example.test`;
+      const staleExpired = await seedInvitation(client, ws, {
+        status: 'EXPIRED',
+        expiresInMs: -3 * DAY_MS,
+        invitedBy: owner.id,
+        email: staleEmail,
+        createdAtMsAgo: 4 * DAY_MS,
+      });
+      const stalePending = await seedInvitation(client, ws, {
+        status: 'PENDING',
+        expiresInMs: -1 * DAY_MS,
+        invitedBy: owner.id,
+        email: staleEmail,
+        createdAtMsAgo: 3 * DAY_MS,
+      });
+
+      const list = await service.getPendingInvitations(ws, owner.id);
+
+      expect(list.map((i) => i.id)).toEqual([
+        lonely.id,
+        live.id,
+        stalePending.id,
+        staleExpired.id,
       ]);
     });
   });
@@ -374,6 +463,67 @@ describeDb('WorkspaceMembersService.resendInvitation (database)', () => {
         code: 'INVITATION_ALREADY_PENDING',
       });
       expect((await rowState(client, expired.id)).status).toBe('EXPIRED');
+    });
+  });
+
+  it('the owner own address is a 409 and the row stays expired', async () => {
+    await run(ROOMY, async (service, client, sendNow) => {
+      const owner = await seedUser(client, 'Owner');
+      const ws = await seedWorkspace(client, owner.id);
+      const inv = await seedInvitation(client, ws, {
+        status: 'EXPIRED',
+        expiresInMs: -2 * DAY_MS,
+        invitedBy: owner.id,
+        email: owner.email.toUpperCase(),
+      });
+
+      const err = await service
+        .resendInvitation(ws, inv.id, owner.id)
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ConflictException);
+      expect((err as ConflictException).message).toBe(
+        'User is already the workspace owner',
+      );
+      expect((await rowState(client, inv.id)).status).toBe('EXPIRED');
+      expect(sendNow).not.toHaveBeenCalled();
+    });
+  });
+
+  it('someone who has since joined is a 409 and the row stays expired', async () => {
+    await run(ROOMY, async (service, client, sendNow) => {
+      const owner = await seedUser(client, 'Owner');
+      const member = await seedUser(client, 'Member');
+      const ws = await seedWorkspace(client, owner.id);
+      const inv = await seedInvitation(client, ws, {
+        status: 'EXPIRED',
+        expiresInMs: -2 * DAY_MS,
+        invitedBy: owner.id,
+        email: member.email,
+      });
+      await client.query(
+        `INSERT INTO workspace_invitations
+           (workspace_id, email, user_id, role, status, token, expires_at, accepted_at)
+         VALUES ($1, $2, $3, 'MEMBER', 'ACCEPTED', $4, $5::timestamp, $5::timestamp)`,
+        [
+          ws,
+          member.email,
+          member.id,
+          rand() + rand(),
+          new Date().toISOString(),
+        ],
+      );
+
+      const err = await service
+        .resendInvitation(ws, inv.id, owner.id)
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ConflictException);
+      expect((err as ConflictException).message).toBe(
+        'User is already a member of this workspace',
+      );
+      expect((await rowState(client, inv.id)).status).toBe('EXPIRED');
+      expect(sendNow).not.toHaveBeenCalled();
     });
   });
 
