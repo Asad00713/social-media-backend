@@ -1,8 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray, notInArray } from 'drizzle-orm';
 import { liveChannel } from '../../channels/lib/live-channel';
 import { db } from '../../drizzle/db';
-import { and, inArray, notInArray } from 'drizzle-orm';
 import {
   subscriptions,
   subscriptionItems,
