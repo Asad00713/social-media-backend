@@ -15,7 +15,7 @@ import { buildPoolConfig } from './pool-config';
  * `buildPoolConfig`: off on Railway's private network, verified on the public
  * proxy.
  */
-const pool = new Pool(buildPoolConfig(process.env.DATABASE_URL!));
+export const pool = new Pool(buildPoolConfig(process.env.DATABASE_URL!));
 
 // A long-lived TCP pool emits 'error' on idle-client/network failures; without a
 // listener Node escalates it to an uncaught exception and crashes the process.
