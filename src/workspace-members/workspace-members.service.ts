@@ -10,7 +10,7 @@ import {
 } from '@nestjs/common';
 import type { DbType } from 'src/drizzle/db';
 import { DRIZZLE } from 'src/drizzle/drizzle.module';
-import { and, eq, gt, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, eq, gt, inArray, ne, or, sql, type SQL } from 'drizzle-orm';
 import * as crypto from 'crypto';
 import { InviteMemberDto } from './dto/invite-member.dto';
 import {
@@ -51,6 +51,12 @@ export const MEMBER_RESTORE_WINDOW_MS = 15 * 60 * 1000;
  */
 export const MEMBER_REMOVED_EMAIL_DELAY_MS = MEMBER_RESTORE_WINDOW_MS + 30_000;
 
+/** An invitation lives 7 days from sending, and again from each resend. */
+const INVITATION_TTL_DAYS = 7;
+
+/** How long a lapsed invitation stays on the Team page, for Resend. */
+const EXPIRED_INVITATION_VISIBLE_DAYS = 30;
+
 const RESTORE_WINDOW_MESSAGE =
   'A removal can only be undone within 15 minutes. Invite them again instead.';
 
@@ -74,6 +80,27 @@ function withoutToken<T extends { token?: unknown }>(row: T): Omit<T, 'token'> {
   const rest: Partial<T> = { ...row };
   delete rest.token;
   return rest as Omit<T, 'token'>;
+}
+
+/**
+ * An invitation as the Team page lists it: no token, a computed status
+ * (a PENDING row past its expiry reads EXPIRED, whatever the stored status
+ * says) and the inviter's name flattened out.
+ */
+function invitationView<
+  T extends {
+    token?: unknown;
+    status: string;
+    expiresAt: Date;
+    inviter?: { name: string | null } | null;
+  },
+>(row: T, now: number) {
+  const lapsed = row.status === 'EXPIRED' || row.expiresAt.getTime() <= now;
+  return {
+    ...withoutToken(row),
+    status: (lapsed ? 'EXPIRED' : 'PENDING') as 'PENDING' | 'EXPIRED',
+    invitedByName: row.inviter?.name ?? null,
+  };
 }
 
 /** The db, or a transaction on it: the readers below run in either. */
@@ -191,7 +218,12 @@ export class WorkspaceMembersService {
     tx: Queryable,
     ownerId: string,
     workspaceId: string,
-    input: { email: string; role?: MemberRoleName; invitedBy: string },
+    input: {
+      email: string;
+      role?: MemberRoleName;
+      invitedBy: string;
+      message?: string;
+    },
   ) {
     // Accounts are stored lowercased now but older rows keep their typed case,
     // so every comparison below is case-insensitive on both sides.
@@ -237,7 +269,7 @@ export class WorkspaceMembersService {
     }
 
     const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 7);
+    expiresAt.setDate(expiresAt.getDate() + INVITATION_TTL_DAYS);
 
     const [invitation] = await tx
       .insert(workspaceInvitation)
@@ -247,6 +279,7 @@ export class WorkspaceMembersService {
         userId: userToInvite?.id || null,
         role: input.role || (MemberRole.MEMBER as MemberRoleName),
         invitedBy: input.invitedBy,
+        message: input.message ?? null,
         token: crypto.randomBytes(32).toString('hex'),
         expiresAt,
       })
@@ -259,6 +292,8 @@ export class WorkspaceMembersService {
     workspaceId: string,
     invites: { email: string; role?: 'ADMIN' | 'MEMBER' | 'GUEST' }[],
     currentUserId: string,
+    /** The inviter's personal note, stored on every row and put in each email. */
+    message?: string,
   ) {
     // permission: owner or admin (same check as inviteMember)
     const workspaceData = await this.db.query.workspace.findFirst({
@@ -297,6 +332,7 @@ export class WorkspaceMembersService {
               email: item.email,
               role: item.role,
               invitedBy: currentUserId,
+              message,
             }),
           );
           out.push({ email: item.email, invitation });
@@ -527,10 +563,22 @@ export class WorkspaceMembersService {
       );
     }
 
+    // PENDING rows, and EXPIRED ones (stored, or PENDING past their expiry)
+    // for 30 days after they lapsed, so a lapsed invite can be resent. The
+    // cutoff is a JS Date: expires_at is a timestamp without zone, and the
+    // driver writes a Date and compares it the same way.
+    const now = Date.now();
     const invitations = await this.db.query.workspaceInvitation.findMany({
       where: and(
         eq(workspaceInvitation.workspaceId, workspaceId),
-        eq(workspaceInvitation.status, 'PENDING'),
+        or(
+          eq(workspaceInvitation.status, 'PENDING'),
+          eq(workspaceInvitation.status, 'EXPIRED'),
+        ),
+        gt(
+          workspaceInvitation.expiresAt,
+          new Date(now - EXPIRED_INVITATION_VISIBLE_DAYS * DAY_MS),
+        ),
       ),
       // The token is the accept link's secret: Copy invite link reads it
       // through getInvitationLink, never from this list.
@@ -549,7 +597,99 @@ export class WorkspaceMembersService {
       ],
     });
 
-    return invitations;
+    return invitations.map((row) => invitationView(row, now));
+  }
+
+  /**
+   * Resend: a fresh 7 days on the same link, and the email again. An EXPIRED
+   * invitation (or a PENDING one past its expiry) reserves a seat again, so
+   * it is seat-checked under the workspace's seat lock like any new invite;
+   * a live PENDING one already holds its seat. Accepted, removed and rejected
+   * rows are not invitations any more.
+   */
+  async resendInvitation(
+    workspaceId: string,
+    invitationId: string,
+    currentUserId: string,
+  ) {
+    const workspaceData = await this.db.query.workspace.findFirst({
+      where: eq(workspace.id, workspaceId),
+    });
+    if (!workspaceData) {
+      throw new NotFoundException('Workspace not found');
+    }
+
+    const resent = await this.db.transaction(async (tx) => {
+      await lockWorkspaceSeats(tx, workspaceId);
+      const row = await tx.query.workspaceInvitation.findFirst({
+        where: and(
+          eq(workspaceInvitation.id, invitationId),
+          eq(workspaceInvitation.workspaceId, workspaceId),
+        ),
+      });
+      if (!row) {
+        throw new NotFoundException('Invitation not found');
+      }
+      if (row.status !== 'PENDING' && row.status !== 'EXPIRED') {
+        throw memberConflict(
+          'INVITATION_NOT_RESENDABLE',
+          'Only an invitation that has not been answered can be resent.',
+        );
+      }
+
+      const lapsed =
+        row.status === 'EXPIRED' || row.expiresAt.getTime() <= Date.now();
+      if (lapsed) {
+        const email = normalizeEmail(row.email);
+        // Never two live invitations to one address (createInvitation's rule).
+        const sibling = await tx.query.workspaceInvitation.findFirst({
+          where: and(
+            eq(workspaceInvitation.workspaceId, workspaceId),
+            sql`lower(${workspaceInvitation.email}) = ${email}`,
+            eq(workspaceInvitation.status, 'PENDING'),
+            ne(workspaceInvitation.id, row.id),
+          ),
+          columns: { id: true },
+        });
+        if (sibling) {
+          throw memberConflict(
+            'INVITATION_ALREADY_PENDING',
+            'An invitation has already been sent to this email',
+          );
+        }
+        // A lapsed PENDING row is counted by freeSeats already; leaving this
+        // address out makes both kinds of lapsed row ask for the seat anew.
+        const free = await this.freeSeats(workspaceId, email, tx);
+        if (free < 1) throw seatLimitExceeded(free, 1);
+      }
+
+      const [updated] = await tx
+        .update(workspaceInvitation)
+        .set({
+          status: 'PENDING',
+          expiresAt: new Date(Date.now() + INVITATION_TTL_DAYS * DAY_MS),
+          updatedAt: new Date(),
+        })
+        .where(eq(workspaceInvitation.id, row.id))
+        .returning();
+      return updated;
+    });
+
+    // Best-effort, like the first send: the new expiry is saved either way.
+    // The note and the name on it stay the original inviter's.
+    await this.sendInvitationEmail(
+      resent,
+      workspaceData,
+      resent.invitedBy ?? currentUserId,
+      resent.userId ?? null,
+    );
+
+    const view = await this.db.query.workspaceInvitation.findFirst({
+      where: eq(workspaceInvitation.id, resent.id),
+      columns: { token: false },
+      with: { inviter: { columns: { id: true, name: true, email: true } } },
+    });
+    return invitationView(view ?? { ...resent, inviter: null }, Date.now());
   }
 
   // Get user's pending invitations (invitations sent to them)
@@ -689,9 +829,15 @@ export class WorkspaceMembersService {
       ],
     });
 
+    // lastActiveAt is the last sign-in, as an ISO string for the Team page.
     return {
-      owner,
-      members,
+      owner: owner
+        ? { ...owner, lastActiveAt: owner.lastLoginAt?.toISOString() ?? null }
+        : owner,
+      members: members.map((m) => ({
+        ...m,
+        lastActiveAt: m.user?.lastLoginAt?.toISOString() ?? null,
+      })),
       totalMembers: members.length + 1, // +1 for owner
     };
   }
@@ -1156,6 +1302,7 @@ export class WorkspaceMembersService {
             1,
             Math.round((invitation.expiresAt.getTime() - Date.now()) / DAY_MS),
           ),
+          message: invitation.message ?? null,
         },
         to: { email: invitation.email, userId: inviteeUserId },
         workspaceId: workspaceData.id,

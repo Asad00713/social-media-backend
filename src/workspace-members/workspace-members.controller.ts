@@ -10,8 +10,10 @@ import {
   Patch,
   Post,
   Query,
+  UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { WorkspaceMembersService } from './workspace-members.service';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
@@ -21,6 +23,18 @@ import { BatchInviteDto } from './dto/batch-invite.dto';
 import { WorkspaceRoleGuard } from './workspace-role.guard';
 import { RequireCapability } from './require-capability.decorator';
 import { SkipLaunchGate } from '../auth/decorators/skip-launch-gate.decorator';
+
+/**
+ * Throttle key for Resend: one budget per workspace (10 an hour), shared by
+ * everyone who can manage the team there. The route param is read after the
+ * role guard has run; a missing one is a 401, never a TypeError.
+ */
+function resendTracker(req: Record<string, unknown>): string {
+  const workspaceId = (req.params as { workspaceId?: string } | undefined)
+    ?.workspaceId;
+  if (!workspaceId) throw new UnauthorizedException();
+  return 'resend:' + workspaceId;
+}
 
 @Controller('workspace-members')
 @UseGuards(JwtAuthGuard)
@@ -55,6 +69,7 @@ export class WorkspaceMembersController {
       workspaceId,
       dto.invites,
       user.userId,
+      dto.message,
     );
   }
 
@@ -78,6 +93,27 @@ export class WorkspaceMembersController {
     @Param('invitationId', ParseUUIDPipe) invitationId: string,
   ) {
     return this.membersService.getInvitationLink(workspaceId, invitationId);
+  }
+
+  // Resend an invitation: a fresh 7 days and the email again. A lapsed one
+  // takes a seat again. Declared before the :invitationId catch-all below.
+  @Post(':workspaceId/invitations/:invitationId/resend')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard, ThrottlerGuard)
+  @RequireCapability('team:manage')
+  @Throttle({
+    default: { limit: 10, ttl: 3_600_000, getTracker: resendTracker },
+  })
+  resendInvitation(
+    @Param('workspaceId') workspaceId: string,
+    @Param('invitationId', ParseUUIDPipe) invitationId: string,
+    @CurrentUser() user: { userId: string; email: string },
+  ) {
+    return this.membersService.resendInvitation(
+      workspaceId,
+      invitationId,
+      user.userId,
+    );
   }
 
   // Cancel invitation

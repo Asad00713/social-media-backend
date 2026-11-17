@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { ConflictException, Logger, NotFoundException } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { socialMediaChannels } from 'src/drizzle/schema';
@@ -176,6 +176,7 @@ describe('WorkspaceMembersService.inviteMember email (B1)', () => {
       acceptUrl: 'http://localhost:3001/invite/accept?token=tok123',
       inviteeEmail: 'sana@lumierecafe.pk',
       expiresInDays: 7,
+      message: null,
     });
     // The mail carries the invite token, so it never goes through Redis.
     expect(mail.notify.notify).not.toHaveBeenCalled();
@@ -387,6 +388,417 @@ describe('WorkspaceMembersService.getMembers last seen', () => {
     expect(findMany.mock.calls[0][0].with.user.columns).toMatchObject({ lastLoginAt: true });
     expect(result.owner?.lastLoginAt).toEqual(lastLogin);
     expect(result.members[0].user?.lastLoginAt).toBeNull();
+  });
+});
+
+describe('WorkspaceMembersService.getMembers lastActiveAt', () => {
+  function membersDb(ownerLogin: Date | null, memberLogin: Date | null) {
+    return {
+      query: {
+        workspace: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ id: 'ws1', ownerId: 'owner1' }),
+        },
+        users: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 'owner1',
+            name: 'Owner',
+            email: 'o@x.com',
+            lastLoginAt: ownerLogin,
+          }),
+        },
+        workspaceInvitation: {
+          findFirst: jest.fn().mockResolvedValue(undefined),
+          findMany: jest.fn().mockResolvedValue([
+            {
+              id: 'inv1',
+              role: 'MEMBER',
+              user: {
+                id: 'u2',
+                name: 'Sara',
+                email: 's@x.com',
+                lastLoginAt: memberLogin,
+              },
+              inviter: { id: 'owner1', name: 'Owner' },
+            },
+          ]),
+        },
+      },
+    };
+  }
+
+  it('adds lastActiveAt (ISO) on the owner and each member, keeping the old keys', async () => {
+    const ownerLogin = new Date('2026-11-16T08:30:00Z');
+    const memberLogin = new Date('2026-11-01T12:00:00Z');
+    const service = build(
+      membersDb(ownerLogin, memberLogin),
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+    const res = await service.getMembers('ws1', 'owner1');
+
+    expect(res.owner?.lastActiveAt).toBe('2026-11-16T08:30:00.000Z');
+    expect(res.owner?.lastLoginAt).toEqual(ownerLogin);
+    expect(res.members[0].lastActiveAt).toBe('2026-11-01T12:00:00.000Z');
+    expect(res.members[0].user?.lastLoginAt).toEqual(memberLogin);
+    expect(res.members[0].role).toBe('MEMBER');
+    expect(res.totalMembers).toBe(2);
+  });
+
+  it('is null for someone who never signed in', async () => {
+    const service = build(
+      membersDb(null, null),
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+    const res = await service.getMembers('ws1', 'owner1');
+    expect(res.owner?.lastActiveAt).toBeNull();
+    expect(res.members[0].lastActiveAt).toBeNull();
+  });
+});
+
+describe('WorkspaceMembersService.batchInvite personal message', () => {
+  function batchDb(inserted: Record<string, unknown>[]) {
+    return withTx({
+      query: {
+        workspace: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 'ws1',
+            ownerId: 'owner1',
+            name: 'Acme',
+          }),
+        },
+        users: { findFirst: jest.fn().mockResolvedValue(undefined) },
+        workspaceInvitation: {
+          findFirst: jest.fn().mockResolvedValue(undefined),
+          findMany: jest.fn().mockResolvedValue([]),
+        },
+      },
+      insert: () => ({
+        values: (v: Record<string, unknown>) => {
+          inserted.push(v);
+          return {
+            returning: () =>
+              Promise.resolve([
+                {
+                  id: 'inv-' + String(v.email),
+                  token: 'tok',
+                  expiresAt: new Date(Date.now() + 7 * DAY_MS),
+                  userId: null,
+                  ...v,
+                },
+              ]),
+          };
+        },
+      }),
+      select: () => ({
+        from: () => ({ where: () => Promise.resolve([{ count: 0 }]) }),
+      }),
+    });
+  }
+  const usage: any = {
+    getWorkspaceUsage: jest
+      .fn()
+      .mockResolvedValue({ membersLimit: 5, membersCount: 1 }),
+  };
+  const invites = [
+    { email: 'a@x.pk', role: 'MEMBER' as const },
+    { email: 'b@x.pk', role: 'GUEST' as const },
+  ];
+
+  it('stores the note on every row and puts it in every email', async () => {
+    const inserted: Record<string, unknown>[] = [];
+    const mail = makeMail();
+    await build(batchDb(inserted), usage, {}, noRole, mail).batchInvite(
+      'ws1',
+      invites,
+      'owner1',
+      'Welcome aboard, see the October plan.',
+    );
+    expect(inserted.map((v) => v.message)).toEqual([
+      'Welcome aboard, see the October plan.',
+      'Welcome aboard, see the October plan.',
+    ]);
+    expect(mail.outbox.sendNow).toHaveBeenCalledTimes(2);
+    for (const [sent] of mail.outbox.sendNow.mock.calls) {
+      expect((sent.props as { message: string | null }).message).toBe(
+        'Welcome aboard, see the October plan.',
+      );
+    }
+  });
+
+  it('no note is null on the row and in the email', async () => {
+    const inserted: Record<string, unknown>[] = [];
+    const mail = makeMail();
+    await build(batchDb(inserted), usage, {}, noRole, mail).batchInvite(
+      'ws1',
+      invites,
+      'owner1',
+    );
+    expect(inserted.map((v) => v.message)).toEqual([null, null]);
+    expect(
+      (mail.outbox.sendNow.mock.calls[0][0].props as { message: unknown })
+        .message,
+    ).toBeNull();
+  });
+});
+
+describe('WorkspaceMembersService.getPendingInvitations view', () => {
+  it('lists PENDING and EXPIRED rows, computes the status, never selects the token', async () => {
+    const now = Date.now();
+    const findMany = jest.fn().mockResolvedValue([
+      {
+        id: 'live',
+        status: 'PENDING',
+        expiresAt: new Date(now + 2 * DAY_MS),
+        message: 'hi',
+        inviter: { id: 'o', name: 'Rehman', email: 'r@x.pk' },
+      },
+      {
+        id: 'lapsed',
+        status: 'PENDING',
+        expiresAt: new Date(now - 3 * DAY_MS),
+        message: null,
+        inviter: { id: 'o', name: 'Rehman', email: 'r@x.pk' },
+      },
+      {
+        id: 'stored',
+        status: 'EXPIRED',
+        expiresAt: new Date(now - 5 * DAY_MS),
+        message: null,
+        inviter: null,
+        token: 'leak',
+      },
+    ]);
+    const db: any = {
+      query: {
+        workspace: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ id: 'ws1', ownerId: 'owner1' }),
+        },
+        // isUserAdmin: the owner is asked first and never needs this answer.
+        workspaceInvitation: {
+          findFirst: jest.fn().mockResolvedValue(undefined),
+          findMany,
+        },
+      },
+    };
+    const res = await build(
+      db,
+      {} as any,
+      {} as any,
+      noRole,
+    ).getPendingInvitations('ws1', 'owner1');
+
+    expect(findMany.mock.calls[0][0].columns).toEqual({ token: false });
+    expect(res.map((r) => [r.id, r.status, r.invitedByName])).toEqual([
+      ['live', 'PENDING', 'Rehman'],
+      ['lapsed', 'EXPIRED', 'Rehman'],
+      ['stored', 'EXPIRED', null],
+    ]);
+    expect(res[0].message).toBe('hi');
+    expect(JSON.stringify(res)).not.toContain('leak');
+  });
+});
+
+describe('WorkspaceMembersService.resendInvitation', () => {
+  const DAYS_7 = 7 * DAY_MS;
+
+  function resendDb(
+    row: Record<string, unknown> | undefined,
+    opts: { sibling?: boolean } = {},
+  ) {
+    const set = jest.fn();
+    const db: any = withTx({
+      query: {
+        workspace: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ id: 'ws1', ownerId: 'owner1', name: 'Acme' }),
+        },
+        workspaceInvitation: {
+          // 1st call: the row; 2nd: a sibling PENDING invite; 3rd: the view.
+          findFirst: jest
+            .fn()
+            .mockResolvedValueOnce(row)
+            .mockResolvedValueOnce(opts.sibling ? { id: 'other' } : undefined)
+            .mockResolvedValue(undefined),
+          findMany: jest.fn().mockResolvedValue([]),
+        },
+      },
+      // The email's channel and member counts.
+      select: () => ({
+        from: () => ({ where: () => Promise.resolve([{ count: 2 }]) }),
+      }),
+      update: () => ({
+        set: (v: Record<string, unknown>) => {
+          set(v);
+          return {
+            where: () => ({
+              returning: () => Promise.resolve([{ ...row, ...v }]),
+            }),
+          };
+        },
+      }),
+    });
+    return { db, set };
+  }
+
+  const base = {
+    id: 'inv1',
+    workspaceId: 'ws1',
+    email: 'Sana@LumiereCafe.pk',
+    role: 'MEMBER',
+    token: 'tok-1',
+    invitedBy: 'owner1',
+    userId: null,
+    message: 'See you inside',
+  };
+  const usageWith = (membersLimit: number, membersCount: number): any => ({
+    getWorkspaceUsage: jest
+      .fn()
+      .mockResolvedValue({ membersLimit, membersCount }),
+  });
+
+  it('a live PENDING invite gets 7 more days and the email again, no seat check', async () => {
+    const { db, set } = resendDb({
+      ...base,
+      status: 'PENDING',
+      expiresAt: new Date(Date.now() + DAY_MS),
+    });
+    const usage = usageWith(1, 1); // no free seat: must not matter
+    const mail = makeMail();
+
+    const res = await build(db, usage, {}, noRole, mail).resendInvitation(
+      'ws1',
+      'inv1',
+      'owner1',
+    );
+
+    expect(usage.getWorkspaceUsage).not.toHaveBeenCalled();
+    const patch = set.mock.calls[0][0] as { status: string; expiresAt: Date };
+    expect(patch.status).toBe('PENDING');
+    expect(
+      Math.abs(patch.expiresAt.getTime() - (Date.now() + DAYS_7)),
+    ).toBeLessThan(5_000);
+    expect(patch).not.toHaveProperty('token');
+    expect(res.status).toBe('PENDING');
+    expect(JSON.stringify(res)).not.toContain('tok-1');
+
+    const sent = mail.outbox.sendNow.mock.calls[0][0];
+    expect(sent.idempotencyKey).toBe(
+      `invite.inv1.${patch.expiresAt.getTime()}`,
+    );
+    expect(sent.props).toMatchObject({
+      acceptUrl: expect.stringContaining('tok-1'),
+      message: 'See you inside',
+    });
+  });
+
+  it('an EXPIRED invite with no free seat is 403 SEAT_LIMIT_EXCEEDED and nothing is written', async () => {
+    const { db, set } = resendDb({
+      ...base,
+      status: 'EXPIRED',
+      expiresAt: new Date(Date.now() - 2 * DAY_MS),
+    });
+    const mail = makeMail();
+    await expect(
+      build(db, usageWith(2, 2), {}, noRole, mail).resendInvitation(
+        'ws1',
+        'inv1',
+        'owner1',
+      ),
+    ).rejects.toThrow(/SEAT_LIMIT_EXCEEDED/);
+    expect(set).not.toHaveBeenCalled();
+    expect(mail.outbox.sendNow).not.toHaveBeenCalled();
+    // The seat check ran under the workspace's seat lock.
+    expect(db.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('an EXPIRED invite with a free seat turns PENDING again', async () => {
+    const { db, set } = resendDb({
+      ...base,
+      status: 'EXPIRED',
+      expiresAt: new Date(Date.now() - 2 * DAY_MS),
+    });
+    const res = await build(db, usageWith(3, 2), {}, noRole).resendInvitation(
+      'ws1',
+      'inv1',
+      'owner1',
+    );
+    expect((set.mock.calls[0][0] as { status: string }).status).toBe('PENDING');
+    expect(res.status).toBe('PENDING');
+  });
+
+  it('a PENDING row already past its expiry is checked like an expired one', async () => {
+    const { db, set } = resendDb({
+      ...base,
+      status: 'PENDING',
+      expiresAt: new Date(Date.now() - DAY_MS),
+    });
+    await expect(
+      build(db, usageWith(1, 1), {}, noRole).resendInvitation(
+        'ws1',
+        'inv1',
+        'owner1',
+      ),
+    ).rejects.toThrow(/SEAT_LIMIT_EXCEEDED/);
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it('another live invite to the same address is 409 INVITATION_ALREADY_PENDING', async () => {
+    const { db, set } = resendDb(
+      {
+        ...base,
+        status: 'EXPIRED',
+        expiresAt: new Date(Date.now() - DAY_MS),
+      },
+      { sibling: true },
+    );
+    const err = await build(db, usageWith(5, 1), {}, noRole)
+      .resendInvitation('ws1', 'inv1', 'owner1')
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ConflictException);
+    expect((err as ConflictException).getResponse()).toMatchObject({
+      code: 'INVITATION_ALREADY_PENDING',
+    });
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it.each(['ACCEPTED', 'REMOVED', 'REJECTED'])(
+    'a %s row is 409 INVITATION_NOT_RESENDABLE',
+    async (status) => {
+      const { db, set } = resendDb({
+        ...base,
+        status,
+        expiresAt: new Date(Date.now() + DAY_MS),
+      });
+      const err = await build(db, usageWith(5, 1), {}, noRole)
+        .resendInvitation('ws1', 'inv1', 'owner1')
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ConflictException);
+      expect((err as ConflictException).getResponse()).toMatchObject({
+        statusCode: 409,
+        code: 'INVITATION_NOT_RESENDABLE',
+      });
+      expect(set).not.toHaveBeenCalled();
+    },
+  );
+
+  it('an unknown invitation is a 404', async () => {
+    const { db } = resendDb(undefined);
+    await expect(
+      build(db, usageWith(5, 1), {}, noRole).resendInvitation(
+        'ws1',
+        'nope',
+        'owner1',
+      ),
+    ).rejects.toBeInstanceOf(NotFoundException);
   });
 });
 

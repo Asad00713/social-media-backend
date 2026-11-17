@@ -2,6 +2,7 @@ import { DetailRows } from '../../render/components/detail-rows';
 import { EmailButton } from '../../render/components/button';
 import { FallbackLink } from '../../render/components/fallback-link';
 import { People } from '../../render/components/people';
+import { Quote } from '../../render/components/quote';
 import { Heading, Paragraph, Strong } from '../../render/components/text';
 import { initials } from '../../links/format-when';
 import { defineTemplate } from '../define-template';
@@ -41,6 +42,8 @@ export interface InvitationProps {
   acceptUrl: string;
   inviteeEmail: string;
   expiresInDays: number;
+  /** The inviter's personal note (<= 500 chars), or null when they wrote none. */
+  message: string | null;
 }
 
 const FIXTURE: InvitationProps = {
@@ -53,6 +56,7 @@ const FIXTURE: InvitationProps = {
   acceptUrl: 'https://app.schedura.ai/invite/accept?token=0123456789abcdef',
   inviteeEmail: 'sana@lumierecafe.pk',
   expiresInDays: 7,
+  message: null,
 };
 
 function plural(count: number, one: string, many: string): string {
@@ -84,6 +88,9 @@ export const workspaceInvitation = defineTemplate<InvitationProps>({
         <Strong>{p.workspaceName}</Strong> as {roleArticle(p.role)}{' '}
         <Strong>{ROLE_LABEL[p.role]}</Strong>.
       </Paragraph>
+      {p.message ? (
+        <Quote meta={`${p.inviterName} wrote`}>{p.message}</Quote>
+      ) : null}
       <DetailRows
         rows={[
           { label: 'Role', value: ROLE_EMAIL_LINE[p.role] },
@@ -104,5 +111,9 @@ export const workspaceInvitation = defineTemplate<InvitationProps>({
   variants: {
     admin: { ...FIXTURE, role: 'ADMIN' },
     viewer: { ...FIXTURE, role: 'GUEST', channels: 0, members: 1 },
+    withMessage: {
+      ...FIXTURE,
+      message: 'Sana, we need your eye on the October launch calendar.',
+    },
   },
 });
