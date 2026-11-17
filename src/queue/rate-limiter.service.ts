@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationShutdown } from '@nestjs/common';
 import Redis from 'ioredis';
 import { ConfigService } from '@nestjs/config';
 import { SupportedPlatform } from '../drizzle/schema/channels.schema';
@@ -134,7 +134,7 @@ export interface RateLimitResult {
 }
 
 @Injectable()
-export class RateLimiterService {
+export class RateLimiterService implements OnApplicationShutdown {
   private readonly logger = new Logger(RateLimiterService.name);
   private redis: Redis;
 
@@ -409,11 +409,20 @@ export class RateLimiterService {
   }
 
   /**
-   * Clean up on module destroy. A connection that is not ready is dropped:
-   * QUIT would sit in ioredis's offline queue and hold the shutdown up. A
-   * failed QUIT drops it too.
+   * Closes on application shutdown, deliberately NOT on module destroy.
+   *
+   * This client serves the publish path's rate-limit checks, and
+   * `@nestjs/bullmq` closes its workers in `onApplicationShutdown` — which
+   * Nest runs *after* every `onModuleDestroy`. Cleaning up in the earlier
+   * hook would cut this connection while workers were still taking jobs: a
+   * publish could reach the platform, fail its own bookkeeping against a
+   * closed client, be marked failed, and double-post on retry.
+   *
+   * A connection that is not ready is dropped rather than quit: QUIT would
+   * sit in ioredis's offline queue and hold shutdown up. A failed QUIT drops
+   * it too, so this never rejects and never blocks the shutdown sequence.
    */
-  async onModuleDestroy() {
+  async onApplicationShutdown() {
     if (this.redis.status !== 'ready') {
       this.redis.disconnect();
       return;

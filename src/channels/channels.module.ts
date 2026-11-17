@@ -25,7 +25,10 @@ import { LinkedInService } from './services/linkedin.service';
 import { TikTokService } from './services/tiktok.service';
 import { TikTokQuotaService } from './services/tiktok-quota.service';
 import { YoutubeAuditGateService } from './services/youtube-audit-gate.service';
-import { RedisClientProvider } from './analytics/redis-client.provider';
+import {
+  RedisClientProvider,
+  RedisClientCloser,
+} from './analytics/redis-client.provider';
 import { TwitterService } from './services/twitter.service';
 import { InstagramService } from './services/instagram.service';
 import { ThreadsService } from './services/threads.service';
@@ -131,6 +134,7 @@ import { YoutubeAuthorizationCheckScheduler } from './schedulers/youtube-authori
     TikTokQuotaService,
     YoutubeAuditGateService,
     RedisClientProvider,
+    RedisClientCloser,
     TwitterService,
     InstagramService,
     ThreadsService,

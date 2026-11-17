@@ -5,7 +5,7 @@ import {
   HttpException,
   HttpStatus,
   Logger,
-  OnModuleDestroy,
+  OnApplicationShutdown,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
@@ -14,7 +14,7 @@ const WINDOW_MS = 60_000; // 1 minute
 const MAX_REQUESTS = 20; // 20 requests per minute per user
 
 @Injectable()
-export class ChatbotRateLimitGuard implements CanActivate, OnModuleDestroy {
+export class ChatbotRateLimitGuard implements CanActivate, OnApplicationShutdown {
   private readonly logger = new Logger(ChatbotRateLimitGuard.name);
   private redis: Redis;
 
@@ -30,10 +30,16 @@ export class ChatbotRateLimitGuard implements CanActivate, OnModuleDestroy {
   }
 
   /**
+   * Closes on application shutdown, not on module destroy: Nest runs every
+   * `onModuleDestroy` before `@nestjs/bullmq` closes its workers in
+   * `onApplicationShutdown`, so the earlier hook would cut Redis out from
+   * under work that is still running. See RateLimiterService for the full
+   * reasoning.
+   *
    * A connection that is not ready is dropped: QUIT would sit in ioredis's
    * offline queue and hold the shutdown up. A failed QUIT drops it too.
    */
-  async onModuleDestroy() {
+  async onApplicationShutdown() {
     if (this.redis.status !== 'ready') {
       this.redis.disconnect();
       return;

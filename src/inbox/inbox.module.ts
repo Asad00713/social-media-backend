@@ -43,7 +43,10 @@ import { SlackBackfillService } from './services/slack-backfill.service';
 import { YoutubeInboxBudgetService } from './services/youtube-inbox-budget.service';
 import { YoutubeRetentionService } from './services/youtube-retention.service';
 import { YoutubeRetentionScheduler } from './schedulers/youtube-retention.scheduler';
-import { RedisClientProvider } from '../channels/analytics/redis-client.provider';
+import {
+  RedisClientProvider,
+  RedisClientCloser,
+} from '../channels/analytics/redis-client.provider';
 import { ChannelsModule } from '../channels/channels.module';
 import { MediaModule } from '../media/media.module';
 import { CalendarSyncModule } from '../calendar-sync/calendar-sync.module';
@@ -146,6 +149,7 @@ import {
     YoutubeRetentionService,
     YoutubeRetentionScheduler,
     RedisClientProvider,
+    RedisClientCloser,
     ...CONVERSATION_API_PROVIDERS,
     ...MESSAGING_PROVIDERS,
   ],
