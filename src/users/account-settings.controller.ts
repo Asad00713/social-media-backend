@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Patch, UseGuards } from '@nestjs/common';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { MyWorkspacesService, type MyWorkspace } from './my-workspaces.service';
 import { UpdatePreferencesDto } from './preferences/dto/update-preferences.dto';
 import type { UserPreferences } from './preferences/user-preferences';
 import { UserPreferencesService } from './preferences/user-preferences.service';
@@ -20,7 +21,10 @@ interface Caller {
 @Controller('users/me')
 @UseGuards(JwtAuthGuard)
 export class AccountSettingsController {
-  constructor(private readonly preferences: UserPreferencesService) {}
+  constructor(
+    private readonly preferences: UserPreferencesService,
+    private readonly myWorkspaces: MyWorkspacesService,
+  ) {}
 
   @Get('preferences')
   getPreferences(@CurrentUser() caller: Caller): Promise<UserPreferences> {
@@ -33,5 +37,13 @@ export class AccountSettingsController {
     @Body() dto: UpdatePreferencesDto,
   ): Promise<UserPreferences> {
     return this.preferences.update(caller.userId, dto);
+  }
+
+  /** Every workspace the caller owns or has joined (Settings > Profile). */
+  @Get('workspaces')
+  getWorkspaces(
+    @CurrentUser() caller: Caller,
+  ): Promise<{ workspaces: MyWorkspace[] }> {
+    return this.myWorkspaces.list(caller.userId);
   }
 }

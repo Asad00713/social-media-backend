@@ -154,6 +154,22 @@ export class WorkspaceMembersController {
     );
   }
 
+  // Leave the workspace (the caller removes their OWN membership, any role).
+  // MUST stay declared above removeMember: Express matches in declaration
+  // order and `:memberId` would otherwise swallow the literal `me`
+  // (workspace-members.controller.order.spec.ts pins this). No
+  // @RequireCapability: any member, guest included, may leave; the service
+  // resolves the caller's ACCEPTED row and refuses the owner.
+  @Delete(':workspaceId/members/me')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  async leaveWorkspace(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string; email: string },
+  ): Promise<void> {
+    await this.membersService.leaveWorkspace(workspaceId, user.userId);
+  }
+
   // Remove member
   // No @RequireCapability here: a member/guest must be able to remove THEIR OWN
   // row (leave the workspace), which a team:manage gate would block. The

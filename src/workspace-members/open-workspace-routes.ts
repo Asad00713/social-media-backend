@@ -24,6 +24,8 @@ export const OPEN_ROUTES: Record<string, string> = {
   'DELETE /admin/workspaces/:workspaceId/members/:memberId': SUPER_ADMIN_ONLY,
   'DELETE /admin/workspaces/:workspaceId/invitations/:invitationId':
     SUPER_ADMIN_ONLY,
+  'DELETE /workspace-members/:workspaceId/members/me':
+    "leave: the caller removes their OWN membership at any role; the service resolves the caller's ACCEPTED row and refuses the owner",
   'DELETE /workspace-members/:workspaceId/members/:memberId':
     'member-leave: a member or guest must be able to remove their OWN row, which a team:manage gate would block; WorkspaceMembersService.removeMember enforces isSelf || owner || admin || super-admin',
   'GET /workspaces/:workspaceId/media-library/categories/:categoryId/zip':

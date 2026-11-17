@@ -1,9 +1,11 @@
 import 'reflect-metadata';
+import { RequestMethod } from '@nestjs/common';
 import { GUARDS_METADATA } from '@nestjs/common/constants';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AccountSettingsController } from './account-settings.controller';
 import { DEFAULT_PREFERENCES } from './preferences/user-preferences';
 import type { UserPreferencesService } from './preferences/user-preferences.service';
+import type { MyWorkspacesService } from './my-workspaces.service';
 import { UsersController } from './users.controller';
 import { UsersModule } from './users.module';
 
@@ -17,11 +19,16 @@ function makeController() {
       theme: 'dark',
     }),
   };
+  const myWorkspaces = {
+    list: jest.fn().mockResolvedValue({ workspaces: [] }),
+  };
   return {
     controller: new AccountSettingsController(
       preferences as unknown as UserPreferencesService,
+      myWorkspaces as unknown as MyWorkspacesService,
     ),
     preferences,
+    myWorkspaces,
   };
 }
 
@@ -57,6 +64,21 @@ describe('AccountSettingsController', () => {
     expect(preferences.update).toHaveBeenCalledWith('user-1', {
       theme: 'dark',
     });
+  });
+
+  it('GET workspaces lists the caller own workspaces, never an id from the URL', async () => {
+    const { controller, myWorkspaces } = makeController();
+    expect(await controller.getWorkspaces(CALLER)).toEqual({ workspaces: [] });
+    expect(myWorkspaces.list).toHaveBeenCalledWith('user-1');
+  });
+
+  it('GET workspaces is routed at users/me/workspaces', () => {
+    const handler: object = Reflect.get(
+      AccountSettingsController.prototype,
+      'getWorkspaces',
+    ) as object;
+    expect(Reflect.getMetadata('path', handler)).toBe('workspaces');
+    expect(Reflect.getMetadata('method', handler)).toBe(RequestMethod.GET);
   });
 
   it('is registered before UsersController, so users/me never reaches users/:id', () => {

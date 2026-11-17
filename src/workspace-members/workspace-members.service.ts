@@ -836,6 +836,47 @@ export class WorkspaceMembersService {
   }
 
   /**
+   * The caller leaves a workspace (DELETE members/me), at any role. Resolves
+   * their own ACCEPTED row and removes it through removeMember's self path, so
+   * the row is kept as REMOVED with removed_by = the caller (never restorable)
+   * and the seat is released.
+   *
+   * The owner cannot leave: there is no transfer, so a workspace without its
+   * owner would be orphaned. They delete the workspace instead. Checked BEFORE
+   * the row lookup, because the owner holds no membership row and would
+   * otherwise get a misleading 404.
+   */
+  async leaveWorkspace(workspaceId: string, userId: string): Promise<void> {
+    const workspaceData = await this.db.query.workspace.findFirst({
+      where: eq(workspace.id, workspaceId),
+      columns: { ownerId: true },
+    });
+    if (!workspaceData) {
+      throw new NotFoundException('Workspace not found');
+    }
+    if (workspaceData.ownerId === userId) {
+      throw memberConflict(
+        'OWNER_CANNOT_LEAVE',
+        'The owner cannot leave their own workspace. Delete the workspace instead.',
+      );
+    }
+
+    const row = await this.db.query.workspaceInvitation.findFirst({
+      where: and(
+        eq(workspaceInvitation.workspaceId, workspaceId),
+        eq(workspaceInvitation.userId, userId),
+        eq(workspaceInvitation.status, 'ACCEPTED'),
+      ),
+      columns: { id: true },
+    });
+    if (!row) {
+      throw new NotFoundException('You are not a member of this workspace');
+    }
+
+    await this.removeMember(workspaceId, row.id, userId);
+  }
+
+  /**
    * Undo of a removal (the Team page's Undo toast). Only a member removed by
    * someone else (leaving on your own is final), within
    * MEMBER_RESTORE_WINDOW_MS, and only by the person who removed them, the

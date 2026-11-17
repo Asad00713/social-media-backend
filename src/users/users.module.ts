@@ -8,6 +8,7 @@ import { AccountSecurityService } from './account-security.service';
 import { EmailChangeService } from './email-change.service';
 import { AccountSettingsController } from './account-settings.controller';
 import { UserPreferencesService } from './preferences/user-preferences.service';
+import { MyWorkspacesService } from './my-workspaces.service';
 
 @Module({
   // For R2, which issues the presigned URL a profile picture is uploaded to.
@@ -21,6 +22,7 @@ import { UserPreferencesService } from './preferences/user-preferences.service';
     AccountSecurityService,
     EmailChangeService,
     UserPreferencesService,
+    MyWorkspacesService,
     GeoipService,
   ],
   // AccountSecurityController lives in AuthModule (it needs AuthService).
