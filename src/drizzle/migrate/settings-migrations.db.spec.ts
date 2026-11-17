@@ -1044,13 +1044,25 @@ describeDb('migration 0091 user foreign keys', () => {
     });
   });
 
-  it('0091 refuses to delete a user who owns a workspace (23001), and the workspace survives', async () => {
+  // Postgres reports an ON DELETE RESTRICT violation as 23503
+  // (foreign_key_violation), exactly like NO ACTION; 23001 is never raised by
+  // a foreign key. What tells RESTRICT apart is that it fires on the
+  // statement itself, and the constraint named is the owner one.
+  it('0091 refuses to delete a user who owns a workspace (23503 on workspace_owner_id_fkey), and the workspace survives', async () => {
     const survivors = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const ownerId = await seedUser(client);
       const workspaceId = await seedWorkspace(client, ownerId);
-      await expectPgError(client, '23001', () =>
-        client.query(`DELETE FROM users WHERE id = $1`, [ownerId]),
-      );
+      await expectPgError(client, '23503', async () => {
+        try {
+          await client.query(`DELETE FROM users WHERE id = $1`, [ownerId]);
+        } catch (err) {
+          expect(err).toMatchObject({
+            table: 'workspace',
+            constraint: 'workspace_owner_id_fkey',
+          });
+          throw err;
+        }
+      });
       return {
         users: await countWhere(
           client,
