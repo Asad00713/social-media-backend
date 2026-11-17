@@ -46,6 +46,14 @@ describe('DatabaseLifecycleService', () => {
    * in `beforeApplicationShutdown` would pull the database out from under a
    * job that is still finishing.
    */
+  /*
+   * Booting a Nest app costs seconds on a loaded machine — this has been
+   * measured at 4.5s against Jest's 5s default, so it fails as a timeout
+   * rather than on its assertion. A flaky ordering test is worse than none:
+   * people learn to re-run it instead of reading it. The limit is raised to
+   * leave headroom; the test still fails fast on the thing it checks, because
+   * a wrong order returns immediately.
+   */
   it('closes the pool only after the worker-drain phase', async () => {
     const order: string[] = [];
     const pool = {
@@ -78,5 +86,5 @@ describe('DatabaseLifecycleService', () => {
     await app.close();
 
     expect(order).toEqual(['workers-closed', 'pool-closed']);
-  });
+  }, 30_000);
 });
