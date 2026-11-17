@@ -117,6 +117,17 @@ describe('NotificationPauseService', () => {
       expect(err.getResponse()).toMatchObject({ code: 'PAUSE_IN_PAST' });
     });
 
+    it('rejects an Invalid Date with PAUSE_INVALID, writing nothing', async () => {
+      const { service, repo } = setup();
+      const err = await rejectionOf(service.set(USER, new Date('nope')));
+      expect(err).toBeInstanceOf(BadRequestException);
+      expect(err.getResponse()).toMatchObject({
+        statusCode: 400,
+        code: 'PAUSE_INVALID',
+      });
+      expect(repo.setPausedUntil).not.toHaveBeenCalled();
+    });
+
     it('null clears the pause', async () => {
       const { service, repo } = setup(null);
       expect(await service.set(USER, null)).toEqual({ pausedUntil: null });

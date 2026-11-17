@@ -11,7 +11,7 @@ export interface PauseState {
 }
 
 function rejection(
-  code: 'PAUSE_TOO_LONG' | 'PAUSE_IN_PAST',
+  code: 'PAUSE_TOO_LONG' | 'PAUSE_IN_PAST' | 'PAUSE_INVALID',
   message: string,
 ): BadRequestException {
   return new BadRequestException({
@@ -42,6 +42,10 @@ export class NotificationPauseService {
   /** `until` null clears the pause. */
   async set(userId: string, until: Date | null): Promise<PauseState> {
     if (until !== null) {
+      // An Invalid Date compares false both ways and would reach the database.
+      if (Number.isNaN(until.getTime())) {
+        throw rejection('PAUSE_INVALID', 'The pause end is not a valid date.');
+      }
       const now = Date.now();
       if (until.getTime() <= now) {
         throw rejection('PAUSE_IN_PAST', 'The pause must end in the future.');

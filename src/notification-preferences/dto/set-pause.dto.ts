@@ -1,7 +1,12 @@
 import { IsISO8601, Matches, ValidateIf } from 'class-validator';
 
-/** A time of day and an explicit zone: `Z` or `+05:00`. */
-const INSTANT_WITH_ZONE = /T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/i;
+/**
+ * A calendar date, a time of day and an explicit zone: `Z` or `+05:00`. The
+ * calendar form is required because `IsISO8601` also accepts week and ordinal
+ * dates (`2026-W49-1`, `2026-335`), which `new Date()` cannot parse.
+ */
+const INSTANT_WITH_ZONE =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/i;
 
 /**
  * `until` is an ISO 8601 instant that ends the pause, or an explicit `null`

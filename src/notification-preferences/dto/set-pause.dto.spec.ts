@@ -32,6 +32,8 @@ describe('SetPauseDto', () => {
     ['an impossible calendar date', '2026-02-31T10:00:00Z'],
     ['a date with no time', '2026-12-01'],
     ['a time with no zone', '2026-12-01T10:30:00'],
+    ['an ISO week date', '2026-W49-1T10:30:00Z'],
+    ['an ISO ordinal date', '2026-335T10:30:00Z'],
     ['a number', 1_800_000_000_000],
     ['a boolean', false],
     ['an object', {}],
