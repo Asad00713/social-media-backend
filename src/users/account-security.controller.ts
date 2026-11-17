@@ -18,6 +18,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { setRefreshCookie } from '../auth/refresh-cookie';
 import { AccountSecurityService } from './account-security.service';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { DisconnectGoogleDto } from './dto/disconnect-google.dto';
 import {
   ConfirmEmailChangeDto,
   RequestEmailChangeDto,
@@ -50,6 +51,11 @@ function perUserTracker(req: Record<string, unknown>): string {
 /** The same, for the email change (spec §7.1: 5 an hour per user). */
 function emailChangeTracker(req: Record<string, unknown>): string {
   return 'email:' + callerIdOf(req);
+}
+
+/** The same, for disconnecting Google (spec §7.1: 5 an hour per user). */
+function googleDisconnectTracker(req: Record<string, unknown>): string {
+  return 'google:' + callerIdOf(req);
 }
 
 /**
@@ -114,6 +120,29 @@ export class AccountSecurityController {
     @Body() dto: RequestEmailChangeDto,
   ): Promise<{ pendingEmail: string; expiresAt: string }> {
     return this.emailChange.request(caller.userId, dto);
+  }
+
+  /**
+   * Unlinks Google, after the password is re-entered. A wrong password is a
+   * 400 `WRONG_PASSWORD`. 5 an hour per user: the password is guessable here
+   * by whoever holds a stolen access token.
+   */
+  @Post('google/disconnect')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(ThrottlerGuard)
+  @Throttle({
+    default: { limit: 5, ttl: 3_600_000, getTracker: googleDisconnectTracker },
+  })
+  disconnectGoogle(
+    @CurrentUser() caller: Caller,
+    @Body() dto: DisconnectGoogleDto,
+    @Ip() ip: string | undefined,
+    @Headers('user-agent') userAgent: string | undefined,
+  ): Promise<PublicUser> {
+    return this.security.disconnectGoogle(caller.userId, dto.currentPassword, {
+      ip: ip ?? null,
+      userAgent: userAgent ?? null,
+    });
   }
 
   /** Switches the email when the code matches, and tells the old address (A4). */

@@ -1,12 +1,13 @@
 import {
   BadRequestException,
+  ConflictException,
   Inject,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNotNull } from 'drizzle-orm';
 import { deviceLabel } from '../auth/devices/device-label';
 import { GeoipService } from '../auth/services/geoip.service';
 import type { DbType } from '../drizzle/db';
@@ -18,10 +19,15 @@ import {
   passwordChangedTemplate,
   type PasswordChangedProps,
 } from '../email/templates/security/password-changed';
+import {
+  signInMethodChangedTemplate,
+  type SignInMethodChangedProps,
+} from '../email/templates/security/sign-in-method-changed';
 import { EmailTokensService } from '../email/tokens/email-tokens.service';
 import { NotificationEmitterService } from '../notifications/notification-emitter.service';
 import { NotifyService } from '../notifications/notify.service';
 import { RecipientsService } from '../notifications/recipients.service';
+import { toPublicUser, type PublicUser } from './users.service';
 
 /** Where the request came from, for the A5 Device and Location rows. */
 export interface RequestContext {
@@ -47,6 +53,16 @@ function accountError(code: string, message: string): BadRequestException {
   return new BadRequestException({
     statusCode: 400,
     error: 'Bad Request',
+    code,
+    message,
+  });
+}
+
+/** A 409 with a machine code, in the same body shape as `accountError`. */
+function accountConflict(code: string, message: string): ConflictException {
+  return new ConflictException({
+    statusCode: 409,
+    error: 'Conflict',
     code,
     message,
   });
@@ -125,6 +141,63 @@ export class AccountSecurityService {
   }
 
   /**
+   * Unlinks Google from the account, after the person re-enters their
+   * password. A Google-only account (no password) is refused, or the person
+   * would be locked out; they set a password through "Forgot password" first.
+   * A wrong password is a 400 `WRONG_PASSWORD`, never a 401: the frontend's
+   * API client replays a 401 and may sign the person out.
+   * Sessions are kept: only the way of signing in changes.
+   */
+  async disconnectGoogle(
+    userId: string,
+    currentPassword: string,
+    ctx: RequestContext,
+  ): Promise<PublicUser> {
+    const user = await this.db.query.users.findFirst({
+      where: eq(users.id, userId),
+      columns: { id: true, password: true, googleSub: true },
+    });
+    if (!user) throw new NotFoundException('User not found');
+    if (user.password === null) {
+      throw accountConflict(
+        'NO_PASSWORD',
+        'Your account has no password yet. Use "Forgot password" to set one before disconnecting Google.',
+      );
+    }
+    if (user.googleSub === null) {
+      throw accountConflict(
+        'GOOGLE_NOT_CONNECTED',
+        'Google is not connected to this account.',
+      );
+    }
+    if (
+      !currentPassword ||
+      !(await bcrypt.compare(currentPassword, user.password))
+    ) {
+      throw accountError('WRONG_PASSWORD', "That password isn't right.");
+    }
+
+    // Matches only a row that is still linked: of two clicks racing, the
+    // second finds nothing to change and is told so, and sends no email.
+    const [updated] = await this.db
+      .update(users)
+      .set({ googleSub: null, updatedAt: new Date() })
+      .where(and(eq(users.id, userId), isNotNull(users.googleSub)))
+      .returning();
+    if (!updated) {
+      throw accountConflict(
+        'GOOGLE_NOT_CONNECTED',
+        'Google is not connected to this account.',
+      );
+    }
+
+    // Detached, like the password change: the answer must not wait on GeoIP
+    // or the outbox. sendSignInMethodChanged never throws.
+    void this.sendSignInMethodChanged(userId, ctx);
+    return toPublicUser(updated);
+  }
+
+  /**
    * Ends every session: both JWT strategies refuse a token issued before this
    * second. The app clock, not the database's, because the tokens' `iat` comes
    * from the app clock: a database clock running ahead would otherwise refuse
@@ -198,6 +271,45 @@ export class AccountSecurityService {
     } catch (err) {
       this.logger.warn(
         `Password-changed notice for user ${userId} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * The "Google sign-in was removed" email (queued, security footer, always
+   * sent). It has no bell. Never throws: the account has already changed.
+   */
+  async sendSignInMethodChanged(
+    userId: string,
+    ctx: RequestContext,
+  ): Promise<void> {
+    try {
+      const [timeZone, geo] = await Promise.all([
+        this.recipients.userTimezone(userId),
+        this.geoip.lookup(ctx.ip),
+      ]);
+      const token = this.tokens.securityToken({ uid: userId, act: 'not_me' });
+      const props: SignInMethodChangedProps = {
+        when: formatWhen(new Date(), timeZone),
+        device: deviceLabel(ctx.userAgent),
+        location: geo?.country ?? null,
+        method: 'google',
+        change: 'disconnected',
+        resetUrl: this.links.api('/email/security/' + token),
+      };
+      await this.notify.notify({
+        userId,
+        workspaceId: null,
+        event: 'security_alert',
+        email: {
+          template: signInMethodChangedTemplate,
+          props,
+          idempotencyKey: `sign-in-method-changed.${userId}.${Date.now()}`,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Sign-in-method notice for user ${userId} failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }

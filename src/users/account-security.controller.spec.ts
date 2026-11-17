@@ -1,4 +1,9 @@
-import { UnauthorizedException, type ExecutionContext } from '@nestjs/common';
+import {
+  RequestMethod,
+  UnauthorizedException,
+  type ExecutionContext,
+} from '@nestjs/common';
+import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { Reflector } from '@nestjs/core';
 import {
   ThrottlerException,
@@ -85,7 +90,12 @@ describe('AccountSecurityController.changePassword', () => {
   });
 });
 
-describe('per-user throttles on POST /users/me/password and /email-change', () => {
+type ThrottledRoute =
+  | 'changePassword'
+  | 'requestEmailChange'
+  | 'disconnectGoogle';
+
+describe('per-user throttles on POST /users/me/password, /email-change and /google/disconnect', () => {
   let storage: ThrottlerStorageService;
   let guard: ThrottlerGuard;
 
@@ -105,14 +115,14 @@ describe('per-user throttles on POST /users/me/password and /email-change', () =
   function attempt(
     userId: string,
     ip: string,
-    route: 'changePassword' | 'requestEmailChange' = 'changePassword',
+    route: ThrottledRoute = 'changePassword',
   ): Promise<boolean> {
     return run({ user: { userId, email: 'a@b.co' }, ip, headers: {} }, route);
   }
 
   function run(
     req: Record<string, unknown>,
-    route: 'changePassword' | 'requestEmailChange' = 'changePassword',
+    route: ThrottledRoute = 'changePassword',
   ): Promise<boolean> {
     const res = { header: jest.fn() };
     const context = {
@@ -149,7 +159,28 @@ describe('per-user throttles on POST /users/me/password and /email-change', () =
     await expect(attempt('u1', '1.1.1.1')).resolves.toBe(true);
   });
 
-  it.each(['changePassword', 'requestEmailChange'] as const)(
+  it('google/disconnect counts per user: five tries from two IPs use up the hour, a sixth is refused', async () => {
+    for (const ip of ['1.1.1.1', '2.2.2.2', '1.1.1.1', '2.2.2.2', '1.1.1.1']) {
+      await expect(attempt('u1', ip, 'disconnectGoogle')).resolves.toBe(true);
+    }
+    await expect(
+      attempt('u1', '3.3.3.3', 'disconnectGoogle'),
+    ).rejects.toBeInstanceOf(ThrottlerException);
+    await expect(attempt('u2', '1.1.1.1', 'disconnectGoogle')).resolves.toBe(
+      true,
+    );
+    // Its own bucket ('google:' + id): the password and email routes are untouched.
+    await expect(attempt('u1', '1.1.1.1')).resolves.toBe(true);
+    await expect(attempt('u1', '1.1.1.1', 'requestEmailChange')).resolves.toBe(
+      true,
+    );
+  });
+
+  it.each([
+    'changePassword',
+    'requestEmailChange',
+    'disconnectGoogle',
+  ] as const)(
     '%s without a signed-in user is a 401, not a TypeError',
     async (route) => {
       await expect(
@@ -160,4 +191,87 @@ describe('per-user throttles on POST /users/me/password and /email-change', () =
       ).rejects.toBeInstanceOf(UnauthorizedException);
     },
   );
+});
+
+describe('AccountSecurityController.disconnectGoogle', () => {
+  const caller = { userId: 'u1', email: 'a@b.co' };
+  const user = { id: 'u1', hasGoogle: false };
+
+  function setup(refusal?: Error) {
+    const security = {
+      disconnectGoogle: jest.fn(() =>
+        refusal ? Promise.reject(refusal) : Promise.resolve(user),
+      ),
+    };
+    const controller = new AccountSecurityController(
+      security as unknown as AccountSecurityService,
+      {} as AuthService,
+      {} as EmailChangeService,
+    );
+    return { controller, security };
+  }
+
+  it('hands the caller id, the password and the request context to the service, and returns the user', async () => {
+    const { controller, security } = setup();
+
+    await expect(
+      controller.disconnectGoogle(
+        caller,
+        { currentPassword: 'OldPass123' },
+        '39.48.12.201',
+        'UA',
+      ),
+    ).resolves.toBe(user);
+
+    expect(security.disconnectGoogle).toHaveBeenCalledWith('u1', 'OldPass123', {
+      ip: '39.48.12.201',
+      userAgent: 'UA',
+    });
+  });
+
+  it('missing ip and user agent become null', async () => {
+    const { controller, security } = setup();
+    await controller.disconnectGoogle(
+      caller,
+      { currentPassword: 'OldPass123' },
+      undefined,
+      undefined,
+    );
+    expect(security.disconnectGoogle).toHaveBeenCalledWith('u1', 'OldPass123', {
+      ip: null,
+      userAgent: null,
+    });
+  });
+
+  it('a refusal reaches the caller untouched', async () => {
+    const refused = new Error('WRONG_PASSWORD');
+    const { controller } = setup(refused);
+    await expect(
+      controller.disconnectGoogle(
+        caller,
+        { currentPassword: 'x' },
+        '1.1.1.1',
+        'UA',
+      ),
+    ).rejects.toBe(refused);
+  });
+
+  it('is POST users/me/google/disconnect behind JwtAuthGuard (class) and ThrottlerGuard (route), answering 200', () => {
+    const handler = AccountSecurityController.prototype.disconnectGoogle;
+    expect(Reflect.getMetadata(PATH_METADATA, handler)).toBe(
+      'google/disconnect',
+    );
+    expect(Reflect.getMetadata(METHOD_METADATA, handler)).toBe(
+      RequestMethod.POST,
+    );
+    expect(Reflect.getMetadata('__httpCode__', handler)).toBe(200);
+    expect(Reflect.getMetadata('__guards__', handler)).toContain(
+      ThrottlerGuard,
+    );
+    const classGuards = Reflect.getMetadata(
+      '__guards__',
+      AccountSecurityController,
+    ) as { name: string }[];
+    expect(classGuards.map((g) => g.name)).toContain('JwtAuthGuard');
+  });
 });
