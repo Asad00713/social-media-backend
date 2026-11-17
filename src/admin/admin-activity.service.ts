@@ -11,6 +11,7 @@ import {
   adCampaigns,
   workspace,
 } from '../drizzle/schema';
+import { livePosts } from '../posts/soft-delete/soft-delete';
 
 /**
  * Platform-wide "recent activity" feeds for the admin dashboard — the newest
@@ -146,7 +147,7 @@ export class AdminActivityService {
         createdAt: posts.createdAt,
       })
       .from(posts)
-      .where(this.keysetBefore(posts.createdAt, posts.id, cursor, true))
+      .where(and(this.keysetBefore(posts.createdAt, posts.id, cursor, true), livePosts()))
       .orderBy(desc(posts.createdAt), desc(posts.id))
       .limit(PAGE_SIZE + 1);
 

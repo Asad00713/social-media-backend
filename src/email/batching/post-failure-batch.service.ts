@@ -21,6 +21,7 @@ import {
   POSTS_FAILED,
   type PostsFailedProps,
 } from '../templates/publishing/posts-failed';
+import { livePosts } from '../../posts/soft-delete/soft-delete';
 
 /** One failed post on one channel, as the window keeps it. */
 export interface FailureEntry {
@@ -373,14 +374,12 @@ export class PostFailureBatchService {
     const [row] = await this.db
       .select({ count: sql<number>`count(*)::int` })
       .from(posts)
-      .where(
-        and(
+      .where(and(and(
           eq(posts.workspaceId, workspaceId),
           eq(posts.status, 'published'),
           sql`${posts.publishedAt} >= (date_trunc('day', now() AT TIME ZONE ${zone}) AT TIME ZONE ${zone})`,
           notInArray(posts.id, failedIds),
-        ),
-      );
+        ), livePosts()));
     return Number(row?.count ?? 0);
   }
 }

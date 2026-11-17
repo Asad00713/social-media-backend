@@ -19,6 +19,7 @@ import { WorkspaceRoleService } from '../../workspace-members/workspace-role.ser
 import { channelContent } from '../lib/channel-content';
 import { PartialPublishError } from '../publishers/base.publisher';
 import { TikTokComplianceError } from '../publishers/tiktok-compliance';
+import { livePosts } from '../soft-delete/soft-delete';
 
 interface NotifiableTarget {
   channelId: number | string;
@@ -151,7 +152,7 @@ export class PublishFailureNotifier {
       const [post] = await this.db
         .select()
         .from(posts)
-        .where(eq(posts.id, postId))
+        .where(and(eq(posts.id, postId), livePosts()))
         .limit(1);
       if (!post || post.status === 'published') return;
       let reason = withoutUrls(error.message);

@@ -6,7 +6,7 @@ import {
 } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job, Queue } from 'bullmq';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import { withRetry } from '../../drizzle/db-utils';
 import { posts } from '../../drizzle/schema/posts.schema';
@@ -16,6 +16,7 @@ import { PostService } from '../services/post.service';
 import { PublishFailureNotifier } from '../services/publish-failure-notifier.service';
 import { RepeatPostsService } from '../services/repeat-posts.service';
 import type { PublishJobData } from '../lib/held-targets';
+import { livePosts } from '../soft-delete/soft-delete';
 
 @Processor(QUEUES.POST_PUBLISHING, {
   concurrency: 5, // Process up to 5 jobs simultaneously
@@ -41,7 +42,14 @@ export class PostPublishProcessor extends WorkerHost {
     try {
       // Get the post to find its workspace (with retry for transient failures)
       const [post] = await withRetry(() =>
-        db.select().from(posts).where(eq(posts.id, postId)).limit(1),
+        db
+          .select()
+          .from(posts)
+          // A deleted post must never publish. The `if (!post)` branch below
+          // already treats a missing row as "nothing to do" without burning
+          // a BullMQ retry, which is exactly right here too.
+          .where(and(eq(posts.id, postId), livePosts()))
+          .limit(1),
       );
 
       if (!post) {

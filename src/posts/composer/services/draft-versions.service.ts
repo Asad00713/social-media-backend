@@ -20,6 +20,7 @@ import {
   type VersionChange,
   type VersionDetails,
 } from '../lib/draft-versions';
+import { livePosts } from '../../soft-delete/soft-delete';
 
 export interface DraftVersionDto {
   id: string;
@@ -196,7 +197,7 @@ export class DraftVersionsService {
     const [post] = await this.db
       .select({ status: posts.status, metadata: posts.metadata })
       .from(posts)
-      .where(and(eq(posts.id, postId), eq(posts.workspaceId, workspaceId)))
+      .where(and(eq(posts.id, postId), eq(posts.workspaceId, workspaceId), livePosts()))
       .limit(1);
     if (!post) throw new NotFoundException('Post not found');
     return post;

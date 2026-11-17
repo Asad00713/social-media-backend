@@ -3,6 +3,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { PostsController } from './posts.controller';
 import { PostService } from './services/post.service';
 import { StrandedPostSweeperService } from './services/stranded-post-sweeper.service';
+import { PostPurgeService } from './services/post-purge.service';
 import { ScheduledPostReconcilerService } from './services/scheduled-post-reconciler.service';
 import { PostDraftsService } from './services/post-drafts.service';
 import { PlannerPostsService } from './services/planner-posts.service';
@@ -66,6 +67,7 @@ import { PublishFailureNotifier } from './services/publish-failure-notifier.serv
   providers: [
     PostService,
     StrandedPostSweeperService,
+    PostPurgeService,
     ScheduledPostReconcilerService,
     PlannerPostsService,
     PostDraftsService,

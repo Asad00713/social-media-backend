@@ -33,14 +33,14 @@ const REPO = join(SRC, '..');
  * else in this file needs to change, which is the point of discovering the
  * read sites from disk rather than listing them.
  */
-const BUILDER_READ = /\.from\(\s*workspace\s*\)/;
+const BUILDER_READ = /\.from\(\s*(?:posts|workspace)\s*\)/;
 
 /**
  * Drizzle's relational API — `db.query.workspace.findFirst/findMany`. A
  * different spelling of the same read, and one `.from(workspace)` does not
  * see: 34 of these were invisible to the first version of this file.
  */
-const RELATIONAL_READ = /\.query\.workspace\.find/;
+const RELATIONAL_READ = /\.query\.(?:posts|workspace)\.find/;
 
 /**
  * Raw SQL. Deliberately anchored to a `${sql}` template or a quoted query
@@ -49,11 +49,13 @@ const RELATIONAL_READ = /\.query\.workspace\.find/;
  * exactly that. `workspace_usage` and friends must not match either, hence
  * the word boundary that excludes a following underscore.
  */
-const RAW_READ = /\b(?:FROM|JOIN)\s+workspace(?![_a-z])/;
+const RAW_READ = /\b(?:FROM|JOIN)\s+(?:posts|workspace)(?![_a-z])/;
 
 /** Evidence the file excludes deleted rows somehow. */
 const FILTERS = [
   /liveWorkspaces\(\)/,
+  /livePosts\(\)/,
+  /livePostsSql\(/,
   // The relational API takes a callback: `where: (w, { isNull }) => ...`
   /isNull\(\s*\w+\.deletedAt\s*\)/,
   /liveWorkspacesSql\(/,

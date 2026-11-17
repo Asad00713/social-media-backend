@@ -33,6 +33,7 @@ import {
   shortLinkBaseUrl,
   shortUrlFor,
 } from './short-link-rules';
+import { livePosts } from '../posts/soft-delete/soft-delete';
 
 /**
  * True when Postgres says the table does not exist (42P01): the code is
@@ -224,7 +225,7 @@ export class ShortLinksService {
     const [post] = await this.db
       .select({ id: posts.id })
       .from(posts)
-      .where(and(eq(posts.id, postId), eq(posts.workspaceId, workspaceId)))
+      .where(and(eq(posts.id, postId), eq(posts.workspaceId, workspaceId), livePosts()))
       .limit(1);
     return post ? post.id : null;
   }

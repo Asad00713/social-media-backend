@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import { posts } from '../../drizzle/schema/posts.schema';
@@ -12,6 +12,7 @@ import { buildDuplicate } from '../lib/duplicate-post';
 import type { PostRow } from '../lib/present-post';
 import { nextPost, parseStored, seriesPostId } from '../lib/recurrence';
 import { applyVariationSources } from '../lib/rotating-variations';
+import { livePosts } from '../soft-delete/soft-delete';
 
 /** Job options the composer's own schedule endpoint uses. */
 const JOB_ATTEMPTS = 3;
@@ -95,7 +96,7 @@ export class RepeatPostsService {
       const [row] = await this.db
         .select({ status: posts.status, jobId: posts.jobId })
         .from(posts)
-        .where(eq(posts.id, id))
+        .where(and(eq(posts.id, id), livePosts()))
         .limit(1);
       if (!row || row.status !== 'scheduled' || row.jobId !== jobId) {
         return id;

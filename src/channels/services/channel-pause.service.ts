@@ -27,6 +27,7 @@ import type {
   ResumeChannelResponse,
 } from '../dto/channel-hub.dto';
 import { loadPeople, personOf } from '../lib/people';
+import { livePosts } from '../../posts/soft-delete/soft-delete';
 
 type Row = Record<string, unknown>;
 
@@ -263,7 +264,7 @@ export class ChannelPauseService {
           const [row] = await tx
             .select({ targets: posts.targets })
             .from(posts)
-            .where(eq(posts.id, post.id))
+            .where(and(eq(posts.id, post.id), livePosts()))
             .for('update');
           if (!row) return;
           const targets = (row.targets ?? []).map((t: PostTarget) =>

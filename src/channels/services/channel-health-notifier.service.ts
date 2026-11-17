@@ -22,6 +22,7 @@ import { NotificationEmitterService } from '../../notifications/notification-emi
 import { NotifyService } from '../../notifications/notify.service';
 import { RecipientsService } from '../../notifications/recipients.service';
 import { DISCONNECTED_STATUS, liveChannel } from '../lib/live-channel';
+import { livePosts } from '../../posts/soft-delete/soft-delete';
 
 interface HealthChannel {
   id: number;
@@ -241,8 +242,7 @@ export class ChannelHealthNotifier {
     const [row] = await this.db
       .select({ n: count(), next: min(posts.scheduledAt) })
       .from(posts)
-      .where(
-        and(
+      .where(and(and(
           eq(posts.workspaceId, channel.workspaceId),
           eq(posts.status, 'scheduled'),
           gt(posts.scheduledAt, new Date()),
@@ -250,8 +250,7 @@ export class ChannelHealthNotifier {
           not(
             sql`${posts.targets} @> ${JSON.stringify([{ channelId, status: 'published' }])}::jsonb`,
           ),
-        ),
-      );
+        ), livePosts()));
     const waiting = Number(row?.n ?? 0);
     return {
       waiting,

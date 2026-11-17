@@ -105,25 +105,57 @@ deleted. Without the guard, an accepted member would keep full access to a
 workspace its owner had deleted, while the owner themselves was correctly shut
 out. Closing it in the guard fixes all of them at once.
 
-## Posts are not done yet
+## Posts
 
-Migration 0088 added the same columns to `posts`, and the helpers
-(`livePosts`, `livePostsSql`) exist, but **the post delete path is still a
-hard delete** and its reads are unfiltered.
+Same columns, same 30-day window, same purge pattern (`PostPurgeService`,
+nightly 03:50 UTC). `PostService.deletePost` and the composer's discard-draft
+both mark the row; the publish processor refuses a deleted post, so one that
+was scheduled cannot go out after it was deleted.
 
-That is deliberate. `posts` has ~49 read sites, and several carry product
-decisions rather than mechanical edits:
+### The rule: what you manage is hidden, what happened is kept
 
-- does a deleted post still count towards a plan's queued-post quota?
-- do deleted posts leave analytics and insights totals, changing numbers the
-  user already saw in a report?
+A post that published reached a platform, people saw it, the engagement was
+real. Deleting it in Schedura means *"I don't want this in my list any more"*,
+not *"this never happened"*.
 
-The intended answer to the first is **no** — delete frees the slot
-immediately, as Gmail, Dropbox and Figma all behave; a 30-day hold confuses
-far more people than the theoretical quota loophole costs. But that is a
-decision to make deliberately, with the analytics question alongside it, and
-bundling it here would have made both halves harder to review.
+| Reads | Deleted posts |
+|---|---|
+| Planner, Composer, drafts, channel page, queue limits, scheduling | **hidden** |
+| Analytics, Insights, performance, platform status | **still counted** |
 
-To pick it up: widen `BUILDER_READ` and `RAW_READ` in the regression spec to
-`(posts|workspace)` and work through what it reports. Nothing else in that
-file needs changing — which is the point of discovering read sites from disk.
+Filtering the measurement side would move last month's numbers when someone
+tidies up their Planner, and a report they already read or shared would quietly
+disagree with itself. That asymmetry is deliberate, it is written down in
+`reads-exempt-from-deleted-filter.ts` against each exempt file, and
+`posts.soft-delete.spec.ts` fails if someone "fixes" analytics to filter.
+
+Proved on a real database, in a transaction:
+
+```
+published posts in workspace: 3
+after soft delete -> analytics still sees: 3
+                  -> planner/quota sees : 2
+after restore     -> planner sees again: 3
+```
+
+### Restoring a post
+
+```sql
+SELECT id, content, status, deleted_at FROM posts
+ WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC;
+
+UPDATE posts SET deleted_at = NULL, deleted_by_id = NULL WHERE id = '<uuid>';
+```
+
+A post restored in `scheduled` state has no queued job — it was cancelled on
+delete. The scheduled-post reconciler re-arms it within its 6-hour window;
+past that it is failed as missed, which is the same rule any unarmed scheduled
+post follows.
+
+### What is still a hard delete, on purpose
+
+System-generated rows that are *un-materialised* rather than deleted: a
+campaign slot being reset (`campaigns.service.ts`), an evergreen occurrence
+cancelled (`evergreen.service.ts`), posts stripped when a channel is removed
+(`channel-posts-cleanup.service.ts`). The user never created those rows, so
+there is nothing for them to restore.

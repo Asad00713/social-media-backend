@@ -7,6 +7,7 @@ import { db } from '../../drizzle/db';
 import { posts } from '../../drizzle/schema';
 import { QUEUES } from '../../queue/queue.module';
 import { isJobPending, isHeld } from '../lib/held-targets';
+import { livePosts } from '../soft-delete/soft-delete';
 
 /**
  * How far past its time a post may be re-armed and still sent.
@@ -127,14 +128,12 @@ export class ScheduledPostReconcilerService implements OnApplicationBootstrap {
         targets: posts.targets,
       })
       .from(posts)
-      .where(
-        and(
+      .where(and(and(
           eq(posts.status, 'scheduled'),
           isNotNull(posts.scheduledAt),
           // Settled rows only — see SETTLE_MS.
           lt(posts.updatedAt, new Date(now.getTime() - SETTLE_MS)),
-        ),
-      )
+        ), livePosts()))
       .limit(BATCH);
 
     result.checked = candidates.length;
