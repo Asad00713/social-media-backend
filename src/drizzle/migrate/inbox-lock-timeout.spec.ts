@@ -38,6 +38,7 @@ import { readMigrations } from './runner';
  * 0083 creates platform_incidents with a foreign key to users (SHARE ROW
  * EXCLUSIVE). 0086 builds an index on posts (SHARE) and 0087 one on
  * error_logs (SHARE), each with a tighter bound of its own, checked below.
+ * 0088 adds four columns to users (ACCESS EXCLUSIVE, catalog-only).
  */
 const FILES = [
   '0046_inbox_items_thread_key.sql',
@@ -59,6 +60,7 @@ const FILES = [
   '0080_member_soft_removal.sql',
   '0082_error_logs_request_id.sql',
   '0083_platform_status.sql',
+  '0088_user_account_settings.sql',
 ];
 
 const firstStatement = (sql: string): string =>

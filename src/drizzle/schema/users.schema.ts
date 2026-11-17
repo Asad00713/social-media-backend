@@ -7,6 +7,7 @@ import {
   text,
   boolean,
   integer,
+  jsonb,
 } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 import { workspace } from './workspace.schema';
@@ -123,6 +124,23 @@ export const users = pgTable('users', {
   lastLoginIp: varchar('last_login_ip', { length: 45 }), // fits IPv6
   country: varchar('country', { length: 100 }),
   countryCode: varchar('country_code', { length: 2 }), // ISO 3166-1 alpha-2
+
+  // Account settings (migration 0088).
+  // The Preferences page: only keys the person has chosen, so {} means "all
+  // defaults". Shape and allowed values are enforced by the preferences DTO.
+  preferences: jsonb('preferences')
+    .$type<Record<string, unknown>>()
+    .notNull()
+    .default({}),
+  // When the password last changed (change or reset); null if never changed.
+  passwordChangedAt: timestamp('password_changed_at', { withTimezone: true }),
+  // "Pause notifications": until this instant only failed posts and security
+  // alerts are sent. Null or in the past means not paused.
+  notificationsPausedUntil: timestamp('notifications_paused_until', {
+    withTimezone: true,
+  }),
+  // Account soft delete: set when the account is deleted and anonymised.
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
 
   // How Maestro should pitch its replies to THIS user. Per-user, not
   // per-workspace: one workspace holds people of very different technical
