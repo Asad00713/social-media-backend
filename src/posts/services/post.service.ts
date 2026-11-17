@@ -63,6 +63,7 @@ import { CalendarPushSyncService } from '../../calendar-sync/services/calendar-p
 import { CampaignStatusSyncListener } from '../../campaigns/campaign-status-sync.listener';
 import { PostQueueService } from '../../billing/services/post-queue.service';
 import { PostReminderService } from './post-reminder.service';
+import { StrandedPostSweeperService } from './stranded-post-sweeper.service';
 import { PublishFailureNotifier } from './publish-failure-notifier.service';
 import { withSharedThumbnail } from '../lib/shared-thumbnail';
 import { sharedMetadataFor } from '../lib/publish-metadata';
@@ -134,6 +135,10 @@ export class PostService {
     private readonly postQueue: PostQueueService,
     private readonly reminders: PostReminderService,
     private readonly failureNotifier: PublishFailureNotifier,
+    // Appended deliberately: several specs construct this service with
+    // positional arguments, so inserting a parameter mid-list silently
+    // shifts every one after it.
+    private readonly sweeper: StrandedPostSweeperService,
   ) {}
 
   /**
@@ -657,14 +662,33 @@ export class PostService {
     const missedHeld = heldOnly && options?.missedHeld === true;
     const onPaused =
       options?.onPaused ?? (triggeredBy === 'scheduler' ? 'hold' : 'refuse');
-    const post = await this.getPost(postId, workspaceId);
+    let post = await this.getPost(postId, workspaceId);
 
     if (post.status === 'published') {
       throw new BadRequestException('Post is already published');
     }
 
     if (post.status === 'publishing') {
-      throw new BadRequestException('Post is currently being published');
+      // A row that has sat in `publishing` past the sweeper's threshold was
+      // abandoned by a process that is no longer alive (see
+      // StrandedPostSweeperService). Refusing it outright left those posts
+      // unrecoverable by hand — the author was told "currently being
+      // published" indefinitely. Resolve it from what actually happened,
+      // then let this attempt proceed against the repaired row.
+      //
+      // Still refused inside the window: a publish really can be running,
+      // and a second one would double-post.
+      const repaired = await this.sweeper.resolveIfStranded(postId);
+      if (!repaired) {
+        throw new BadRequestException('Post is currently being published');
+      }
+      // Re-read rather than recurse: the repaired row drives the rest of this
+      // method, and a recursive call could loop if the repair ever failed to
+      // move the status.
+      post = await this.getPost(postId, workspaceId);
+      if (post.status === 'publishing') {
+        throw new BadRequestException('Post is currently being published');
+      }
     }
 
     if (!post.targets || post.targets.length === 0) {
