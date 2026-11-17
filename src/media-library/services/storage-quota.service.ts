@@ -38,7 +38,7 @@ export class StorageQuotaService {
              FROM workspace w
              LEFT JOIN subscriptions s ON s.user_id = w.owner_id
              JOIN plans p ON p.code = CASE WHEN s.status IN ('active', 'trialing') THEN s.plan_code ELSE 'FREE' END
-            WHERE w.id = ${workspaceId}::uuid
+            WHERE w.id = ${workspaceId}::uuid AND w.deleted_at IS NULL
             LIMIT 1),
           (SELECT p.storage_bytes_per_workspace FROM plans p WHERE p.code = 'FREE'),
           ${FREE_STORAGE_BYTES}::bigint

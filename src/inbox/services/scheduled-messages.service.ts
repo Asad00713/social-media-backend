@@ -41,6 +41,7 @@ import type { CreateScheduledMessageDto } from '../dto/create-scheduled-message.
 import type { UpdateScheduledMessageDto } from '../dto/update-scheduled-message.dto';
 import type { ListScheduledMessagesDto } from '../dto/list-scheduled-messages.dto';
 import type { ScheduledInboxEventBase } from '../../realtime/types/analytics-events.types';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 const MIN_LEAD_MS = 2 * 60 * 1000; // 2 minutes
 
@@ -146,7 +147,11 @@ export class ScheduledMessagesService {
     userId: string,
   ): Promise<void> {
     const owned = await db.query.workspace.findFirst({
-      where: and(eq(workspace.id, workspaceId), eq(workspace.ownerId, userId)),
+      where: and(
+        eq(workspace.id, workspaceId),
+        eq(workspace.ownerId, userId),
+        liveWorkspaces(),
+      ),
       columns: { id: true },
     });
     if (owned) return;

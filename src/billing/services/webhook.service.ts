@@ -30,6 +30,7 @@ import {
   refreshStripeProviderRowStatus,
 } from '../providers/stripe-provider-row.util';
 import { BillingEmailService, billingEmailKey } from './billing-email.service';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 @Injectable()
 export class WebhookService {
@@ -444,7 +445,9 @@ export class WebhookService {
           db
             .select({ id: workspace.id })
             .from(workspace)
-            .where(eq(workspace.ownerId, existing.userId)),
+            .where(
+              and(eq(workspace.ownerId, existing.userId), liveWorkspaces()),
+            ),
         ),
       );
 
@@ -889,7 +892,7 @@ export class WebhookService {
           db
             .select({ id: workspace.id })
             .from(workspace)
-            .where(eq(workspace.ownerId, userId)),
+            .where(and(eq(workspace.ownerId, userId), liveWorkspaces())),
         ),
       );
 

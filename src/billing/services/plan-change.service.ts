@@ -33,6 +33,7 @@ import {
   billingEmailKey,
   formatMonthlyPrice,
 } from './billing-email.service';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 export interface PlanChangePreview {
   currentPlan: {
@@ -121,7 +122,7 @@ export class PlanChangeService {
     const ws = await db
       .select()
       .from(workspace)
-      .where(eq(workspace.id, workspaceId))
+      .where(and(eq(workspace.id, workspaceId), liveWorkspaces()))
       .limit(1);
 
     if (ws.length === 0) {
@@ -729,7 +730,7 @@ export class PlanChangeService {
     const ws = await db
       .select()
       .from(workspace)
-      .where(eq(workspace.id, workspaceId))
+      .where(and(eq(workspace.id, workspaceId), liveWorkspaces()))
       .limit(1);
 
     if (ws.length === 0) {
@@ -836,7 +837,7 @@ export class PlanChangeService {
             db
               .select({ id: workspace.id })
               .from(workspace)
-              .where(eq(workspace.ownerId, userId)),
+              .where(and(eq(workspace.ownerId, userId), liveWorkspaces())),
           ),
         );
 

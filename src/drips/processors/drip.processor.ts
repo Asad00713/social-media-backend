@@ -32,6 +32,7 @@ import { formatWhen, usableZone } from '../../email/links/format-when';
 import { networkName } from '../../email/render/components/post-card';
 import { dripReview } from '../../email/templates/publishing/drip-review';
 import { NotifyService } from '../../notifications/notify.service';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 interface DripJobData {
   dripPostId: string;
@@ -323,7 +324,7 @@ export class DripProcessor extends WorkerHost {
       const [ws] = await db
         .select({ timezone: workspace.timezone })
         .from(workspace)
-        .where(eq(workspace.id, campaign.workspaceId));
+        .where(and(eq(workspace.id, campaign.workspaceId), liveWorkspaces()));
       timezone = ws?.timezone || 'UTC';
     } catch (err) {
       this.logger.warn(

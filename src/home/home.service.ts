@@ -39,6 +39,7 @@ import {
   type FollowerRow,
   type PulseRange,
 } from './lib/home-summary';
+import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 const PUBLISHED_STATUSES = ['published', 'partially_published'] as const;
 
@@ -135,7 +136,7 @@ export class HomeService {
     const [ws]: { weeklyPostGoal: number }[] = await this.db
       .select({ weeklyPostGoal: workspace.weeklyPostGoal })
       .from(workspace)
-      .where(eq(workspace.id, workspaceId));
+      .where(and(eq(workspace.id, workspaceId), liveWorkspaces()));
     if (!ws) throw new NotFoundException('Workspace not found');
 
     const currentFollowers = followers.filter((r) => r.date >= window.from);

@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { UnrecoverableError } from 'bullmq';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import { workspace } from '../../drizzle/schema/workspace.schema';
@@ -17,6 +17,7 @@ import type {
   FooterLink,
 } from '../templates/types';
 import type { EmailRecipient } from './email-job';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 /**
  * Footer line 1 and the links row, per footer kind (spec §4.1). A template's
@@ -123,7 +124,7 @@ export class EmailFooterService {
     const [row] = await this.db
       .select({ name: workspace.name })
       .from(workspace)
-      .where(eq(workspace.id, workspaceId))
+      .where(and(eq(workspace.id, workspaceId), liveWorkspaces()))
       .limit(1);
     if (!row) {
       throw new UnrecoverableError(`Workspace ${workspaceId} no longer exists`);

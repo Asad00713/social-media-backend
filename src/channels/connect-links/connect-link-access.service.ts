@@ -31,6 +31,7 @@ import {
   linkStatus,
   type StateOwner,
 } from './lib/connect-link-rules';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 export interface ResolvedConnectLink {
   link: ChannelConnectLink;
@@ -209,7 +210,7 @@ export class ConnectLinkAccessService {
         isActive: workspace.isActive,
       })
       .from(workspace)
-      .where(eq(workspace.id, link.workspaceId))
+      .where(and(eq(workspace.id, link.workspaceId), liveWorkspaces()))
       .limit(1);
     if (!ws || ws.isActive === false) throw unavailable();
     if (await this.billingSuspended(ws.ownerId)) throw unavailable();

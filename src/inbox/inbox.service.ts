@@ -65,6 +65,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { pollDedupId } from './schedulers/poll-dedup';
 import { Queue } from 'bullmq';
 import { QUEUES } from '../queue/queue.module';
+import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 /**
  * Per-send options. `typingStartedAt` (set, with no `force`) turns on the
@@ -863,7 +864,11 @@ export class InboxService {
     userId: string,
   ): Promise<void> {
     const owned = await db.query.workspace.findFirst({
-      where: and(eq(workspace.id, workspaceId), eq(workspace.ownerId, userId)),
+      where: and(
+        eq(workspace.id, workspaceId),
+        eq(workspace.ownerId, userId),
+        liveWorkspaces(),
+      ),
       columns: { id: true },
     });
     if (owned) return;

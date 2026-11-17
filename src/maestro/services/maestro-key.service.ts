@@ -4,11 +4,12 @@ import {
   Logger,
   BadRequestException,
 } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import type { DbType } from '../../drizzle/db';
 import { workspace } from '../../drizzle/schema/workspace.schema';
 import { encrypt, decrypt } from '../../common/utils/encryption.util';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 /** What settings/the wizard may safely see about a stored key. */
 export interface MaestroKeyStatus {
@@ -51,7 +52,7 @@ export class MaestroKeyService {
   /** Non-sensitive key/onboarding state for settings + the first-run wizard. */
   async getStatus(workspaceId: string): Promise<MaestroKeyStatus> {
     const row = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
       columns: {
         maestroAnthropicKey: true,
         maestroAnthropicKeyHint: true,
@@ -77,7 +78,7 @@ export class MaestroKeyService {
    */
   async getDecryptedKey(workspaceId: string): Promise<string | null> {
     const row = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
       columns: { maestroAnthropicKey: true },
     });
     if (!row?.maestroAnthropicKey) return null;

@@ -16,6 +16,7 @@ import {
   type HubMemberRow,
   type HubScheduledRow,
 } from './lib/hub-summary';
+import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -44,7 +45,7 @@ export class WorkspaceHubService {
       this.db
         .select({ id: workspace.id })
         .from(workspace)
-        .where(eq(workspace.ownerId, userId)),
+        .where(and(eq(workspace.ownerId, userId), liveWorkspaces())),
       this.db
         .select({ id: workspaceInvitation.workspaceId })
         .from(workspaceInvitation)

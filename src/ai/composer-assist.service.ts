@@ -5,7 +5,7 @@ import {
   Logger,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { DRIZZLE } from '../drizzle/drizzle.module';
 import type { DbType } from '../drizzle/db';
 import { workspace } from '../drizzle/schema/workspace.schema';
@@ -29,6 +29,7 @@ import {
   type BlankFacts,
   type ComposerPlatform,
 } from './lib/composer-assist';
+import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 export interface FitChannel {
   platform: ComposerPlatform;
@@ -246,7 +247,7 @@ export class ComposerAssistService {
       const [ws] = await this.db
         .select({ name: workspace.name, description: workspace.description })
         .from(workspace)
-        .where(eq(workspace.id, workspaceId))
+        .where(and(eq(workspace.id, workspaceId), liveWorkspaces()))
         .limit(1);
       const [brand] = await this.db
         .select({

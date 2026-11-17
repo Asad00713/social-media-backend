@@ -91,7 +91,7 @@ function predicateFrom(condition: unknown): Predicate {
   }
   const chunks = flatten(top);
 
-  const pairs: { column: string; value: unknown }[] = [];
+  const pairs: { column: string; value: unknown; isNull?: boolean }[] = [];
   for (let i = 0; i < chunks.length; i++) {
     const chunk: any = chunks[i];
     if (isColumn(chunk)) {
@@ -107,6 +107,13 @@ function predicateFrom(condition: unknown): Predicate {
       // which is what the old table-wide predicate did for every query.
       if (opText.includes(' in ')) {
         while (i + 1 < chunks.length && !isColumn(chunks[i + 1])) i++;
+        continue;
+      }
+      // `isNull(col)` — soft delete's liveWorkspaces() filter is one. The
+      // chunk after the column IS the whole operator, with no bound value.
+      if (opText.includes(' is null')) {
+        pairs.push({ column: camel(chunk.name), value: null, isNull: true });
+        i += 1;
         continue;
       }
       if (!opText.includes('=')) {
@@ -131,6 +138,10 @@ function predicateFrom(condition: unknown): Predicate {
 
   return (row: Row) =>
     pairs.every((p) => {
+      // A fixture row that never sets the column is as null as one that does.
+      if (p.isNull) {
+        return row[p.column] === null || row[p.column] === undefined;
+      }
       const actual = row[p.column];
       // Dates compare by value; ids arrive as numbers or strings.
       if (actual instanceof Date && p.value instanceof Date) {

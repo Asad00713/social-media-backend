@@ -24,6 +24,7 @@ import { workspace } from '../../drizzle/schema/workspace.schema';
 import { safeTimeZone } from '../../planner/lib/workspace-time';
 import type { ReportRecord } from './lib/report-dto';
 import type { ReportPerson } from './reports.dto';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 type NamedUser = { name: SQLWrapper; email: SQLWrapper };
 
@@ -190,7 +191,7 @@ export class ReportsRepository {
         isActive: workspace.isActive,
       })
       .from(workspace)
-      .where(eq(workspace.id, workspaceId))
+      .where(and(eq(workspace.id, workspaceId), liveWorkspaces()))
       .limit(1);
     return w ? { ...w, timezone: safeTimeZone(w.timezone) } : null;
   }

@@ -233,7 +233,10 @@ export class WebhooksController {
 
   @Post('whatsapp')
   @HttpCode(HttpStatus.OK)
-  async handleWhatsAppWebhook(@Req() req: ExpressRequest, @Res() res: Response) {
+  async handleWhatsAppWebhook(
+    @Req() req: ExpressRequest,
+    @Res() res: Response,
+  ) {
     const sig = req.headers['x-hub-signature-256'] as string | undefined;
     const raw = (req as any).rawBody as Buffer | undefined;
     const ok =
@@ -764,7 +767,9 @@ export class WebhooksController {
   private async resolveWebhookChannels(
     platform: SupportedPlatform,
     accountId: string,
-  ): Promise<Awaited<ReturnType<InboxService['findChannelsByPlatformAccount']>>> {
+  ): Promise<
+    Awaited<ReturnType<InboxService['findChannelsByPlatformAccount']>>
+  > {
     const primary = await this.inbox.findChannelsByPlatformAccount(
       platform,
       accountId,
@@ -1024,7 +1029,9 @@ export class WebhooksController {
     const sig = req.headers['x-hub-signature-256'] as string | undefined;
     const raw = (req as unknown as { rawBody?: Buffer }).rawBody;
     const secret =
-      process.env.MAESTRO_WHATSAPP_APP_SECRET || process.env.META_APP_SECRET || '';
+      process.env.MAESTRO_WHATSAPP_APP_SECRET ||
+      process.env.META_APP_SECRET ||
+      '';
     const ok =
       !!secret &&
       !!raw &&
@@ -1034,7 +1041,9 @@ export class WebhooksController {
         rawBody: raw,
       });
     if (!ok) {
-      this.logger.warn('Maestro WhatsApp webhook signature verification failed');
+      this.logger.warn(
+        'Maestro WhatsApp webhook signature verification failed',
+      );
       return res.status(HttpStatus.UNAUTHORIZED).send('invalid signature');
     }
     res.status(HttpStatus.OK).send('EVENT_RECEIVED');
