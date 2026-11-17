@@ -334,7 +334,34 @@ export class PublishOrchestratorService {
       updatedAt: new Date().toISOString(),
     });
 
+    // Labels once the publish is done ("absent keeps, present sets"; null =
+    // none), so a label failure never strands the post in 'publishing'.
+    if (input.labels !== undefined) {
+      await this.setLabelsAfter(workspaceId, draft.id, input.labels);
+    }
+
     return { draftStatus, channels: finalChannels, postId: draft.id };
+  }
+
+  /**
+   * Labels on a post that is already scheduled or published. Best-effort: the
+   * post and its job (or publish) are done by now, so a label failure must not
+   * turn them into a 500 the client would retry. Logged, never thrown.
+   */
+  private async setLabelsAfter(
+    workspaceId: string,
+    postId: string,
+    labels: string[] | null,
+  ): Promise<void> {
+    try {
+      await this.postLabels?.setForPost(workspaceId, postId, labels ?? []);
+    } catch (error) {
+      this.logger.warn(
+        `Labels not saved on post ${postId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   /**
@@ -501,15 +528,6 @@ export class PublishOrchestratorService {
           lastError: null,
         },
       });
-
-    // Labels live in post_labels. "Absent keeps, present sets" (null = none).
-    if (organise.labels !== undefined) {
-      await this.postLabels?.setForPost(
-        workspaceId,
-        draft.id,
-        organise.labels ?? [],
-      );
-    }
   }
 
   private async persistChannels(

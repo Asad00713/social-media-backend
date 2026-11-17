@@ -14,11 +14,23 @@ type Executor = Pick<
 const LABEL_FK = 'post_labels_label_id_fkey';
 
 /**
- * True when Postgres refused a post_labels row because its label is gone
- * (23503 on `post_labels_label_id_fkey`): a merge or purge deleted the label
- * between our resolve and our insert. drizzle may wrap the driver error.
+ * A label this write resolved or collided with vanished before the write
+ * finished (deleted or merged away by another request). Retried once.
+ */
+class LabelGoneError extends Error {
+  constructor(name: string) {
+    super(`Label "${name}" vanished while it was being created`);
+  }
+}
+
+/**
+ * True when the label this write was about to use is gone: a
+ * `LabelGoneError`, or Postgres refusing a post_labels row with 23503 on
+ * `post_labels_label_id_fkey` (a merge or purge deleted the label between our
+ * resolve and our insert). drizzle may wrap the driver error.
  */
 function isLabelGone(err: unknown): boolean {
+  if (err instanceof LabelGoneError) return true;
   let e: unknown = err;
   for (let i = 0; e && i < 3; i++) {
     const pg = e as { code?: unknown; constraint?: unknown };
@@ -48,8 +60,10 @@ export class PostLabelsService {
    * label's Undo still brings it back on this post.
    *
    * A label merged (or purged) by another request between the resolve and
-   * the insert fails the insert's foreign key; the whole write is then rolled
-   * back and done once more, so the name resolves to whatever is live now.
+   * the insert fails the insert's foreign key (or, for a name being created,
+   * vanishes between the conflict and the re-select); the whole write is then
+   * rolled back and done once more, so the name resolves to whatever is live
+   * now.
    */
   async setForPost(
     workspaceId: string,
@@ -126,7 +140,9 @@ export class PostLabelsService {
 
   /**
    * A new live label. A concurrent create of the same name wins the unique
-   * index; that label is then the one used.
+   * index; that label is then the one used. If that label is itself gone by
+   * the re-select (deleted or merged in between), `LabelGoneError` sends the
+   * whole write round the single retry.
    */
   private async create(
     tx: Executor,
@@ -145,6 +161,7 @@ export class PostLabelsService {
       SELECT id FROM workspace_labels
       WHERE workspace_id = ${workspaceId} AND deleted_at IS NULL
         AND lower(name) = lower(${name})`);
+    if (!existing.rows[0]) throw new LabelGoneError(name);
     return existing.rows[0].id;
   }
 

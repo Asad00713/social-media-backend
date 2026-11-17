@@ -120,6 +120,59 @@ export class ComposerSchedulingService {
   ) {}
 
   /**
+   * Labels on a post that is already scheduled or published. Best-effort: the
+   * post and its job (or publish) are done by now, so a label failure must not
+   * turn them into a 500 the client would retry. Logged, never thrown.
+   */
+  private async setLabelsAfter(
+    workspaceId: string,
+    postId: string,
+    labels: string[] | null,
+  ): Promise<void> {
+    try {
+      await this.postLabels?.setForPost(workspaceId, postId, labels ?? []);
+    } catch (error) {
+      this.logger.warn(
+        `Labels not saved on post ${postId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  private async labelSiblings(
+    workspaceId: string,
+    dto: ScheduleDraftDto,
+    stored: StoredPost | undefined,
+    siblings: Array<{ id: string }>,
+  ): Promise<void> {
+    if (dto.labels !== undefined) {
+      for (const sibling of siblings) {
+        await this.setLabelsAfter(workspaceId, sibling.id, dto.labels);
+      }
+      return;
+    }
+    if (!stored || !this.postLabels) return;
+    let kept: string[] = [];
+    try {
+      kept =
+        (await this.postLabels.namesForPosts([dto.draftId])).get(dto.draftId) ??
+        [];
+    } catch (error) {
+      this.logger.warn(
+        `Labels not copied from post ${dto.draftId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    if (kept.length === 0) return;
+    for (const sibling of siblings) {
+      if (sibling.id === dto.draftId) continue;
+      await this.setLabelsAfter(workspaceId, sibling.id, kept);
+    }
+  }
+
+  /**
    * Fire-and-forget app→calendar push for a composer-scheduled draft. Mirrors
    * PostService.syncCalendarForPost: never blocks or fails the schedule call —
    * calendar sync is best-effort and self-heals via the 15-min reconcile poll.
@@ -297,14 +350,6 @@ export class ComposerSchedulingService {
           and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId)),
         );
     }
-    // "Absent keeps, present sets" (null = none).
-    if (dto.labels !== undefined) {
-      await this.postLabels?.setForPost(
-        workspaceId,
-        dto.draftId,
-        dto.labels ?? [],
-      );
-    }
 
     // Remove any prior delayed job for this draft (e.g. user re-schedules) —
     // both the composer's own and whatever job posts.job_id names (a
@@ -331,6 +376,12 @@ export class ComposerSchedulingService {
     this.logger.log(
       `Scheduled draft ${dto.draftId} for ${scheduledAt.toISOString()} (delay=${delay}ms)`,
     );
+
+    // Labels once the job is recorded ("absent keeps, present sets"; null =
+    // none), so a label failure never leaves the row without its job.
+    if (dto.labels !== undefined) {
+      await this.setLabelsAfter(workspaceId, dto.draftId, dto.labels);
+    }
 
     // In the 2026 composer, scheduling is how a draft reaches the server,
     // so it is a save for version history too.
@@ -458,28 +509,6 @@ export class ComposerSchedulingService {
       }
     }
 
-    // Labels go to every sibling. Sent labels are set on each; without them
-    // the draft keeps its own and the new siblings get a copy of those.
-    if (dto.labels !== undefined) {
-      for (const sibling of siblings) {
-        await this.postLabels?.setForPost(
-          workspaceId,
-          sibling.id,
-          dto.labels ?? [],
-        );
-      }
-    } else if (stored && this.postLabels) {
-      const kept =
-        (await this.postLabels.namesForPosts([dto.draftId])).get(dto.draftId) ??
-        [];
-      if (kept.length > 0) {
-        for (const sibling of siblings) {
-          if (sibling.id === dto.draftId) continue;
-          await this.postLabels.setForPost(workspaceId, sibling.id, kept);
-        }
-      }
-    }
-
     // The draft's earlier job (if it was scheduled before) must not fire.
     await this.removeJobs(`composer-publish-${dto.draftId}`, stored?.jobId);
 
@@ -512,6 +541,11 @@ export class ComposerSchedulingService {
       );
       this.syncCalendarForPost(sibling.id);
     }
+
+    // Labels go to every sibling, once every job is recorded. Sent labels are
+    // set on each; without them the draft keeps its own and the new siblings
+    // get a copy of those.
+    await this.labelSiblings(workspaceId, dto, stored, siblings);
 
     this.logger.log(
       `Scheduled draft ${dto.draftId} as ${siblings.length} posts (group ${groupId}) at ${siblings

@@ -14,7 +14,13 @@ const C2 = '22222222-2222-4222-8222-222222222222';
  * campaign lookup for `campaigns` (found or not).
  */
 function fakeDb(existing: any[], campaignFound = true) {
-  const writes: { inserted?: any; updated?: any; conflictSet?: any } = {};
+  const writes: {
+    inserted?: any;
+    updated?: any;
+    conflictSet?: any;
+    /** Every `update().set()` value, in order. */
+    sets: any[];
+  } = { sets: [] };
   const stamp = { createdAt: new Date(), updatedAt: new Date() };
   const db = {
     select: () => ({
@@ -43,6 +49,7 @@ function fakeDb(existing: any[], campaignFound = true) {
     update: () => ({
       set: (v: any) => {
         writes.updated ??= v;
+        writes.sets.push(v);
         const w: any = {
           returning: async () => [
             { id: 'd1', workspaceId: WS, ...v, ...stamp },
@@ -169,15 +176,19 @@ describe('Schedule files the post', () => {
   function make(existing: any[], found = true, names = {}) {
     const { db, writes } = fakeDb(existing, found);
     const labels = fakeLabels(names);
+    const queue = {
+      getJob: jest.fn(async () => null),
+      add: jest.fn(async (_n: string, _d: any, o: any) => ({ id: o.jobId })),
+    };
     const svc = new ComposerSchedulingService(
       db as any,
-      { getJob: jest.fn(async () => null), add: jest.fn() } as any,
+      queue as any,
       { syncPost: jest.fn(async () => undefined) } as any,
       { enforceQueueLimit: jest.fn(async () => undefined) } as any,
       undefined,
       labels as any,
     );
-    return { svc, writes, labels };
+    return { svc, writes, labels, queue };
   }
   const dto = (over: any = {}) => ({
     draftId: 'd1',
@@ -270,6 +281,38 @@ describe('Schedule files the post', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(writes.inserted).toBeUndefined();
   });
+
+  it('sets labels only after the job is queued and recorded', async () => {
+    const { svc, writes, labels, queue } = make([]);
+    await svc.schedule(WS, 'u1', dto({ labels: ['Launch'] }));
+    expect(writes.sets).toContainEqual({ jobId: 'composer-publish-d1' });
+    expect(labels.setForPost.mock.invocationCallOrder[0]).toBeGreaterThan(
+      queue.add.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('a label failure still schedules: the job is recorded and the call resolves', async () => {
+    const { svc, writes, labels, queue } = make([]);
+    labels.setForPost.mockRejectedValueOnce(new Error('lock timeout'));
+    await expect(
+      svc.schedule(WS, 'u1', dto({ labels: ['Launch'] })),
+    ).resolves.toMatchObject({ postId: 'd1', status: 'scheduled' });
+    expect(queue.add).toHaveBeenCalledTimes(1);
+    expect(writes.sets).toContainEqual({ jobId: 'composer-publish-d1' });
+  });
+
+  it('a split schedule labels the siblings after every job, and survives a label failure', async () => {
+    const { svc, labels, queue } = make([]);
+    labels.setForPost.mockRejectedValueOnce(new Error('lock timeout'));
+    const result = await svc.schedule(WS, 'u1', split({ labels: ['Launch'] }));
+    expect(result.siblings).toHaveLength(3);
+    expect(queue.add).toHaveBeenCalledTimes(3);
+    expect(labels.setForPost).toHaveBeenCalledTimes(3);
+    const lastJob = Math.max(...queue.add.mock.invocationCallOrder);
+    for (const order of labels.setForPost.mock.invocationCallOrder) {
+      expect(order).toBeGreaterThan(lastJob);
+    }
+  });
 });
 
 describe('Publish files the post', () => {
@@ -299,7 +342,7 @@ describe('Publish files the post', () => {
       { send: jest.fn() } as any, // PostReminderService
       labels as any,
     );
-    return { svc, writes, labels };
+    return { svc, writes, labels, publisher };
   }
   const input = (over: any = {}) => ({
     draftId: 'd1',
@@ -341,5 +384,24 @@ describe('Publish files the post', () => {
       svc.publishInline(WS, 'u1', input({ campaignId: C2 })),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(writes.inserted).toBeUndefined();
+  });
+
+  it('sets labels only after the publish and its final status', async () => {
+    const { svc, writes, labels, publisher } = make([]);
+    await svc.publishInline(WS, 'u1', input({ labels: ['A'] }));
+    expect(labels.setForPost.mock.invocationCallOrder[0]).toBeGreaterThan(
+      publisher.publish.mock.invocationCallOrder[0],
+    );
+    expect(writes.sets.some((v) => v.status === 'published')).toBe(true);
+  });
+
+  it('a label failure still completes the publish', async () => {
+    const { svc, writes, labels, publisher } = make([]);
+    labels.setForPost.mockRejectedValueOnce(new Error('lock timeout'));
+    await expect(
+      svc.publishInline(WS, 'u1', input({ labels: ['A'] })),
+    ).resolves.toMatchObject({ draftStatus: 'published', postId: 'd1' });
+    expect(publisher.publish).toHaveBeenCalledTimes(1);
+    expect(writes.sets.some((v) => v.status === 'published')).toBe(true);
   });
 });
