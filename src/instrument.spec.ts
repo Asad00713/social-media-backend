@@ -102,6 +102,62 @@ describe('Sentry initialisation', () => {
       expect(JSON.stringify(span)).not.toContain(TOKEN);
     });
 
+
+    /**
+     * The transaction hook must drop the same things the error hook does.
+     * A rule applied in only one of them is a rule that leaks through the
+     * other, and transactions are sampled independently of errors.
+     */
+    it('drops body, query string, cookies and headers on transactions too', () => {
+      const { beforeSendTransaction } = load();
+      const event = beforeSendTransaction({
+        transaction: 'POST /auth/login',
+        request: {
+          url: 'https://api.example.com/auth/login',
+          data: { password: 'hunter2' },
+          query_string: `token=${TOKEN}`,
+          cookies: { session: 'abc' },
+          headers: { authorization: `Bearer ${TOKEN}` },
+        },
+      });
+
+      const serialised = JSON.stringify(event);
+      expect(serialised).not.toContain('hunter2');
+      expect(serialised).not.toContain(TOKEN);
+      expect(serialised).not.toContain('abc');
+    });
+
+    /** Spans inside a transaction envelope do not all reach beforeSendSpan. */
+    it('scrubs child spans carried on a transaction', () => {
+      const { beforeSendTransaction } = load();
+      const event = beforeSendTransaction({
+        transaction: 'GET /x',
+        spans: [
+          {
+            description: `GET /email/unsubscribe/${TOKEN}`,
+            data: { 'http.target': `/reports/public/${TOKEN}` },
+          },
+        ],
+      });
+      expect(JSON.stringify(event)).not.toContain(TOKEN);
+    });
+
+    it("scrubs a span's description, not just its attributes", () => {
+      const { beforeSendSpan } = load();
+      const span = beforeSendSpan({
+        description: `GET /email/security/${TOKEN}`,
+      });
+      expect(JSON.stringify(span)).not.toContain(TOKEN);
+    });
+
+    it('drops query-string span attributes outright', () => {
+      const { beforeSendSpan } = load();
+      const span = beforeSendSpan({
+        data: { 'url.query': `?token=${TOKEN}`, 'http.query': `t=${TOKEN}` },
+      });
+      expect(JSON.stringify(span)).not.toContain(TOKEN);
+    });
+
     it('leaves an ordinary URL alone', () => {
       const { beforeSend } = load();
       const event = beforeSend({

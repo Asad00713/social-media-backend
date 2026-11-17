@@ -24,6 +24,60 @@ function scrubUrl(url: string): string {
   return redactTokenUrls(redactSensitivePath(url));
 }
 
+/**
+ * Redacts the URL and drops everything else a request can carry. Shared by
+ * the error and transaction hooks so the two can never drift — a rule applied
+ * in only one of them is a rule that leaks through the other.
+ */
+function scrubRequest(event: {
+  // Structural rather than Sentry's own ErrorEvent/TransactionEvent: those
+  // are not re-exported from @sentry/nestjs, and only these fields are
+  // touched here.
+  request?: {
+    url?: string;
+    query_string?: unknown;
+    data?: unknown;
+    cookies?: unknown;
+    headers?: unknown;
+  };
+}): void {
+  if (!event.request) return;
+  if (typeof event.request.url === 'string') {
+    event.request.url = scrubUrl(event.request.url);
+  }
+  delete event.request.query_string;
+  delete event.request.data;
+  delete event.request.cookies;
+  delete event.request.headers;
+}
+
+/** Span attributes that quote a URL, and the ones that are pure query data. */
+const SPAN_URL_KEYS = [
+  'http.url',
+  'url.full',
+  'url.path',
+  'http.target',
+  'http.route',
+] as const;
+const SPAN_DROP_KEYS = ['url.query', 'http.query'] as const;
+
+function scrubSpan(span: {
+  data?: Record<string, unknown>;
+  description?: string;
+}): void {
+  // The description is usually "GET /some/path", so it quotes the URL too.
+  if (typeof span.description === 'string') {
+    span.description = scrubUrl(span.description);
+  }
+  if (!span.data) return;
+  for (const key of SPAN_URL_KEYS) {
+    const value = span.data[key];
+    if (typeof value === 'string') span.data[key] = scrubUrl(value);
+  }
+  // A query string is never worth redacting field by field.
+  for (const key of SPAN_DROP_KEYS) delete span.data[key];
+}
+
 Sentry.init({
   dsn: process.env.SENTRY_DSN,
 
@@ -56,32 +110,26 @@ Sentry.init({
    * version of it worth the risk of being wrong about.
    */
   beforeSend(event) {
-    if (event.request) {
-      if (event.request.url) event.request.url = scrubUrl(event.request.url);
-      delete event.request.query_string;
-      delete event.request.data;
-      delete event.request.cookies;
-      delete event.request.headers;
-    }
+    scrubRequest(event);
     return event;
   },
 
   /**
-   * Transactions carry the URL too — as the transaction name and on the span
-   * attributes — and are sampled independently of errors, so a token would
-   * reach Sentry through tracing even if no error ever fired.
+   * Transactions carry the URL too — as the transaction name, on the request
+   * and on every child span — and are sampled independently of errors, so a
+   * token would reach Sentry through tracing even if no error ever fired.
+   * Child spans are scrubbed here as well as in `beforeSendSpan`: spans
+   * embedded in a transaction envelope do not all pass through that hook.
    */
   beforeSendTransaction(event) {
     if (event.transaction) event.transaction = scrubUrl(event.transaction);
-    if (event.request?.url) event.request.url = scrubUrl(event.request.url);
+    scrubRequest(event);
+    event.spans?.forEach(scrubSpan);
     return event;
   },
 
   beforeSendSpan(span) {
-    for (const key of ['http.url', 'url.full', 'url.path'] as const) {
-      const value = span.data?.[key];
-      if (typeof value === 'string') span.data[key] = scrubUrl(value);
-    }
+    scrubSpan(span);
     return span;
   },
 });
