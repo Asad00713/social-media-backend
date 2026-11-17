@@ -59,41 +59,36 @@ async function codeOf(p: Promise<unknown>): Promise<string | undefined> {
 }
 
 describe('WorkspaceService.update (General)', () => {
-  it('does not check ownership: the route guard decides', async () => {
+  it('takes no caller and checks no owner: the route guard decides', async () => {
     const { service } = makeService();
     await expect(
-      service.update('ws-1', { name: 'New' }, 'an-admin-who-is-not-the-owner'),
+      service.update('ws-1', { name: 'New' }),
     ).resolves.toMatchObject({ workspace: { name: 'New' } });
   });
 
   it('answers timezoneMove null until the move exists', async () => {
     const { service } = makeService();
-    const res = await service.update('ws-1', { description: 'x' }, 'u');
+    const res = await service.update('ws-1', { description: 'x' });
     expect(res.timezoneMove).toBeNull();
   });
 
   it('400 TIMEZONE_REQUIRED when applyTimezoneToChannels comes without a timezone, before any write', async () => {
     const { service, db } = makeService();
     expect(
-      await codeOf(
-        service.update('ws-1', { applyTimezoneToChannels: true }, 'u'),
-      ),
+      await codeOf(service.update('ws-1', { applyTimezoneToChannels: true })),
     ).toBe('TIMEZONE_REQUIRED');
     expect(
-      await codeOf(
-        service.update('ws-1', { applyTimezoneToChannels: false }, 'u'),
-      ),
+      await codeOf(service.update('ws-1', { applyTimezoneToChannels: false })),
     ).toBe('TIMEZONE_REQUIRED');
     expect(db.update).not.toHaveBeenCalled();
   });
 
   it('never writes applyTimezoneToChannels into the row', async () => {
     const { service, set } = makeService();
-    await service.update(
-      'ws-1',
-      { timezone: 'UTC', applyTimezoneToChannels: true },
-      'u',
-    );
+    await service.update('ws-1', {
+      timezone: 'UTC',
+      applyTimezoneToChannels: true,
+    });
     expect(set.mock.calls[0][0]).not.toHaveProperty('applyTimezoneToChannels');
     expect(set.mock.calls[0][0]).toMatchObject({ timezone: 'UTC' });
   });
@@ -101,41 +96,36 @@ describe('WorkspaceService.update (General)', () => {
   it('400 LOGO_NOT_UPLOADED for a URL our presign did not issue, before any write', async () => {
     const { service, db, r2 } = makeService();
     expect(
-      await codeOf(
-        service.update('ws-1', { logo: 'https://evil.test/p.png' }, 'u'),
-      ),
+      await codeOf(service.update('ws-1', { logo: 'https://evil.test/p.png' })),
     ).toBe('LOGO_NOT_UPLOADED');
     expect(r2.isOwnPublicUrl).toHaveBeenCalledWith(
       'https://evil.test/p.png',
       'workspace-logo',
+      'ws-1',
     );
     expect(db.update).not.toHaveBeenCalled();
   });
 
   it('saves a logo our presign issued', async () => {
     const { service, set } = makeService();
-    await service.update('ws-1', { logo: OWN_LOGO }, 'u');
+    await service.update('ws-1', { logo: OWN_LOGO });
     expect(set.mock.calls[0][0]).toMatchObject({ logo: OWN_LOGO });
   });
 
   it('null clears the logo without asking R2', async () => {
     const { service, set, r2 } = makeService();
-    await service.update('ws-1', { logo: null }, 'u');
+    await service.update('ws-1', { logo: null });
     expect(set.mock.calls[0][0]).toMatchObject({ logo: null });
     expect(r2.isOwnPublicUrl).not.toHaveBeenCalled();
   });
 
   it('writes the publishing defaults', async () => {
     const { service, set } = makeService();
-    await service.update(
-      'ws-1',
-      {
-        approvalPolicy: 'members',
-        shortenLinksDefault: true,
-        utmDefault: true,
-      },
-      'u',
-    );
+    await service.update('ws-1', {
+      approvalPolicy: 'members',
+      shortenLinksDefault: true,
+      utmDefault: true,
+    });
     expect(set.mock.calls[0][0]).toMatchObject({
       approvalPolicy: 'members',
       shortenLinksDefault: true,

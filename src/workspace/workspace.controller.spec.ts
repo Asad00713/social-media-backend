@@ -51,6 +51,16 @@ describe('WorkspaceController guards', () => {
     expect(actual.replace(/^\//, '')).toBe(g.path);
   });
 
+  it('registers slug/:slug before every :workspaceId/... GET', () => {
+    // Nest registers in declaration order: a workspace whose slug is
+    // literally `publishing-defaults` must not be shadowed.
+    const names = Object.getOwnPropertyNames(proto);
+    expect(names.indexOf('findBySlug')).toBeLessThan(
+      names.indexOf('publishingDefaults'),
+    );
+    expect(names.indexOf('findBySlug')).toBeLessThan(names.indexOf('findOne'));
+  });
+
   it('keeps the slug lookup owner-only: no workspace id in its path', () => {
     expect(
       Reflect.getMetadata(REQUIRE_CAPABILITY, proto.findBySlug),
@@ -105,12 +115,8 @@ describe('WorkspaceController behaviour', () => {
 
   it('update answers the detail, never the raw row, plus timezoneMove', async () => {
     const { controller, service, detail } = make();
-    const res = await controller.update('ws-1', { name: 'Acme' }, user);
-    expect(service.update).toHaveBeenCalledWith(
-      'ws-1',
-      { name: 'Acme' },
-      'user-1',
-    );
+    const res = await controller.update('ws-1', { name: 'Acme' });
+    expect(service.update).toHaveBeenCalledWith('ws-1', { name: 'Acme' });
     expect(res).toEqual({
       success: true,
       message: 'Workspace updated successfully',

@@ -179,15 +179,125 @@ describe('CloudflareR2Service workspace-logo presign', () => {
     await expect(presign('image/png', limit)).resolves.toBeDefined();
   });
 
-  it('recognises only its own logo URLs as workspace-logo', async () => {
-    const { publicUrl } = await presign('image/png');
-    const own = (url: string) => service.isOwnPublicUrl(url, 'workspace-logo');
-    expect(own(publicUrl)).toBe(true);
-    // An avatar URL is ours, but not a logo.
-    expect(own('https://pub.r2.dev/avatars/u/1-a.png')).toBe(false);
-    expect(own('https://evil.test/workspace-logos/ws-1/u/1-a.png')).toBe(false);
-    expect(own(`${publicUrl}?x=1`)).toBe(false);
-    expect(own('https://pub.r2.dev/workspace-logos/../x.png')).toBe(false);
+  describe('isOwnPublicUrl', () => {
+    const HEX = 'a'.repeat(24);
+    const logo = (ws = 'ws-1', rest = `user-1/1700000000000-${HEX}.png`) =>
+      `https://pub.r2.dev/workspace-logos/${ws}/${rest}`;
+    const own = (url: string, ws = 'ws-1') =>
+      service.isOwnPublicUrl(url, 'workspace-logo', ws);
+
+    it('accepts the URL its own presign returns, for that workspace only', async () => {
+      const { publicUrl } = await presign('image/png', 1024, 'l.png');
+      expect(own(publicUrl)).toBe(true);
+      expect(own(publicUrl, 'ws-2')).toBe(false);
+    });
+
+    it('accepts a well-formed key, with or without an extension', () => {
+      expect(own(logo())).toBe(true);
+      expect(own(logo('ws-1', `user-1/1700000000000-${HEX}`))).toBe(true);
+    });
+
+    it("refuses another workspace's logo URL", () => {
+      expect(own(logo('ws-2'), 'ws-1')).toBe(false);
+      expect(own(logo('ws-1'), 'ws-2')).toBe(false);
+    });
+
+    it('refuses to answer without a workspace id', () => {
+      expect(service.isOwnPublicUrl(logo(), 'workspace-logo')).toBe(false);
+      expect(service.isOwnPublicUrl(logo(), 'workspace-logo', '')).toBe(false);
+    });
+
+    it.each([
+      [
+        'lower-case encoded dots',
+        'https://pub.r2.dev/workspace-logos/%2e%2e/avatars/u/1-a.png',
+      ],
+      [
+        'upper-case encoded dots',
+        'https://pub.r2.dev/workspace-logos/%2E%2E/avatars/u/1-a.png',
+      ],
+      [
+        'mixed encoded dots',
+        'https://pub.r2.dev/workspace-logos/.%2e/inbox/x.png',
+      ],
+      [
+        'an encoded slash',
+        `https://pub.r2.dev/workspace-logos/ws-1/user-1%2f1700000000000-${'a'.repeat(24)}.png`,
+      ],
+      ['literal dots', 'https://pub.r2.dev/workspace-logos/../x.png'],
+      ['a query', `${logo()}?x=1`],
+      ['a fragment', `${logo()}#x`],
+      [
+        'a backslash',
+        `https://pub.r2.dev/workspace-logos/ws-1/user-1\\1700000000000-${'a'.repeat(24)}.png`,
+      ],
+      [
+        'a foreign origin',
+        `https://evil.test/workspace-logos/ws-1/user-1/1700000000000-${'a'.repeat(24)}.png`,
+      ],
+      [
+        'a look-alike origin',
+        `https://pub.r2.dev.evil.test/workspace-logos/ws-1/user-1/1700000000000-${'a'.repeat(24)}.png`,
+      ],
+      [
+        'userinfo before the host',
+        `https://pub.r2.dev@evil.test/workspace-logos/ws-1/user-1/1700000000000-${'a'.repeat(24)}.png`,
+      ],
+      [
+        'an avatar URL',
+        `https://pub.r2.dev/avatars/user-1/1700000000000-${'a'.repeat(24)}.png`,
+      ],
+      [
+        'an extra path segment',
+        logo('ws-1', `x/user-1/1700000000000-${HEX}.png`),
+      ],
+      ['a short random part', logo('ws-1', 'user-1/1700000000000-abc.png')],
+      ['an unsafe extension', logo('ws-1', `user-1/1700000000000-${HEX}.p-g`)],
+      ['no key at all', 'https://pub.r2.dev/workspace-logos/ws-1/'],
+      ['whitespace', ` ${logo()}`],
+    ])('refuses %s', (_label, url) => {
+      expect(own(url)).toBe(false);
+    });
+  });
+
+  describe('isOwnPublicUrl for avatars', () => {
+    const HEX = 'b'.repeat(24);
+    const avatar = (rest = `user-1/1700000000000-${HEX}.png`) =>
+      `https://pub.r2.dev/avatars/${rest}`;
+    const own = (url: string) => service.isOwnPublicUrl(url, 'avatar');
+
+    it('still accepts an avatar from its own presign and a well-formed key', async () => {
+      const res = await service.createPresignedUpload({
+        workspaceId: 'user',
+        userId: 'user-1',
+        kind: 'avatar',
+        contentType: 'image/png',
+        sizeBytes: 1024,
+      });
+      expect(own(res.publicUrl)).toBe(true);
+      expect(own(avatar())).toBe(true);
+    });
+
+    it.each([
+      [
+        'a logo URL',
+        `https://pub.r2.dev/workspace-logos/ws-1/user-1/1700000000000-${'b'.repeat(24)}.png`,
+      ],
+      ['encoded dots', 'https://pub.r2.dev/avatars/%2e%2e/inbox/x.png'],
+      [
+        'upper-case encoded dots',
+        'https://pub.r2.dev/avatars/%2E%2E/inbox/x.png',
+      ],
+      ['literal dots', 'https://pub.r2.dev/avatars/../inbox/x.png'],
+      ['a query', `${avatar()}?x=1`],
+      [
+        'a foreign origin',
+        `https://evil.test/avatars/user-1/1700000000000-${'b'.repeat(24)}.png`,
+      ],
+      ['a non-issued name', 'https://pub.r2.dev/avatars/u/1-a.png'],
+    ])('refuses %s', (_label, url) => {
+      expect(own(url)).toBe(false);
+    });
   });
 });
 

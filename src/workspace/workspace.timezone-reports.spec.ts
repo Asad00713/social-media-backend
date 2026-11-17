@@ -59,11 +59,9 @@ afterEach(() => jest.restoreAllMocks());
 describe('WorkspaceService.update: report time zone', () => {
   it('reschedules the reports when the time zone changes', async () => {
     const { service, db } = makeService();
-    const { workspace: updated } = await service.update(
-      'ws-1',
-      { timezone: 'Asia/Karachi' },
-      'user-1',
-    );
+    const { workspace: updated } = await service.update('ws-1', {
+      timezone: 'Asia/Karachi',
+    });
     expect(updated).toMatchObject({ timezone: 'Asia/Karachi' });
     expect(mockedReschedule).toHaveBeenCalledTimes(1);
     expect(mockedReschedule).toHaveBeenCalledWith(
@@ -76,7 +74,7 @@ describe('WorkspaceService.update: report time zone', () => {
 
   it('reschedules after the row is written', async () => {
     const { service, db } = makeService();
-    await service.update('ws-1', { timezone: 'Asia/Karachi' }, 'user-1');
+    await service.update('ws-1', { timezone: 'Asia/Karachi' });
     expect(db.update.mock.invocationCallOrder[0]).toBeLessThan(
       mockedReschedule.mock.invocationCallOrder[0],
     );
@@ -84,11 +82,10 @@ describe('WorkspaceService.update: report time zone', () => {
 
   it('reschedules when a rename (new slug) carries the change', async () => {
     const { service, set } = makeService();
-    await service.update(
-      'ws-1',
-      { name: 'Acme Two', timezone: 'Asia/Karachi' },
-      'user-1',
-    );
+    await service.update('ws-1', {
+      name: 'Acme Two',
+      timezone: 'Asia/Karachi',
+    });
     expect(set).toHaveBeenCalledWith(
       expect.objectContaining({ slug: 'acme-two', timezone: 'Asia/Karachi' }),
     );
@@ -97,13 +94,13 @@ describe('WorkspaceService.update: report time zone', () => {
 
   it('does not reschedule for the same time zone', async () => {
     const { service } = makeService();
-    await service.update('ws-1', { timezone: 'UTC' }, 'user-1');
+    await service.update('ws-1', { timezone: 'UTC' });
     expect(mockedReschedule).not.toHaveBeenCalled();
   });
 
   it('does not reschedule when the dto has no time zone', async () => {
     const { service } = makeService();
-    await service.update('ws-1', { description: 'New' }, 'user-1');
+    await service.update('ws-1', { description: 'New' });
     expect(mockedReschedule).not.toHaveBeenCalled();
   });
 
@@ -114,7 +111,7 @@ describe('WorkspaceService.update: report time zone', () => {
     mockedReschedule.mockRejectedValue(new Error('db down'));
     const { service } = makeService();
     await expect(
-      service.update('ws-1', { timezone: 'Asia/Karachi' }, 'user-1'),
+      service.update('ws-1', { timezone: 'Asia/Karachi' }),
     ).resolves.toMatchObject({ workspace: { timezone: 'Asia/Karachi' } });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('db down'));
   });

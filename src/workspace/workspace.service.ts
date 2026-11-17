@@ -432,13 +432,10 @@ export class WorkspaceService {
   /**
    * Who may call this is decided by the route (`workspace:manage`), not here:
    * an ADMIN edits General as readily as the owner, so there is no owner check.
-   * `userId` is kept so callers
-   * keep one signature; nothing here reads it.
    */
   async update(
     workspaceId: string,
     updateWorkspaceDto: UpdateWorkspaceDto,
-    _userId: string,
   ): Promise<{
     workspace: Workspace;
     timezoneMove: TimezoneMoveResult | null;
@@ -459,7 +456,7 @@ export class WorkspaceService {
     // be a tracking pixel on every screen that shows the workspace.
     if (
       typeof columns.logo === 'string' &&
-      !this.r2.isOwnPublicUrl(columns.logo, 'workspace-logo')
+      !this.r2.isOwnPublicUrl(columns.logo, 'workspace-logo', workspaceId)
     ) {
       throw badRequest(
         'LOGO_NOT_UPLOADED',
@@ -636,7 +633,9 @@ export class WorkspaceService {
     const [row] = await this.db
       .select({ n: count() })
       .from(workspace)
-      .where(and(eq(workspace.ownerId, userId), ne(workspace.id, excludingId)));
+      .where(
+        and(eq(workspace.ownerId, userId), ne(workspace.id, excludingId)),
+      );
     return Number(row?.n ?? 0);
   }
 

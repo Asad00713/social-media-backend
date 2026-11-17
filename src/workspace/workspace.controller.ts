@@ -67,6 +67,26 @@ export class WorkspaceController {
     };
   }
 
+  // Declared before the `:workspaceId/...` GETs: a workspace whose slug is
+  // literally `publishing-defaults` must still resolve here.
+  @Get('slug/:slug')
+  @UseGuards(JwtAuthGuard)
+  async findBySlug(
+    @Param('slug') slug: string,
+    @CurrentUser() user: { userId: string; email: string },
+  ) {
+    const workspace = await this.workspaceService.findOne(
+      slug,
+      user.userId,
+      true,
+    );
+
+    return {
+      success: true,
+      data: workspace,
+    };
+  }
+
   // Any member may read General (`settings:view`); the guard resolves the
   // workspace from :workspaceId, which is why this param is not called :id.
   @Get(':workspaceId')
@@ -87,36 +107,16 @@ export class WorkspaceController {
     return this.workspaceService.getPublishingDefaults(workspaceId);
   }
 
-  @Get('slug/:slug')
-  @UseGuards(JwtAuthGuard)
-  async findBySlug(
-    @Param('slug') slug: string,
-    @CurrentUser() user: { userId: string; email: string },
-  ) {
-    const workspace = await this.workspaceService.findOne(
-      slug,
-      user.userId,
-      true,
-    );
-
-    return {
-      success: true,
-      data: workspace,
-    };
-  }
-
   @Patch(':workspaceId')
   @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('workspace:manage')
   async update(
     @Param('workspaceId') workspaceId: string,
     @Body() updateWorkspaceDto: UpdateWorkspaceDto,
-    @CurrentUser() user: { userId: string; email: string },
   ) {
     const { timezoneMove } = await this.workspaceService.update(
       workspaceId,
       updateWorkspaceDto,
-      user.userId,
     );
 
     return {

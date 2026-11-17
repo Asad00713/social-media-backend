@@ -313,23 +313,50 @@ export class CloudflareR2Service {
    * True when `url` is one this service handed out for `kind`.
    *
    * A client that uploads a file then PATCHes the resulting URL back is
-   * trusted to send the right string — and a hostile one is trusted to send
-   * any string at all. Without this, a stored avatar URL could point anywhere:
-   * a tracking pixel that fires on every page listing that user, or an image
-   * that changes after review. Checking the base and prefix costs nothing and
-   * turns "any URL" into "a file we issued".
+   * trusted to send the right string, and a hostile one is trusted to send
+   * any string at all. Without this, a stored URL could point anywhere: a
+   * tracking pixel, or any other object in the bucket.
    *
-   * Not proof the CALLER uploaded it — one user could pass another's avatar
-   * URL, which shows them someone else's face and nothing more.
+   * The check is on the KEY, not on a prefix: the URL must sit under the
+   * public base and the rest must match exactly what `createPresignedUpload`
+   * builds for that kind (fixed prefix, then for workspace media the
+   * workspace id and a user segment, then `<ms>-<24 hex><ext>`). A prefix
+   * check alone is bypassed by `%2e%2e`, which the URL parser turns into a
+   * parent segment, so any `%` is refused outright and nothing is left for
+   * normalisation to change.
+   *
+   * Every kind except `avatar` is workspace media: pass the `workspaceId` the
+   * URL must belong to, or the answer is false. Not proof the CALLER uploaded
+   * it: one user could pass another's avatar URL, which shows them someone
+   * else's face and nothing more.
    */
-  isOwnPublicUrl(url: string, kind: R2MediaKind): boolean {
+  isOwnPublicUrl(
+    url: string,
+    kind: R2MediaKind,
+    workspaceId?: string,
+  ): boolean {
     if (!this.publicUrlBase || !url) return false;
-    const prefix = `${this.publicUrlBase}/${KIND_TO_PREFIX[kind]}/`;
-    if (!url.startsWith(prefix)) return false;
-    // No traversal, no query, no fragment: the key we build has none of them,
-    // so anything carrying one was not built here.
-    const key = url.slice(prefix.length);
-    return key.length > 0 && !/[?#]/.test(key) && !key.includes('..');
+    if (/[%?#\\\s]|\.\./.test(url)) return false;
+
+    const base = `${this.publicUrlBase}/`;
+    if (!url.startsWith(base)) return false;
+    try {
+      if (new URL(url).origin !== new URL(base).origin) return false;
+    } catch {
+      return false;
+    }
+
+    const prefix = KIND_TO_PREFIX[kind];
+    // Same shape as safeUserId and safeKeyExtension in createPresignedUpload.
+    const tail = String.raw`[A-Za-z0-9-]{1,12}/\d+-[0-9a-f]{24}(?:\.[a-z0-9]{1,8})?`;
+    let keyPattern: RegExp;
+    if (kind === 'avatar') {
+      keyPattern = new RegExp(`^${prefix}/${tail}$`);
+    } else {
+      if (!workspaceId || !/^[A-Za-z0-9-]+$/.test(workspaceId)) return false;
+      keyPattern = new RegExp(`^${prefix}/${workspaceId}/${tail}$`);
+    }
+    return keyPattern.test(url.slice(base.length));
   }
 
   /**

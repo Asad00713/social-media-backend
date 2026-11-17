@@ -1,7 +1,8 @@
 import { HttpException } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import type { ConfigService } from '@nestjs/config';
 import type { PoolClient } from 'pg';
-import { seedMember, seedWorkspace } from '../inbox/testing/inbox-db';
+import { seedWorkspace } from '../inbox/testing/inbox-db';
 import { describeDb, withRollbackDb } from '../planner/testing/rollback-db';
 import { CloudflareR2Service } from '../media/cloudflare-r2.service';
 import { WorkspaceService } from './workspace.service';
@@ -64,18 +65,12 @@ async function row(client: PoolClient, id: string) {
 }
 
 describeDb('WorkspaceService General (database)', () => {
-  it('lets an ADMIN who is not the owner update the workspace', async () => {
+  it('updates the name and slug with no owner check: the route guard decides', async () => {
     await withRollbackDb(MIGRATIONS, async (db, client) => {
-      const { workspaceId: ws, ownerId } = await seedWorkspace(client);
-      const adminId = await seedMember(client, ws, 'ADMIN');
-      expect(adminId).not.toBe(ownerId);
+      const { workspaceId: ws } = await seedWorkspace(client);
       const svc = makeService(db as never);
 
-      const { workspace, timezoneMove } = await svc.update(
-        ws,
-        { name: 'New' },
-        adminId,
-      );
+      const { workspace, timezoneMove } = await svc.update(ws, { name: 'New' });
 
       expect(workspace).toMatchObject({ id: ws, name: 'New' });
       expect(timezoneMove).toBeNull();
@@ -87,15 +82,17 @@ describeDb('WorkspaceService General (database)', () => {
 
   it('refuses a logo that is not one of our uploads and leaves the row alone', async () => {
     await withRollbackDb(MIGRATIONS, async (db, client) => {
-      const { workspaceId: ws, ownerId } = await seedWorkspace(client);
+      const { workspaceId: ws } = await seedWorkspace(client);
       const svc = makeService(db as never);
 
       for (const logo of [
         'https://evil.test/workspace-logos/x.png',
         `${PUBLIC_BASE}/avatars/u/1-a.png`,
         `${PUBLIC_BASE}/workspace-logos/${ws}/u/1-a.png?x=1`,
+        `${PUBLIC_BASE}/workspace-logos/%2e%2e/avatars/u/1-a.png`,
+        `${PUBLIC_BASE}/workspace-logos/${randomUUID()}/u/1-${'a'.repeat(24)}.png`,
       ]) {
-        expect(await failure(svc.update(ws, { logo }, ownerId))).toEqual({
+        expect(await failure(svc.update(ws, { logo }))).toEqual({
           status: 400,
           code: 'LOGO_NOT_UPLOADED',
         });
@@ -106,30 +103,26 @@ describeDb('WorkspaceService General (database)', () => {
 
   it('saves a logo from our own bucket and null clears it', async () => {
     await withRollbackDb(MIGRATIONS, async (db, client) => {
-      const { workspaceId: ws, ownerId } = await seedWorkspace(client);
+      const { workspaceId: ws } = await seedWorkspace(client);
       const svc = makeService(db as never);
-      const own = `${PUBLIC_BASE}/workspace-logos/${ws}/u/1-abc.png`;
+      const own = `${PUBLIC_BASE}/workspace-logos/${ws}/u/1-${'a'.repeat(24)}.png`;
 
-      await svc.update(ws, { logo: own }, ownerId);
+      await svc.update(ws, { logo: own });
       expect((await row(client, ws)).logo).toBe(own);
 
-      await svc.update(ws, { logo: null }, ownerId);
+      await svc.update(ws, { logo: null });
       expect((await row(client, ws)).logo).toBeNull();
     });
   });
 
   it('refuses applyTimezoneToChannels without a timezone and changes nothing', async () => {
     await withRollbackDb(MIGRATIONS, async (db, client) => {
-      const { workspaceId: ws, ownerId } = await seedWorkspace(client);
+      const { workspaceId: ws } = await seedWorkspace(client);
       const svc = makeService(db as never);
 
       expect(
         await failure(
-          svc.update(
-            ws,
-            { name: 'Renamed', applyTimezoneToChannels: true },
-            ownerId,
-          ),
+          svc.update(ws, { name: 'Renamed', applyTimezoneToChannels: true }),
         ),
       ).toEqual({ status: 400, code: 'TIMEZONE_REQUIRED' });
       expect((await row(client, ws)).name).toBe('Inbox WS');
@@ -138,7 +131,7 @@ describeDb('WorkspaceService General (database)', () => {
 
   it('stores the publishing defaults and reads them back', async () => {
     await withRollbackDb(MIGRATIONS, async (db, client) => {
-      const { workspaceId: ws, ownerId } = await seedWorkspace(client);
+      const { workspaceId: ws } = await seedWorkspace(client);
       const svc = makeService(db as never);
 
       // What a workspace had before the setting existed.
@@ -148,15 +141,11 @@ describeDb('WorkspaceService General (database)', () => {
         utmDefault: false,
       });
 
-      await svc.update(
-        ws,
-        {
-          approvalPolicy: 'members',
-          shortenLinksDefault: true,
-          utmDefault: true,
-        },
-        ownerId,
-      );
+      await svc.update(ws, {
+        approvalPolicy: 'members',
+        shortenLinksDefault: true,
+        utmDefault: true,
+      });
 
       expect(await svc.getPublishingDefaults(ws)).toEqual({
         approvalPolicy: 'members',
