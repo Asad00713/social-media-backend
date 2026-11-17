@@ -1,3 +1,6 @@
+// MUST be first: Sentry instruments libraries as they load, so anything
+// imported before this is captured by reference and never traced.
+import './instrument';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
