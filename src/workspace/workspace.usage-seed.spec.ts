@@ -58,6 +58,7 @@ describe('WorkspaceService.seedWorkspaceUsage', () => {
       lookup,
       {} as never,
       {} as never,
+      {} as never,
     );
 
     return { service, values, db };

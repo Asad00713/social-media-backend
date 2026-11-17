@@ -1,0 +1,206 @@
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import type { CloudflareR2Service } from '../media/cloudflare-r2.service';
+import { WorkspaceService } from './workspace.service';
+
+// The General rules that need no database: what update refuses before it
+// writes, and what it never hands to the row. The DB twin of this file
+// (workspace.general.db.spec.ts) proves the same against real rows.
+const EXISTING = {
+  id: 'ws-1',
+  name: 'Acme',
+  slug: 'acme',
+  ownerId: 'owner-1',
+  timezone: 'UTC',
+};
+const OWN_LOGO = 'https://cdn.test/workspace-logos/ws-1/u/1-abc.png';
+
+function makeService() {
+  const returning = jest.fn();
+  const set = jest.fn<
+    { where: () => { returning: jest.Mock } },
+    [Record<string, unknown>]
+  >(() => ({ where: jest.fn(() => ({ returning })) }));
+  const findFirst = jest
+    .fn()
+    .mockResolvedValueOnce(EXISTING)
+    .mockResolvedValue(undefined);
+  const db = {
+    query: { workspace: { findFirst } },
+    update: jest.fn(() => ({ set })),
+  };
+  returning.mockImplementation(() =>
+    Promise.resolve([{ ...EXISTING, ...set.mock.calls.at(-1)?.[0] }]),
+  );
+  const r2 = {
+    isOwnPublicUrl: jest.fn((url: string) => url === OWN_LOGO),
+  };
+  const service = new WorkspaceService(
+    db as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    r2 as unknown as CloudflareR2Service,
+  );
+  return { service, db, set, findFirst, r2 };
+}
+
+async function codeOf(p: Promise<unknown>): Promise<string | undefined> {
+  try {
+    await p;
+  } catch (err) {
+    expect(err).toBeInstanceOf(BadRequestException);
+    return ((err as BadRequestException).getResponse() as { code?: string })
+      .code;
+  }
+  throw new Error('expected the call to fail');
+}
+
+describe('WorkspaceService.update (General)', () => {
+  it('does not check ownership: the route guard decides', async () => {
+    const { service } = makeService();
+    await expect(
+      service.update('ws-1', { name: 'New' }, 'an-admin-who-is-not-the-owner'),
+    ).resolves.toMatchObject({ workspace: { name: 'New' } });
+  });
+
+  it('answers timezoneMove null until the move exists', async () => {
+    const { service } = makeService();
+    const res = await service.update('ws-1', { description: 'x' }, 'u');
+    expect(res.timezoneMove).toBeNull();
+  });
+
+  it('400 TIMEZONE_REQUIRED when applyTimezoneToChannels comes without a timezone, before any write', async () => {
+    const { service, db } = makeService();
+    expect(
+      await codeOf(
+        service.update('ws-1', { applyTimezoneToChannels: true }, 'u'),
+      ),
+    ).toBe('TIMEZONE_REQUIRED');
+    expect(
+      await codeOf(
+        service.update('ws-1', { applyTimezoneToChannels: false }, 'u'),
+      ),
+    ).toBe('TIMEZONE_REQUIRED');
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('never writes applyTimezoneToChannels into the row', async () => {
+    const { service, set } = makeService();
+    await service.update(
+      'ws-1',
+      { timezone: 'UTC', applyTimezoneToChannels: true },
+      'u',
+    );
+    expect(set.mock.calls[0][0]).not.toHaveProperty('applyTimezoneToChannels');
+    expect(set.mock.calls[0][0]).toMatchObject({ timezone: 'UTC' });
+  });
+
+  it('400 LOGO_NOT_UPLOADED for a URL our presign did not issue, before any write', async () => {
+    const { service, db, r2 } = makeService();
+    expect(
+      await codeOf(
+        service.update('ws-1', { logo: 'https://evil.test/p.png' }, 'u'),
+      ),
+    ).toBe('LOGO_NOT_UPLOADED');
+    expect(r2.isOwnPublicUrl).toHaveBeenCalledWith(
+      'https://evil.test/p.png',
+      'workspace-logo',
+    );
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('saves a logo our presign issued', async () => {
+    const { service, set } = makeService();
+    await service.update('ws-1', { logo: OWN_LOGO }, 'u');
+    expect(set.mock.calls[0][0]).toMatchObject({ logo: OWN_LOGO });
+  });
+
+  it('null clears the logo without asking R2', async () => {
+    const { service, set, r2 } = makeService();
+    await service.update('ws-1', { logo: null }, 'u');
+    expect(set.mock.calls[0][0]).toMatchObject({ logo: null });
+    expect(r2.isOwnPublicUrl).not.toHaveBeenCalled();
+  });
+
+  it('writes the publishing defaults', async () => {
+    const { service, set } = makeService();
+    await service.update(
+      'ws-1',
+      {
+        approvalPolicy: 'members',
+        shortenLinksDefault: true,
+        utmDefault: true,
+      },
+      'u',
+    );
+    expect(set.mock.calls[0][0]).toMatchObject({
+      approvalPolicy: 'members',
+      shortenLinksDefault: true,
+      utmDefault: true,
+    });
+  });
+});
+
+describe('WorkspaceService.findDetail', () => {
+  function withRow(row: unknown) {
+    const { service, findFirst } = makeService();
+    findFirst.mockReset();
+    findFirst.mockResolvedValue(row);
+    return { service, findFirst };
+  }
+  const base = {
+    ...EXISTING,
+    isActive: true,
+    suspendedReason: null,
+  };
+
+  it('asks the database to leave out both secrets', async () => {
+    const { service, findFirst } = withRow({
+      ...base,
+      owner: { id: 'o', name: 'Olive', email: 'o@example.test' },
+    });
+    await service.findDetail('ws-1');
+    expect(findFirst.mock.calls[0][0]).toMatchObject({
+      columns: { maestroAnthropicKey: false, inviteLinkCode: false },
+    });
+  });
+
+  it('ownerName is the name, or the email when there is none', async () => {
+    const named = withRow({
+      ...base,
+      owner: { id: 'o', name: 'Olive', email: 'o@example.test' },
+    });
+    await expect(named.service.findDetail('ws-1')).resolves.toMatchObject({
+      ownerName: 'Olive',
+    });
+    const unnamed = withRow({
+      ...base,
+      owner: { id: 'o', name: null, email: 'o@example.test' },
+    });
+    await expect(unnamed.service.findDetail('ws-1')).resolves.toMatchObject({
+      ownerName: 'o@example.test',
+    });
+  });
+
+  it('404 for a workspace that does not exist', async () => {
+    const { service } = withRow(undefined);
+    await expect(service.findDetail('nope')).rejects.toMatchObject({
+      status: 404,
+    });
+  });
+
+  it('403 for a suspended workspace', async () => {
+    const { service } = withRow({
+      ...base,
+      isActive: false,
+      suspendedReason: 'non_payment',
+      owner: { id: 'o', name: 'Olive', email: 'o@example.test' },
+    });
+    await expect(service.findDetail('ws-1')).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+  });
+});

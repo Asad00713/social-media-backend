@@ -34,7 +34,8 @@ export type R2MediaKind =
   | 'file'
   | 'composer-video'
   | 'composer-document'
-  | 'avatar';
+  | 'avatar'
+  | 'workspace-logo';
 
 const KIND_TO_PREFIX: Record<R2MediaKind, string> = {
   image: 'inbox/images',
@@ -57,6 +58,11 @@ const KIND_TO_PREFIX: Record<R2MediaKind, string> = {
   // media — an avatar deleted after 90 days would leave a hole in every list
   // the user appears in.
   avatar: 'avatars',
+  // A workspace's logo belongs to the WORKSPACE, so its key keeps the
+  // workspace segment (unlike an avatar) and a deleted workspace's logos can
+  // be found by prefix. Separate from `avatars` so the two never share a
+  // lifecycle rule.
+  'workspace-logo': 'workspace-logos',
 };
 
 const MAX_BYTES: Record<R2MediaKind, number> = {
@@ -76,6 +82,9 @@ const MAX_BYTES: Record<R2MediaKind, number> = {
   // buys nothing visible and is paid for on every screen that lists people.
   // The DTO enforces the same number before a URL is ever signed.
   avatar: 2 * 1024 * 1024,
+  // 2 MB, the same ceiling as an avatar: a logo is drawn at thumbnail size in
+  // the sidebar, switcher and emails. PresignLogoDto enforces it first.
+  'workspace-logo': 2 * 1024 * 1024,
 };
 
 /** The five types LinkedIn's Documents API takes, without parameters. */
@@ -99,6 +108,9 @@ const ALLOWED_MIME: Record<R2MediaKind, RegExp> = {
   // places at once, where an animated GIF is a dozen loops running behind a
   // list, and HEIC does not decode in Chrome or Firefox at all.
   avatar: /^image\/(jpeg|png|webp)(;.*)?$/i,
+  // PNG and JPEG only: a logo with transparency or a photo-like mark is
+  // covered, and the WebP/GIF/HEIC decode and animation cases are not.
+  'workspace-logo': /^image\/(png|jpeg)$/i,
 };
 
 /**

@@ -43,6 +43,7 @@ function makeService() {
     {} as never,
     {} as never,
     {} as never,
+    {} as never,
   );
   return { service, db, set };
 }
@@ -58,7 +59,7 @@ afterEach(() => jest.restoreAllMocks());
 describe('WorkspaceService.update: report time zone', () => {
   it('reschedules the reports when the time zone changes', async () => {
     const { service, db } = makeService();
-    const updated = await service.update(
+    const { workspace: updated } = await service.update(
       'ws-1',
       { timezone: 'Asia/Karachi' },
       'user-1',
@@ -114,7 +115,7 @@ describe('WorkspaceService.update: report time zone', () => {
     const { service } = makeService();
     await expect(
       service.update('ws-1', { timezone: 'Asia/Karachi' }, 'user-1'),
-    ).resolves.toMatchObject({ timezone: 'Asia/Karachi' });
+    ).resolves.toMatchObject({ workspace: { timezone: 'Asia/Karachi' } });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('db down'));
   });
 });

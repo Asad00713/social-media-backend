@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Inject,
@@ -10,7 +11,12 @@ import {
 import type { DbType } from 'src/drizzle/db';
 import { DRIZZLE } from 'src/drizzle/drizzle.module';
 import { CreateWorkspaceDto } from './dto/create-workspace.dto';
-import { workspace, workspaceUsage, Workspace } from 'src/drizzle/schema';
+import {
+  workspace,
+  workspaceUsage,
+  Workspace,
+  type ApprovalPolicy,
+} from 'src/drizzle/schema';
 import { and, count, eq, ne } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
 import { UpdateWorkspaceDto } from './dto/update-workspace.dto';
@@ -23,6 +29,7 @@ import { resolveWorkspaceLimits } from 'src/billing/services/limit-resolver.util
 import { getNextTokenResetDate } from 'src/billing/services/token-reset.util';
 import { LibrarySamplesService } from 'src/media-library/samples/library-samples.service';
 import { rescheduleWorkspaceReports } from '../insights/reports/lib/reschedule';
+import { CloudflareR2Service } from '../media/cloudflare-r2.service';
 
 type GetAllREsponse = {
   // Omits the Maestro BYOK credential — it must never reach a client.
@@ -34,6 +41,46 @@ type GetAllREsponse = {
     totalPages: number;
   };
 };
+
+/**
+ * What GET /workspace/:workspaceId answers: the row without the two secrets
+ * (the encrypted Maestro key and the join-link code), plus the owner and a
+ * display name for them. Any ADMIN reads this, so nothing here may be a
+ * credential.
+ */
+export type WorkspaceDetail = Omit<
+  Workspace,
+  'maestroAnthropicKey' | 'inviteLinkCode'
+> & {
+  owner: { id: string; name: string | null; email: string };
+  ownerName: string;
+};
+
+/** The three composer defaults an Editor reads before writing a post. */
+export interface PublishingDefaults {
+  approvalPolicy: ApprovalPolicy;
+  shortenLinksDefault: boolean;
+  utmDefault: boolean;
+}
+
+/**
+ * Outcome of moving a workspace's channels to a new time zone. Declared here
+ * until the time-zone move lands, which owns and fills it; `update` answers
+ * `null` for it today.
+ */
+export interface TimezoneMoveResult {
+  channelsMoved: number;
+}
+
+/** A 400 with a machine-readable `code` the frontend reads. */
+function badRequest(code: string, message: string): BadRequestException {
+  return new BadRequestException({
+    statusCode: 400,
+    error: 'Bad Request',
+    code,
+    message,
+  });
+}
 
 @Injectable()
 export class WorkspaceService {
@@ -49,6 +96,8 @@ export class WorkspaceService {
     @Inject(forwardRef(() => AddonService))
     private addonService: AddonService,
     private librarySamples: LibrarySamplesService,
+    // Last: positional specs construct this service directly.
+    private r2: CloudflareR2Service,
   ) {}
 
   async create(
@@ -328,11 +377,96 @@ export class WorkspaceService {
     return result;
   }
 
+  /**
+   * The General page's read. No owner filter: WorkspaceRoleGuard has already
+   * decided the caller may see this workspace (`settings:view`).
+   *
+   * Never carries `maestroAnthropicKey` or `inviteLinkCode`: a MEMBER reads
+   * this, and neither the encrypted BYOK credential nor the join-link secret
+   * is theirs to hold.
+   */
+  async findDetail(workspaceId: string): Promise<WorkspaceDetail> {
+    const result = await this.db.query.workspace.findFirst({
+      where: eq(workspace.id, workspaceId),
+      columns: { maestroAnthropicKey: false, inviteLinkCode: false },
+      with: {
+        owner: { columns: { id: true, name: true, email: true } },
+      },
+    });
+
+    if (!result) {
+      throw new NotFoundException(
+        `Workspace with id "${workspaceId}" not found`,
+      );
+    }
+
+    if (!result.isActive) {
+      throw new ForbiddenException(
+        `This workspace has been suspended. Reason: ${result.suspendedReason || 'Contact support for details.'}`,
+      );
+    }
+
+    return { ...result, ownerName: result.owner.name ?? result.owner.email };
+  }
+
+  /** The composer's starting switches, readable by anyone who can draft. */
+  async getPublishingDefaults(
+    workspaceId: string,
+  ): Promise<PublishingDefaults> {
+    const row = await this.db.query.workspace.findFirst({
+      where: eq(workspace.id, workspaceId),
+      columns: {
+        approvalPolicy: true,
+        shortenLinksDefault: true,
+        utmDefault: true,
+      },
+    });
+    if (!row) {
+      throw new NotFoundException(
+        `Workspace with id "${workspaceId}" not found`,
+      );
+    }
+    return row;
+  }
+
+  /**
+   * Who may call this is decided by the route (`workspace:manage`), not here:
+   * an ADMIN edits General as readily as the owner, so there is no owner check.
+   * `userId` is kept so callers
+   * keep one signature; nothing here reads it.
+   */
   async update(
     workspaceId: string,
     updateWorkspaceDto: UpdateWorkspaceDto,
-    userId: string,
-  ): Promise<Workspace> {
+    _userId: string,
+  ): Promise<{
+    workspace: Workspace;
+    timezoneMove: TimezoneMoveResult | null;
+  }> {
+    // Not a column: the time-zone move reads it, the row never stores it.
+    const { applyTimezoneToChannels, ...columns } = updateWorkspaceDto;
+    if (
+      applyTimezoneToChannels !== undefined &&
+      columns.timezone === undefined
+    ) {
+      throw badRequest(
+        'TIMEZONE_REQUIRED',
+        'applyTimezoneToChannels needs a timezone to apply.',
+      );
+    }
+
+    // A logo is only ever a file our presign issued; an arbitrary URL would
+    // be a tracking pixel on every screen that shows the workspace.
+    if (
+      typeof columns.logo === 'string' &&
+      !this.r2.isOwnPublicUrl(columns.logo, 'workspace-logo')
+    ) {
+      throw badRequest(
+        'LOGO_NOT_UPLOADED',
+        'Upload the logo first, then save the URL it returns.',
+      );
+    }
+
     const existingWorkspace = await this.db.query.workspace.findFirst({
       where: eq(workspace.id, workspaceId),
     });
@@ -343,16 +477,10 @@ export class WorkspaceService {
       );
     }
 
-    if (existingWorkspace.ownerId !== userId) {
-      throw new ForbiddenException(
-        'You do not have permission to update this workspace',
-      );
-    }
-
     // Set only when the new name makes a different slug.
     let slugChange: { slug: string } | undefined;
-    if (updateWorkspaceDto.name) {
-      const newSlug = this.generateSlug(updateWorkspaceDto.name);
+    if (columns.name) {
+      const newSlug = this.generateSlug(columns.name);
 
       if (newSlug !== existingWorkspace.slug) {
         const slugExists = await this.db.query.workspace.findFirst({
@@ -364,7 +492,7 @@ export class WorkspaceService {
 
         if (slugExists) {
           throw new ConflictException(
-            `Workspace with name "${updateWorkspaceDto.name}" already exists. Please choose a different name.`,
+            `Workspace with name "${columns.name}" already exists. Please choose a different name.`,
           );
         }
 
@@ -375,7 +503,7 @@ export class WorkspaceService {
     const [updatedWorkspace] = await this.db
       .update(workspace)
       .set({
-        ...updateWorkspaceDto,
+        ...columns,
         ...slugChange,
         updatedAt: new Date(),
       })
@@ -384,13 +512,13 @@ export class WorkspaceService {
 
     // One tail for a rename and a plain save alike.
     if (
-      updateWorkspaceDto.timezone !== undefined &&
-      updateWorkspaceDto.timezone !== existingWorkspace.timezone
+      columns.timezone !== undefined &&
+      columns.timezone !== existingWorkspace.timezone
     ) {
-      await this.rescheduleReports(workspaceId, updateWorkspaceDto.timezone);
+      await this.rescheduleReports(workspaceId, columns.timezone);
     }
 
-    return updatedWorkspace;
+    return { workspace: updatedWorkspace, timezoneMove: null };
   }
 
   /**
@@ -508,9 +636,7 @@ export class WorkspaceService {
     const [row] = await this.db
       .select({ n: count() })
       .from(workspace)
-      .where(
-        and(eq(workspace.ownerId, userId), ne(workspace.id, excludingId)),
-      );
+      .where(and(eq(workspace.ownerId, userId), ne(workspace.id, excludingId)));
     return Number(row?.n ?? 0);
   }
 
