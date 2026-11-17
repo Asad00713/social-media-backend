@@ -88,6 +88,23 @@ remembering this document. The only way past it is an entry in
 `reads-exempt-from-deleted-filter.ts`, which demands a reason. There are 44 read sites today across all three spellings, and two
 exemptions.
 
+## Access control
+
+`WorkspaceSuspendedGuard` is the one place a deleted workspace is refused: it
+reads `deleted_at` and answers **404** for every workspace-scoped route.
+
+It deliberately does **not** filter deleted rows out of its own query. A
+filtered query returns no row, and "no row" is that guard's signal that there
+is nothing to enforce — so it would wave the request straight through.
+
+This matters more than it looks. The membership checks scattered across the
+app (`inbox.service.ts`, `scheduled-messages.service.ts`,
+`analytics-events.gateway.ts`, `WorkspaceRoleService` and others) read
+`workspace_invitation`, not `workspace` — they cannot see that a workspace was
+deleted. Without the guard, an accepted member would keep full access to a
+workspace its owner had deleted, while the owner themselves was correctly shut
+out. Closing it in the guard fixes all of them at once.
+
 ## Posts are not done yet
 
 Migration 0088 added the same columns to `posts`, and the helpers
