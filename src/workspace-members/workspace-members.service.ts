@@ -111,12 +111,12 @@ type MemberRoleName = 'ADMIN' | 'MEMBER' | 'GUEST';
 
 /**
  * Serialises every write that takes a seat in one workspace (invite, batch
- * invite, accept, restore) for the rest of the caller's transaction. The seat
+ * invite, accept, restore, join by link) for the rest of the caller's transaction. The seat
  * check reads `workspace_usage` and the PENDING rows; without this two
  * concurrent writers both see the last free seat. Released when the
  * transaction ends, so callers MUST be inside one.
  */
-async function lockWorkspaceSeats(
+export async function lockWorkspaceSeats(
   tx: { execute: (query: SQL) => Promise<unknown> },
   workspaceId: string,
 ): Promise<void> {
@@ -1268,7 +1268,7 @@ export class WorkspaceMembersService {
    * `exceptPendingTo` leaves out pending invitations to that normalized
    * address. No usage record reads as no seats, conservatively for a gate.
    */
-  private async freeSeats(
+  async freeSeats(
     workspaceId: string,
     exceptPendingTo?: string,
     q: Queryable = this.db,
@@ -1380,8 +1380,11 @@ export class WorkspaceMembersService {
     }
   }
 
-  /** B2 and its bell, to whoever invited the member. Never throws. */
-  private async notifyInviterOfAcceptance(
+  /**
+   * B2 and its bell, to whoever invited the member. Never throws. Also used by
+   * the invite link, which names the workspace owner as the inviter.
+   */
+  async notifyInviterOfAcceptance(
     invitation: {
       id: string;
       workspaceId: string;

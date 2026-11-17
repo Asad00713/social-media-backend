@@ -92,9 +92,10 @@ describe('WorkspaceMembersController route order', () => {
 
   it('hands the caller own id to the service, never an id from the URL', async () => {
     const leaveWorkspace = jest.fn().mockResolvedValue(undefined);
-    const controller = new WorkspaceMembersController({
-      leaveWorkspace,
-    } as never);
+    const controller = new WorkspaceMembersController(
+      { leaveWorkspace } as never,
+      {} as never,
+    );
     await controller.leaveWorkspace('ws-1', {
       userId: 'user-1',
       email: 'a@example.test',
@@ -104,9 +105,10 @@ describe('WorkspaceMembersController route order', () => {
 
   it('hands workspace, invitation and the caller to resendInvitation', async () => {
     const resendInvitation = jest.fn().mockResolvedValue({ id: 'inv-1' });
-    const controller = new WorkspaceMembersController({
-      resendInvitation,
-    } as never);
+    const controller = new WorkspaceMembersController(
+      { resendInvitation } as never,
+      {} as never,
+    );
     await controller.resendInvitation('ws-1', 'inv-1', {
       userId: 'user-1',
       email: 'a@example.test',

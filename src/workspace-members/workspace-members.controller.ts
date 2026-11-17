@@ -9,6 +9,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Put,
   Query,
   UnauthorizedException,
   UseGuards,
@@ -20,6 +21,8 @@ import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 import { InviteMemberDto } from './dto/invite-member.dto';
 import { UpdateMemberDto } from './dto/update-member.dto';
 import { BatchInviteDto } from './dto/batch-invite.dto';
+import { SetInviteLinkDto } from './dto/invite-link.dto';
+import { InviteLinkService } from './invite-link.service';
 import { WorkspaceRoleGuard } from './workspace-role.guard';
 import { RequireCapability } from './require-capability.decorator';
 import { SkipLaunchGate } from '../auth/decorators/skip-launch-gate.decorator';
@@ -39,7 +42,10 @@ function resendTracker(req: Record<string, unknown>): string {
 @Controller('workspace-members')
 @UseGuards(JwtAuthGuard)
 export class WorkspaceMembersController {
-  constructor(private readonly membersService: WorkspaceMembersService) {}
+  constructor(
+    private readonly membersService: WorkspaceMembersService,
+    private readonly inviteLinks: InviteLinkService,
+  ) {}
 
   @Post(':workspaceId/invitations')
   @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
@@ -130,6 +136,35 @@ export class WorkspaceMembersController {
       invitationId,
       user.userId,
     );
+  }
+
+  // ========== INVITE LINK ==========
+
+  // The shareable join link: on/off and its URL (null while off)
+  @Get(':workspaceId/invite-link')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  @RequireCapability('team:manage')
+  getInviteLink(@Param('workspaceId') workspaceId: string) {
+    return this.inviteLinks.get(workspaceId);
+  }
+
+  @Put(':workspaceId/invite-link')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  @RequireCapability('team:manage')
+  setInviteLink(
+    @Param('workspaceId') workspaceId: string,
+    @Body() dto: SetInviteLinkDto,
+  ) {
+    return this.inviteLinks.setEnabled(workspaceId, dto.enabled);
+  }
+
+  // A new code; the old link stops working at once
+  @Post(':workspaceId/invite-link/reset')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  @RequireCapability('team:manage')
+  resetInviteLink(@Param('workspaceId') workspaceId: string) {
+    return this.inviteLinks.reset(workspaceId);
   }
 
   // Get MY pending invitations (invitations sent to me)
