@@ -53,6 +53,7 @@ import { BrandKitModule } from './brand-kit/brand-kit.module';
 import { ShortLinksModule } from './short-links/short-links.module';
 import { NotificationPreferencesModule } from './notification-preferences/notification-preferences.module';
 import { PlatformStatusModule } from './platform-status/platform-status.module';
+import { LabelsModule } from './labels/labels.module';
 import { BullBoardModule } from '@bull-board/nestjs';
 import { ExpressAdapter } from '@bull-board/express';
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
@@ -115,6 +116,7 @@ import { QUEUES } from './queue/queue.module';
     ShortLinksModule,
     NotificationPreferencesModule,
     PlatformStatusModule,
+    LabelsModule,
     BullBoardModule.forRoot({
       // Moved off '/admin/queues' so it stops swallowing the admin queue API,
       // which lives under that same prefix. Bull Board keeps its full job
