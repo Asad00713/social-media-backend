@@ -5,6 +5,7 @@ import { JwtModule } from '@nestjs/jwt';
 import {
   REDIS_CLIENT,
   RedisClientProvider,
+  RedisClientCloser,
 } from '../channels/analytics/redis-client.provider';
 import { NotificationPreferencesModule } from '../notification-preferences/notification-preferences.module';
 import { QueueModule } from '../queue/queue.module';
@@ -33,6 +34,7 @@ import { ResendWebhookController } from './webhooks/resend-webhook.controller';
     AppLinks,
     EmailOnceService,
     RedisClientProvider,
+    RedisClientCloser,
     EmailSuppressionRepository,
     EmailTokensService,
     EmailFooterService,

@@ -1,7 +1,9 @@
 import { Module } from '@nestjs/common';
+import { DiscoveryModule } from '@nestjs/core';
 import { BullModule } from '@nestjs/bullmq';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { RateLimiterService } from './rate-limiter.service';
+import { WorkerDrainService } from './worker-drain.service';
 
 // Queue names
 export const QUEUES = {
@@ -32,6 +34,8 @@ export const QUEUES = {
 
 @Module({
   imports: [
+    // WorkerDrainService discovers every WorkerHost to close workers early.
+    DiscoveryModule,
     ConfigModule,
     // BullMQ configuration with Redis
     BullModule.forRootAsync({
@@ -91,7 +95,7 @@ export const QUEUES = {
       { name: QUEUES.PLATFORM_STATUS },
     ),
   ],
-  providers: [RateLimiterService],
+  providers: [RateLimiterService, WorkerDrainService],
   exports: [BullModule, RateLimiterService],
 })
 export class QueueModule {}
