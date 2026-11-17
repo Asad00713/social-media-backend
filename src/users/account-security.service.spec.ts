@@ -237,6 +237,55 @@ describe('AccountSecurityService.changePassword', () => {
     expect(emitter.passwordChanged).toHaveBeenCalledWith('u1');
   });
 
+  it('stamps passwordChangedAt with the same instant as the session revocation', async () => {
+    const { service, set } = setup();
+    jest.spyOn(service, 'sendPasswordChanged').mockResolvedValue(undefined);
+
+    await service.changePassword(
+      'u1',
+      { currentPassword: OLD, newPassword: NEW },
+      CTX,
+    );
+
+    const written = firstArg<{
+      passwordChangedAt: Date;
+      sessionsRevokedAt: Date;
+    }>(set);
+    expect(written.passwordChangedAt).toBeInstanceOf(Date);
+    expect(written.passwordChangedAt).toBe(written.sessionsRevokedAt);
+  });
+
+  it('revokeOtherSessions: false keeps the other sessions: the password and its date are written, sessionsRevokedAt is not', async () => {
+    const { service, set } = setup();
+    jest.spyOn(service, 'sendPasswordChanged').mockResolvedValue(undefined);
+
+    await service.changePassword(
+      'u1',
+      { currentPassword: OLD, newPassword: NEW, revokeOtherSessions: false },
+      CTX,
+    );
+
+    const written = firstArg<Record<string, unknown>>(set);
+    expect(written.password).toEqual(expect.any(String));
+    expect(written.passwordChangedAt).toBeInstanceOf(Date);
+    expect(written).not.toHaveProperty('sessionsRevokedAt');
+  });
+
+  it('revokeOtherSessions: true revokes, like omitting it', async () => {
+    const { service, set } = setup();
+    jest.spyOn(service, 'sendPasswordChanged').mockResolvedValue(undefined);
+
+    await service.changePassword(
+      'u1',
+      { currentPassword: OLD, newPassword: NEW, revokeOtherSessions: true },
+      CTX,
+    );
+
+    const written = firstArg<Record<string, unknown>>(set);
+    expect(written.sessionsRevokedAt).toBeInstanceOf(Date);
+    expect(written.passwordChangedAt).toBeInstanceOf(Date);
+  });
+
   it('does not ring the bell when the security_alert app switch is off, and still emails', async () => {
     const { service, enqueue, emitter } = setup({ appAllowed: false });
     const notice = jest.spyOn(service, 'sendPasswordChanged');

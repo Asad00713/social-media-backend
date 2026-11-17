@@ -1,4 +1,4 @@
-import { IsIn, IsOptional, IsString } from 'class-validator';
+import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import {
   USER_USE_CASES,
   type UserUseCase,
@@ -14,6 +14,7 @@ export class UpdateUserDto {
   email?: string;
 
   @IsString()
+  @MaxLength(60)
   @IsOptional()
   name?: string;
 

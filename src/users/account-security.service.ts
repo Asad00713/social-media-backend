@@ -32,6 +32,8 @@ export interface RequestContext {
 export interface ChangePasswordInput {
   currentPassword?: string;
   newPassword: string;
+  /** Default true: only an explicit false keeps the other sessions signed in. */
+  revokeOtherSessions?: boolean;
 }
 
 const BCRYPT_ROUNDS = 10;
@@ -73,7 +75,8 @@ export class AccountSecurityService {
    * A Google-only account (no password) is refused: a stolen access token must
    * not be able to add a password. It uses "Forgot password" instead.
    * On success every other session ends; the caller hands this device a fresh
-   * token pair, minted after the revocation.
+   * token pair, minted after the revocation. `revokeOtherSessions: false` keeps
+   * the other sessions (the password still changes and is dated).
    */
   async changePassword(
     userId: string,
@@ -101,11 +104,18 @@ export class AccountSecurityService {
 
     const password = await bcrypt.hash(body.newPassword, BCRYPT_ROUNDS);
     // One write: there is no moment where the new password works but the old
-    // sessions still do.
+    // sessions still do. Only an explicit false keeps them.
     const now = new Date();
     await this.db
       .update(users)
-      .set({ password, sessionsRevokedAt: now, updatedAt: now })
+      .set({
+        password,
+        passwordChangedAt: now,
+        ...(body.revokeOtherSessions !== false
+          ? { sessionsRevokedAt: now }
+          : {}),
+        updatedAt: now,
+      })
       .where(eq(users.id, userId));
 
     // Detached: the caller mints this device's fresh tokens next, and the old
