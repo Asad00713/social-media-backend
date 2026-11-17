@@ -41,6 +41,8 @@ import { readMigrations } from './runner';
  * 0088 adds four columns to users (ACCESS EXCLUSIVE, catalog-only).
  * 0089 adds five columns to workspace and one to workspace_invitations
  * (ACCESS EXCLUSIVE, catalog-only), then a unique index on workspace (SHARE).
+ * 0090 creates workspace_labels and post_labels with foreign keys to
+ * workspace, users, posts and workspace_labels (SHARE ROW EXCLUSIVE on each).
  */
 const FILES = [
   '0046_inbox_items_thread_key.sql',
@@ -64,6 +66,7 @@ const FILES = [
   '0083_platform_status.sql',
   '0088_user_account_settings.sql',
   '0089_workspace_settings.sql',
+  '0090_workspace_labels.sql',
 ];
 
 const firstStatement = (sql: string): string =>

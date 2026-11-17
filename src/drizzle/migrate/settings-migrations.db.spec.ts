@@ -12,6 +12,8 @@ import { describeDb, withRollbackDb } from '../../planner/testing/rollback-db';
  *   0089  workspace gains approval_policy, shorten_links_default,
  *         utm_default, invite_link_code, invite_link_enabled;
  *         workspace_invitations gains message.
+ *   0090  workspace_labels (the catalogue) and post_labels (the join),
+ *         filled from posts.metadata.labels.
  *
  * The harness applies each file twice BEFORE the test body runs, which proves
  * idempotency on an empty table only. A backfill test therefore seeds its
@@ -27,6 +29,7 @@ const MIGRATIONS_DIR = join(
 );
 const FILE_0088 = '0088_user_account_settings.sql';
 const FILE_0089 = '0089_workspace_settings.sql';
+const FILE_0090 = '0090_workspace_labels.sql';
 const rand = () => Math.random().toString(36).slice(2, 10);
 
 async function seedUser(client: PoolClient): Promise<string> {
@@ -440,5 +443,339 @@ describeDb('migration 0089 workspace settings', () => {
     expect(indexes).toHaveLength(1);
     expect(indexes[0].indexdef).toMatch(/^CREATE UNIQUE INDEX/);
     expect(indexes[0].indexdef).toContain('(invite_link_code)');
+  });
+});
+
+async function seedPost(
+  client: PoolClient,
+  workspaceId: string,
+  userId: string,
+  metadata: unknown,
+  createdAt: string,
+): Promise<string> {
+  const r = await client.query<{ id: string }>(
+    `INSERT INTO posts (workspace_id, created_by_id, status, content, targets,
+                        metadata, created_at)
+     VALUES ($1, $2, 'draft', 'x', '[]'::jsonb, $3::jsonb, $4::timestamptz)
+     RETURNING id`,
+    [workspaceId, userId, JSON.stringify(metadata), createdAt],
+  );
+  return r.rows[0].id;
+}
+
+/** Re-runs the migration file on the seeded posts (the backfill under test). */
+async function rerun0090(client: PoolClient): Promise<void> {
+  await client.query(readFileSync(join(MIGRATIONS_DIR, FILE_0090), 'utf8'));
+}
+
+async function cataloguePairs(
+  client: PoolClient,
+  workspaceId: string,
+): Promise<Array<{ name: string; color: string }>> {
+  const r = await client.query<{ name: string; color: string }>(
+    `SELECT name, color FROM workspace_labels
+      WHERE workspace_id = $1 AND deleted_at IS NULL
+      ORDER BY created_at, name`,
+    [workspaceId],
+  );
+  return r.rows;
+}
+
+async function labelNamesByPost(
+  client: PoolClient,
+  workspaceId: string,
+): Promise<Record<string, string[]>> {
+  const r = await client.query<{ post_id: string; name: string }>(
+    `SELECT pl.post_id, l.name
+       FROM post_labels pl
+       JOIN workspace_labels l ON l.id = pl.label_id
+      WHERE l.workspace_id = $1
+      ORDER BY pl.post_id, l.name`,
+    [workspaceId],
+  );
+  const out: Record<string, string[]> = {};
+  for (const row of r.rows) (out[row.post_id] ??= []).push(row.name);
+  return out;
+}
+
+async function countRows(client: PoolClient, table: string): Promise<number> {
+  const r = await client.query<{ n: string }>(
+    `SELECT count(*) AS n FROM ${table}`,
+  );
+  return Number(r.rows[0].n);
+}
+
+describeDb('migration 0090 workspace labels', () => {
+  const MIGRATIONS = [FILE_0090];
+
+  it('0090 backfills one catalogue row per distinct label and one post_labels row per (post, label)', async () => {
+    const result = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const userId = await seedUser(client);
+      const w = await seedWorkspace(client, userId);
+      const other = await seedWorkspace(client, userId);
+      const p1 = await seedPost(
+        client,
+        w,
+        userId,
+        { labels: ['Promo', 'launch'] },
+        '2026-01-01T00:00:00Z',
+      );
+      const p2 = await seedPost(
+        client,
+        w,
+        userId,
+        { labels: ['promo'] },
+        '2026-01-02T00:00:00Z',
+      );
+      await seedPost(
+        client,
+        w,
+        userId,
+        { labels: 'not-an-array' },
+        '2026-01-03T00:00:00Z',
+      );
+      const p4 = await seedPost(
+        client,
+        w,
+        userId,
+        { labels: ['Launch', ' BTS '] },
+        '2026-01-04T00:00:00Z',
+      );
+      // Another workspace's labels must never land in W's catalogue.
+      await seedPost(
+        client,
+        other,
+        userId,
+        { labels: ['Promo', 'Other'] },
+        '2026-01-05T00:00:00Z',
+      );
+
+      await rerun0090(client);
+
+      const wJoin = await labelNamesByPost(client, w);
+      return {
+        wLabels: await cataloguePairs(client, w),
+        otherLabels: await cataloguePairs(client, other),
+        wJoin,
+        wJoinTotal: Object.values(wJoin).flat().length,
+        p1,
+        p2,
+        p4,
+      };
+    });
+
+    // First-seen spelling (Promo, not promo; launch, not Launch), trimmed
+    // ("BTS"), colours in palette order by first sighting.
+    expect(result.wLabels).toEqual([
+      { name: 'Promo', color: 'blue' },
+      { name: 'launch', color: 'orange' },
+      { name: 'BTS', color: 'green' },
+    ]);
+    expect(result.wJoinTotal).toBe(5);
+    expect(result.wJoin[result.p1]).toEqual(['Promo', 'launch']);
+    expect(result.wJoin[result.p2]).toEqual(['Promo']);
+    expect(result.wJoin[result.p4]).toEqual(['BTS', 'launch']);
+    expect(result.otherLabels).toEqual([
+      { name: 'Promo', color: 'blue' },
+      { name: 'Other', color: 'orange' },
+    ]);
+  });
+
+  it('0090 collapses whitespace and drops empty, over-long and non-string labels', async () => {
+    const forty = 'a'.repeat(40);
+    const result = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const userId = await seedUser(client);
+      const w = await seedWorkspace(client, userId);
+      await seedPost(
+        client,
+        w,
+        userId,
+        {
+          labels: [
+            '  Hot   drinks ',
+            '',
+            '   ',
+            3,
+            null,
+            'a'.repeat(41),
+            forty,
+          ],
+        },
+        '2026-01-01T00:00:00Z',
+      );
+      await rerun0090(client);
+      return cataloguePairs(client, w);
+    });
+
+    expect(result.map((r) => r.name)).toEqual(['Hot drinks', forty]);
+  });
+
+  it('0090 gives the ninth label in a workspace the first colour again', async () => {
+    const colours = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const userId = await seedUser(client);
+      const w = await seedWorkspace(client, userId);
+      await seedPost(
+        client,
+        w,
+        userId,
+        { labels: Array.from({ length: 9 }, (_v, i) => `label-${i + 1}`) },
+        '2026-01-01T00:00:00Z',
+      );
+      await rerun0090(client);
+      return (await cataloguePairs(client, w)).map((r) => r.color);
+    });
+
+    expect(colours).toEqual([
+      'blue',
+      'orange',
+      'green',
+      'purple',
+      'pink',
+      'teal',
+      'red',
+      'grey',
+      'blue',
+    ]);
+  });
+
+  it('0090 run again creates no duplicates', async () => {
+    const counts = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const userId = await seedUser(client);
+      const w = await seedWorkspace(client, userId);
+      await seedPost(
+        client,
+        w,
+        userId,
+        { labels: ['Promo', 'launch'] },
+        '2026-01-01T00:00:00Z',
+      );
+      await seedPost(
+        client,
+        w,
+        userId,
+        { labels: ['promo'] },
+        '2026-01-02T00:00:00Z',
+      );
+      await rerun0090(client);
+      const first = {
+        labels: await countRows(client, 'workspace_labels'),
+        joins: await countRows(client, 'post_labels'),
+      };
+      await rerun0090(client);
+      await rerun0090(client);
+      const again = {
+        labels: await countRows(client, 'workspace_labels'),
+        joins: await countRows(client, 'post_labels'),
+      };
+      return { first, again };
+    });
+
+    expect(counts.first).toEqual({ labels: 2, joins: 3 });
+    expect(counts.again).toEqual(counts.first);
+  });
+
+  it('0090 leaves posts.metadata.labels in place', async () => {
+    const metadata = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const userId = await seedUser(client);
+      const w = await seedWorkspace(client, userId);
+      const postId = await seedPost(
+        client,
+        w,
+        userId,
+        { labels: ['Promo'], keep: 1 },
+        '2026-01-01T00:00:00Z',
+      );
+      await rerun0090(client);
+      const r = await client.query<{ metadata: unknown }>(
+        `SELECT metadata FROM posts WHERE id = $1`,
+        [postId],
+      );
+      return r.rows[0].metadata;
+    });
+
+    expect(metadata).toEqual({ labels: ['Promo'], keep: 1 });
+  });
+
+  it('0090 rejects a second live label whose name differs only by case (23505), but accepts it once the first is soft-deleted', async () => {
+    await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const userId = await seedUser(client);
+      const w = await seedWorkspace(client, userId);
+      await client.query(
+        `INSERT INTO workspace_labels (workspace_id, name, color)
+         VALUES ($1, 'Promo', 'blue')`,
+        [w],
+      );
+      const insertLower = () =>
+        client.query(
+          `INSERT INTO workspace_labels (workspace_id, name, color)
+           VALUES ($1, 'promo', 'orange')`,
+          [w],
+        );
+      await expectPgError(client, '23505', insertLower);
+
+      await client.query(
+        `UPDATE workspace_labels SET deleted_at = now()
+          WHERE workspace_id = $1 AND name = 'Promo'`,
+        [w],
+      );
+      await expect(insertLower()).resolves.toBeDefined();
+
+      // The same name in another workspace was never a clash.
+      const other = await seedWorkspace(client, userId);
+      await expect(
+        client.query(
+          `INSERT INTO workspace_labels (workspace_id, name, color)
+           VALUES ($1, 'promo', 'orange')`,
+          [other],
+        ),
+      ).resolves.toBeDefined();
+    });
+  });
+
+  it('0090 rejects a colour outside the palette (23514)', async () => {
+    await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const userId = await seedUser(client);
+      const w = await seedWorkspace(client, userId);
+      await expectPgError(client, '23514', () =>
+        client.query(
+          `INSERT INTO workspace_labels (workspace_id, name, color)
+           VALUES ($1, 'Promo', 'cyan')`,
+          [w],
+        ),
+      );
+    });
+  });
+
+  it('0090 removes post_labels rows with their post and with their label', async () => {
+    const counts = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const userId = await seedUser(client);
+      const w = await seedWorkspace(client, userId);
+      const p1 = await seedPost(
+        client,
+        w,
+        userId,
+        { labels: ['A', 'B'] },
+        '2026-01-01T00:00:00Z',
+      );
+      await seedPost(
+        client,
+        w,
+        userId,
+        { labels: ['A'] },
+        '2026-01-02T00:00:00Z',
+      );
+      await rerun0090(client);
+      const before = await countRows(client, 'post_labels');
+      await client.query(`DELETE FROM posts WHERE id = $1`, [p1]);
+      const afterPost = await countRows(client, 'post_labels');
+      await client.query(
+        `DELETE FROM workspace_labels WHERE workspace_id = $1 AND name = 'A'`,
+        [w],
+      );
+      const afterLabel = await countRows(client, 'post_labels');
+      return { before, afterPost, afterLabel };
+    });
+
+    expect(counts).toEqual({ before: 3, afterPost: 1, afterLabel: 0 });
   });
 });
