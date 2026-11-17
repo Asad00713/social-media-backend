@@ -468,6 +468,12 @@ async function rerun0090(client: PoolClient): Promise<void> {
   await client.query(readFileSync(join(MIGRATIONS_DIR, FILE_0090), 'utf8'));
 }
 
+/**
+ * The catalogue in first-sighting order. Labels from one post share a
+ * created_at, so the tie is broken by palette position (colours are handed out
+ * in sighting order), then by name under the C collation. Never by a plain
+ * ORDER BY name, whose result depends on the database collation.
+ */
 async function cataloguePairs(
   client: PoolClient,
   workspaceId: string,
@@ -475,7 +481,13 @@ async function cataloguePairs(
   const r = await client.query<{ name: string; color: string }>(
     `SELECT name, color FROM workspace_labels
       WHERE workspace_id = $1 AND deleted_at IS NULL
-      ORDER BY created_at, name`,
+      ORDER BY created_at,
+               array_position(
+                 ARRAY['blue', 'orange', 'green', 'purple', 'pink', 'teal',
+                       'red', 'grey'],
+                 color
+               ),
+               name COLLATE "C"`,
     [workspaceId],
   );
   return r.rows;
@@ -490,7 +502,7 @@ async function labelNamesByPost(
        FROM post_labels pl
        JOIN workspace_labels l ON l.id = pl.label_id
       WHERE l.workspace_id = $1
-      ORDER BY pl.post_id, l.name`,
+      ORDER BY pl.post_id, l.name COLLATE "C"`,
     [workspaceId],
   );
   const out: Record<string, string[]> = {};
