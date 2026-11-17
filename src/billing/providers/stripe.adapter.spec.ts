@@ -1,5 +1,16 @@
 // src/billing/providers/stripe.adapter.spec.ts
 import { StripeAdapter } from './stripe.adapter';
+import { AppLinks } from '../../email/links/app-links';
+import {
+  invoiceLineItems,
+  invoices,
+  paymentMethods,
+  providerSubscriptions,
+  stripeCustomers,
+  subscriptions,
+  users,
+  workspace,
+} from '../../drizzle/schema';
 // The REAL liveness predicate every billing branch reads. Asserting the
 // status STRING alone would pass for a spelling the deny-list ignores, which
 // is exactly how `removed` shipped.
@@ -95,6 +106,7 @@ function makeAdapter(rows: Record<string, unknown>[] = []) {
     stripe as never,
     customers as never,
     catalogue as never,
+    {} as never,
   );
   // `rows` is the live store: the update fake mutates it, so reading it back
   // after a call shows the RESULTING STATE rather than only the patch.
@@ -282,9 +294,9 @@ describe('StripeAdapter', () => {
 
   it('returns the Stripe checkout url', async () => {
     const { adapter } = makeAdapter();
-    await expect(adapter.createCheckout('user-1', 'PRO', 'ws-1')).resolves.toEqual(
-      { url: 'https://stripe.test/c/1' },
-    );
+    await expect(
+      adapter.createCheckout('user-1', 'PRO', 'ws-1'),
+    ).resolves.toEqual({ url: 'https://stripe.test/c/1' });
   });
 
   // Regression pin for the line-115 hazard: `updateSubscriptionItem` has no
@@ -412,5 +424,254 @@ describe('StripeAdapter.removeAddon', () => {
     await adapter.removeAddon(1, 'EXTRA_CHANNEL');
 
     expect(isLive({ ...ROWS[0], ...updates[0] } as never)).toBe(false);
+  });
+});
+
+describe('StripeAdapter portal, invoices and billing profile', () => {
+  const PROVIDER_ROWS = [
+    {
+      id: 1,
+      itemType: 'BASE_PLAN',
+      provider: 'stripe',
+      isDefault: true,
+      providerSubscriptionId: 'sub_1',
+      providerItemId: 'si_1',
+    },
+  ];
+
+  /**
+   * A db whose every query chain resolves to the rows queued for the table it
+   * was started from. `from(users)` is queried before `from(workspace)` by the
+   * return-url lookup, so those two take a queue rather than a single answer.
+   */
+  function build(answers: {
+    users?: Record<string, unknown>[];
+    workspaces?: Record<string, unknown>[][];
+    stripeCustomers?: Record<string, unknown>[];
+    invoices?: Record<string, unknown>[];
+    lines?: Record<string, unknown>[];
+    methods?: Record<string, unknown>[];
+  }) {
+    const workspaceQueue = [...(answers.workspaces ?? [])];
+    const rowsFor = (table: unknown): Record<string, unknown>[] => {
+      if (table === providerSubscriptions) return PROVIDER_ROWS;
+      if (table === subscriptions)
+        return [{ userId: 'user-1', planCode: 'PRO' }];
+      if (table === users) return answers.users ?? [];
+      if (table === workspace) return workspaceQueue.shift() ?? [];
+      if (table === stripeCustomers) return answers.stripeCustomers ?? [];
+      if (table === invoices) return answers.invoices ?? [];
+      if (table === invoiceLineItems) return answers.lines ?? [];
+      if (table === paymentMethods) return answers.methods ?? [];
+      return [];
+    };
+    const chain = (rows: Record<string, unknown>[]) => {
+      const c: Record<string, unknown> = {
+        then: (resolve: (v: unknown) => unknown) => resolve(rows),
+      };
+      for (const m of ['innerJoin', 'where', 'orderBy', 'limit']) {
+        c[m] = jest.fn(() => c);
+      }
+      return c;
+    };
+    const db = {
+      select: jest.fn(() => ({
+        from: jest.fn((table: unknown) => chain(rowsFor(table))),
+      })),
+    };
+    const sessionsCreate = jest
+      .fn()
+      .mockResolvedValue({ url: 'https://stripe.test/portal/s1' });
+    const stripe = {
+      getClient: jest.fn(() => ({
+        billingPortal: { sessions: { create: sessionsCreate } },
+      })),
+    };
+    const catalogue = { planName: jest.fn().mockResolvedValue('Pro') };
+    const links = new AppLinks({
+      get: (k: string) =>
+        k === 'FRONTEND_URL' ? 'https://app.test' : undefined,
+    } as never);
+    const adapter = new StripeAdapter(
+      db as never,
+      stripe as never,
+      {} as never,
+      catalogue as never,
+      links,
+    );
+    return { adapter, sessionsCreate };
+  }
+
+  describe('createPortalLink', () => {
+    it('opens a portal session for the Stripe customer, returning to billing', async () => {
+      const { adapter, sessionsCreate } = build({
+        stripeCustomers: [{ id: 'cus_9' }],
+        users: [{ id: 'ws-last' }],
+      });
+
+      const out = await adapter.createPortalLink(1, 'portal');
+
+      expect(out).toEqual({ url: 'https://stripe.test/portal/s1' });
+      expect(sessionsCreate).toHaveBeenCalledWith({
+        customer: 'cus_9',
+        return_url: 'https://app.test/w/ws-last/settings/billing',
+      });
+    });
+
+    it('goes straight to the card form for update_payment_method', async () => {
+      const { adapter, sessionsCreate } = build({
+        stripeCustomers: [{ id: 'cus_9' }],
+        users: [{ id: 'ws-last' }],
+      });
+
+      await adapter.createPortalLink(1, 'update_payment_method');
+
+      expect(sessionsCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          customer: 'cus_9',
+          flow_data: { type: 'payment_method_update' },
+        }),
+      );
+    });
+
+    it('returns to the first owned workspace when none was last opened', async () => {
+      const { adapter, sessionsCreate } = build({
+        stripeCustomers: [{ id: 'cus_9' }],
+        users: [],
+        workspaces: [[{ id: 'ws-owned' }]],
+      });
+
+      await adapter.createPortalLink(1, 'portal');
+
+      expect(sessionsCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          return_url: 'https://app.test/w/ws-owned/settings/billing',
+        }),
+      );
+    });
+
+    it('returns to the app root when the person has no workspace at all', async () => {
+      const { adapter, sessionsCreate } = build({
+        stripeCustomers: [{ id: 'cus_9' }],
+      });
+
+      await adapter.createPortalLink(1, 'portal');
+
+      expect(sessionsCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ return_url: 'https://app.test/' }),
+      );
+    });
+
+    it('refuses, without calling Stripe, when there is no Stripe customer', async () => {
+      const { adapter, sessionsCreate } = build({});
+      await expect(adapter.createPortalLink(1, 'portal')).rejects.toThrow(
+        /no Stripe customer/,
+      );
+      expect(sessionsCreate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('listInvoices', () => {
+    const row = (over: Record<string, unknown>) => ({
+      id: 1,
+      stripeInvoiceId: 'in_1',
+      totalCents: 1900,
+      currency: 'usd',
+      status: 'paid',
+      paidAt: new Date('2026-11-02T00:00:00Z'),
+      createdAt: new Date('2026-11-01T00:00:00Z'),
+      invoicePdfUrl: 'https://stripe.test/in_1.pdf',
+      hostedInvoiceUrl: 'https://stripe.test/in_1',
+      ...over,
+    });
+
+    it('maps the mirror row, taking the description from its first line item', async () => {
+      const { adapter } = build({
+        invoices: [row({})],
+        lines: [
+          { invoiceId: 1, description: '1 x Pro (at $19.00 / month)' },
+          { invoiceId: 1, description: 'Tax' },
+        ],
+      });
+
+      await expect(adapter.listInvoices(1, 10)).resolves.toEqual([
+        {
+          id: 'in_1',
+          date: '2026-11-02T00:00:00.000Z',
+          description: '1 x Pro (at $19.00 / month)',
+          amountCents: 1900,
+          currency: 'USD',
+          status: 'paid',
+          downloadUrl: 'https://stripe.test/in_1.pdf',
+        },
+      ]);
+    });
+
+    it('falls back to the plan name and the hosted page', async () => {
+      const { adapter } = build({
+        invoices: [row({ invoicePdfUrl: null, paidAt: null })],
+      });
+
+      const [out] = await adapter.listInvoices(1, 10);
+
+      expect(out.description).toBe('Pro plan');
+      expect(out.downloadUrl).toBe('https://stripe.test/in_1');
+      expect(out.date).toBe('2026-11-01T00:00:00.000Z');
+    });
+
+    it('maps Stripe statuses into ours', async () => {
+      const { adapter } = build({
+        invoices: [
+          row({ id: 1, stripeInvoiceId: 'a', status: 'void' }),
+          row({ id: 2, stripeInvoiceId: 'b', status: 'uncollectible' }),
+          row({ id: 3, stripeInvoiceId: 'c', status: 'open' }),
+          row({ id: 4, stripeInvoiceId: 'd', status: 'draft' }),
+        ],
+      });
+
+      const out = await adapter.listInvoices(1, 10);
+
+      expect(out.map((i) => i.status)).toEqual([
+        'void',
+        'failed',
+        'pending',
+        'pending',
+      ]);
+    });
+
+    it('returns an empty list without reading line items', async () => {
+      const { adapter } = build({});
+      await expect(adapter.listInvoices(1, 10)).resolves.toEqual([]);
+    });
+  });
+
+  describe('getBillingProfile', () => {
+    it('maps the default card and reports no billing details', async () => {
+      const { adapter } = build({
+        stripeCustomers: [{ id: 'cus_9' }],
+        methods: [{ cardBrand: 'visa', cardLast4: '4242' }],
+      });
+
+      await expect(adapter.getBillingProfile(1)).resolves.toEqual({
+        card: { brand: 'visa', last4: '4242' },
+        billingDetails: null,
+      });
+    });
+
+    it('has no card when none is mirrored', async () => {
+      const { adapter } = build({ stripeCustomers: [{ id: 'cus_9' }] });
+      await expect(adapter.getBillingProfile(1)).resolves.toEqual({
+        card: null,
+        billingDetails: null,
+      });
+    });
+
+    it('has no card when the account has no Stripe customer', async () => {
+      const { adapter } = build({});
+      await expect(adapter.getBillingProfile(1)).resolves.toEqual({
+        card: null,
+        billingDetails: null,
+      });
+    });
   });
 });

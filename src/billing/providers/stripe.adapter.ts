@@ -1,12 +1,19 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
+import { asc, desc, eq, inArray } from 'drizzle-orm';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import type { DbType } from '../../drizzle/db';
 import {
+  invoiceLineItems,
+  invoices,
+  paymentMethods,
   providerSubscriptions,
+  stripeCustomers,
   subscriptions,
+  users,
+  workspace,
   ProviderItemType,
 } from '../../drizzle/schema';
+import { AppLinks } from '../../email/links/app-links';
 import { CatalogueService } from './catalogue.service';
 import { CustomerService } from '../services/customer.service';
 import { StripeService } from '../../stripe/stripe.service';
@@ -14,7 +21,10 @@ import { assertProviderIsStripe } from '../../stripe/stripe-guard.util';
 import { pickDefaultProvider } from '../services/provider-subscription.util';
 import { rehomeDefault } from '../services/rehome-default.util';
 import {
+  BillingProfile,
   PaymentProviderAdapter,
+  PortalIntent,
+  ProviderInvoice,
   PurchaseResult,
 } from './payment-provider.interface';
 
@@ -55,6 +65,7 @@ export class StripeAdapter implements PaymentProviderAdapter {
     private readonly stripe: StripeService,
     private readonly customers: CustomerService,
     private readonly catalogue: CatalogueService,
+    private readonly links: AppLinks,
   ) {}
 
   // ---------------------------------------------------------------- checkout
@@ -398,6 +409,164 @@ export class StripeAdapter implements PaymentProviderAdapter {
       .update(providerSubscriptions)
       .set({ providerStatus: 'active', updatedAt: new Date() })
       .where(eq(providerSubscriptions.id, base.id));
+  }
+
+  // ------------------------------------------------- portal, invoices, profile
+
+  /**
+   * A one-shot Stripe billing-portal session. The customer comes back to the
+   * billing settings of the workspace they were last in, so the portal never
+   * strands them on a Stripe page. `update_payment_method` opens the card form
+   * directly (`flow_data`), skipping the portal's home screen.
+   */
+  async createPortalLink(
+    subscriptionId: number,
+    intent: PortalIntent,
+  ): Promise<{ url: string }> {
+    await this.rowsFor(subscriptionId);
+    const { userId } = await this.accountOf(subscriptionId);
+    const customer = await this.customerOf(userId);
+    if (!customer) {
+      throw new BadRequestException(
+        `Subscription ${subscriptionId} has no Stripe customer to open a portal for.`,
+      );
+    }
+
+    const session = await this.stripe
+      .getClient()
+      .billingPortal.sessions.create({
+        customer,
+        return_url: await this.billingReturnUrl(userId),
+        ...(intent === 'update_payment_method'
+          ? { flow_data: { type: 'payment_method_update' as const } }
+          : {}),
+      });
+    return { url: session.url };
+  }
+
+  /**
+   * Read from the `invoices` mirror the webhooks keep, so listing costs no
+   * Stripe call. The mirror stores no refund state and no line description of
+   * its own: a refund still reads `paid`, and the description is the first
+   * line item's, else the account's plan name.
+   */
+  async listInvoices(
+    subscriptionId: number,
+    limit: number,
+  ): Promise<ProviderInvoice[]> {
+    await this.rowsFor(subscriptionId);
+
+    const rows = await this.db
+      .select()
+      .from(invoices)
+      .where(eq(invoices.subscriptionId, subscriptionId))
+      .orderBy(desc(invoices.createdAt), desc(invoices.id))
+      .limit(limit);
+    if (rows.length === 0) return [];
+
+    const lines = await this.db
+      .select({
+        invoiceId: invoiceLineItems.invoiceId,
+        description: invoiceLineItems.description,
+      })
+      .from(invoiceLineItems)
+      .where(
+        inArray(
+          invoiceLineItems.invoiceId,
+          rows.map((r) => r.id),
+        ),
+      )
+      .orderBy(asc(invoiceLineItems.id));
+    const firstLine = new Map<number, string>();
+    for (const line of lines) {
+      if (!firstLine.has(line.invoiceId))
+        firstLine.set(line.invoiceId, line.description);
+    }
+
+    const { planCode } = await this.accountOf(subscriptionId);
+    const fallback = `${await this.catalogue.planName(planCode)} plan`;
+
+    return rows.map((r) => ({
+      id: r.stripeInvoiceId,
+      date: (r.paidAt ?? r.createdAt).toISOString(),
+      description: firstLine.get(r.id) ?? fallback,
+      amountCents: r.totalCents,
+      currency: r.currency.toUpperCase(),
+      status: this.invoiceStatus(r.status),
+      downloadUrl: r.invoicePdfUrl ?? r.hostedInvoiceUrl ?? null,
+    }));
+  }
+
+  /**
+   * The default card from the `payment_methods` mirror (else the newest one).
+   * Stripe's customer name/email/country are not mirrored, so `billingDetails`
+   * is null rather than a call to Stripe from a read-only settings screen.
+   */
+  async getBillingProfile(subscriptionId: number): Promise<BillingProfile> {
+    await this.rowsFor(subscriptionId);
+    const { userId } = await this.accountOf(subscriptionId);
+    const customer = await this.customerOf(userId);
+    if (!customer) return { card: null, billingDetails: null };
+
+    const methods = await this.db
+      .select()
+      .from(paymentMethods)
+      .where(eq(paymentMethods.stripeCustomerId, customer))
+      .orderBy(desc(paymentMethods.isDefault), desc(paymentMethods.createdAt));
+
+    const method = methods[0];
+    return {
+      card: method
+        ? { brand: method.cardBrand ?? null, last4: method.cardLast4 ?? null }
+        : null,
+      billingDetails: null,
+    };
+  }
+
+  /** `uncollectible` is Stripe giving up on a charge: that is a failed one. */
+  private invoiceStatus(status: string): ProviderInvoice['status'] {
+    switch (status) {
+      case 'paid':
+        return 'paid';
+      case 'void':
+        return 'void';
+      case 'uncollectible':
+        return 'failed';
+      default:
+        return 'pending';
+    }
+  }
+
+  private async customerOf(userId: string): Promise<string | null> {
+    const rows = await this.db
+      .select({ id: stripeCustomers.stripeCustomerId })
+      .from(stripeCustomers)
+      .where(eq(stripeCustomers.userId, userId))
+      .limit(1);
+    return rows[0]?.id ?? null;
+  }
+
+  /**
+   * Billing settings of the workspace the person last opened, else the first
+   * they own, else the app root. A subscription belongs to the account, not to
+   * a workspace, so there is no single "right" one.
+   */
+  private async billingReturnUrl(userId: string): Promise<string> {
+    const [last] = await this.db
+      .select({ id: workspace.id })
+      .from(users)
+      .innerJoin(workspace, eq(workspace.id, users.lastAccessedWorkspaceId))
+      .where(eq(users.id, userId))
+      .limit(1);
+    if (last) return this.links.billing(last.id);
+
+    const [owned] = await this.db
+      .select({ id: workspace.id })
+      .from(workspace)
+      .where(eq(workspace.ownerId, userId))
+      .orderBy(asc(workspace.createdAt), asc(workspace.id))
+      .limit(1);
+    return owned ? this.links.billing(owned.id) : this.links.frontend('/');
   }
 
   // ------------------------------------------------------------------ shared
