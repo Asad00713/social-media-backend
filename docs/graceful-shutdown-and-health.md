@@ -157,7 +157,7 @@ and stops reading those files on **2026-12-01**. The replacement is
 `.railway/railway.ts`, and it is not applied on deploy — it needs
 `railway config plan` then `railway config apply` from the CLI.
 
-So three things are owed, and they are one job:
+So two things are owed, and they are one job:
 
 1. Migrate `railway.json` → `.railway/railway.ts` (mandatory before 2026-12-01
    regardless of this work).
@@ -165,9 +165,24 @@ So three things are owed, and they are one job:
    - `drainingSeconds` — the window the shutdown above actually runs in.
      Without it the drain starts and is killed partway.
    - `healthcheckPath: "/health/live"` — so an instance that stops answering
-     is restarted.
+     is restarted. Never `/health/ready`: a Redis blip would then restart a
+     healthy instance, turning a degraded dependency into an outage.
    - `restartPolicyType: "ON_FAILURE"` with a bounded retry count.
-3. `SENTRY_DSN` in Railway Variables, to turn alerting on.
 
-Until (1) and (2) happen, the shutdown sequence runs but may not finish, and
-nothing restarts a hung instance.
+Until both happen, the shutdown sequence runs but may not finish, and nothing
+restarts a hung instance.
+
+### Sentry is live (2026-11-17)
+
+Done, so no longer on the list above:
+
+| | |
+|---|---|
+| Org / project | `schedura-qt` / `schedura-backend` (platform Nest.js) |
+| Products | Error monitoring + Tracing. Logging, Profiling and Application Metrics are off deliberately — this backend emits none of them, and each costs quota. |
+| Privacy | Data Scrubber, default scrubbers, and "Prevent Storing of IP Addresses" all on. That last one is off by default in a new project. It is a second layer behind this app's own scrubbing, not a replacement for it. |
+| Alerting | One rule: high-priority issues → email. |
+| `SENTRY_DSN` | Set in Railway Variables. |
+
+The DSN is readable any time from the project's Client Keys page, so it does
+not need to be recorded here.
