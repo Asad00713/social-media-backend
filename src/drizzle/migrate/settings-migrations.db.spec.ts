@@ -623,7 +623,7 @@ describeDb('migration 0090 workspace labels', () => {
   });
 
   it('0090 gives the ninth label in a workspace the first colour again', async () => {
-    const colours = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+    const pairs = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const userId = await seedUser(client);
       const w = await seedWorkspace(client, userId);
       await seedPost(
@@ -634,20 +634,22 @@ describeDb('migration 0090 workspace labels', () => {
         '2026-01-01T00:00:00Z',
       );
       await rerun0090(client);
-      return (await cataloguePairs(client, w)).map((r) => r.color);
+      return cataloguePairs(client, w);
     });
 
-    expect(colours).toEqual([
-      'blue',
-      'orange',
-      'green',
-      'purple',
-      'pink',
-      'teal',
-      'red',
-      'grey',
-      'blue',
-    ]);
+    // Read as name -> colour, not by row order: label-1 and label-9 share a
+    // colour, so the palette tie-break in cataloguePairs cannot order them.
+    expect(Object.fromEntries(pairs.map((r) => [r.name, r.color]))).toEqual({
+      'label-1': 'blue',
+      'label-2': 'orange',
+      'label-3': 'green',
+      'label-4': 'purple',
+      'label-5': 'pink',
+      'label-6': 'teal',
+      'label-7': 'red',
+      'label-8': 'grey',
+      'label-9': 'blue',
+    });
   });
 
   it('0090 run again creates no duplicates', async () => {
