@@ -23,6 +23,9 @@ import { PostsModule } from '../posts.module';
 import { CalendarSyncModule } from '../../calendar-sync/calendar-sync.module';
 // For PostQueueService — the same scheduling ceiling PostsModule enforces.
 import { BillingModule } from '../../billing/billing.module';
+// PostLabelsService (labels on save, schedule, publish) and LabelsService
+// (the picker's catalogue).
+import { LabelsModule } from '../../labels/labels.module';
 
 @Module({
   imports: [
@@ -34,6 +37,7 @@ import { BillingModule } from '../../billing/billing.module';
     PostsModule,
     QueueModule,
     BillingModule,
+    LabelsModule,
     // For CalendarPushSyncService — reflect composer-scheduled drafts on
     // connected calendars immediately (ComposerModule is not part of the
     // PostsModule <-> CalendarSyncModule cycle, so a plain import is safe).

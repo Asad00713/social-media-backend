@@ -34,6 +34,7 @@ import type {
   ScheduleConfig,
 } from '../types/draft.types';
 import { resolveOrganise, type OrganiseInput } from '../lib/draft-organise';
+import { PostLabelsService } from '../../../labels/post-labels.service';
 import { assertNoOpenBlanks } from '../lib/template-blanks';
 import { warningsField } from '../../lib/publish-warnings';
 
@@ -87,6 +88,9 @@ export class PublishOrchestratorService {
     private readonly credentials: ChannelCredentialsLookup,
     @Inject(DRIZZLE) private readonly db: any,
     private readonly reminders: PostReminderService,
+    // Not @Optional: the module must provide it. Optional in the type only so
+    // a unit test that never touches labels can leave it out.
+    private readonly postLabels?: PostLabelsService,
   ) {}
 
   async publishInline(
@@ -434,8 +438,8 @@ export class PublishOrchestratorService {
     carried: Record<string, unknown> = {},
     organise: OrganiseInput = {},
   ): Promise<void> {
-    // The stored filing, so a publish that does not send campaign or labels
-    // keeps them rather than wiping them with the rest of the metadata.
+    // The stored filing, so a publish that does not send a campaign keeps it
+    // rather than wiping it with the rest of the metadata.
     const [existing] = await this.db
       .select({ metadata: posts.metadata })
       .from(posts)
@@ -497,6 +501,15 @@ export class PublishOrchestratorService {
           lastError: null,
         },
       });
+
+    // Labels live in post_labels. "Absent keeps, present sets" (null = none).
+    if (organise.labels !== undefined) {
+      await this.postLabels?.setForPost(
+        workspaceId,
+        draft.id,
+        organise.labels ?? [],
+      );
+    }
   }
 
   private async persistChannels(

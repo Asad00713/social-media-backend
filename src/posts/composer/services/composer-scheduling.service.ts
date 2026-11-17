@@ -31,6 +31,7 @@ import {
   type ScheduleGroup,
 } from '../lib/per-channel-schedule';
 import { resolveOrganise } from '../lib/draft-organise';
+import { PostLabelsService } from '../../../labels/post-labels.service';
 import { assertNoOpenBlanks } from '../lib/template-blanks';
 import { snapshotOf } from '../lib/draft-versions';
 import { DraftVersionsService } from './draft-versions.service';
@@ -113,6 +114,9 @@ export class ComposerSchedulingService {
     private readonly postQueue: PostQueueService,
     // Optional so a unit test can build the service without it.
     @Optional() private readonly versions?: DraftVersionsService,
+    // Not @Optional: the module must provide it. Optional in the type only so
+    // a unit test that never touches labels can leave it out.
+    private readonly postLabels?: PostLabelsService,
   ) {}
 
   /**
@@ -209,7 +213,8 @@ export class ComposerSchedulingService {
     Object.assign(metadata, carryFirstWeekMeta(existing[0]?.metadata));
     // A sibling of a split post stays in its family when re-scheduled.
     Object.assign(metadata, carryScheduleGroup(existing[0]?.metadata));
-    // Campaign and labels: absent keeps the stored value (see draft-organise).
+    // Campaign: absent keeps the stored value (see draft-organise). Labels go
+    // to post_labels once the row is written.
     Object.assign(
       metadata,
       await resolveOrganise(this.db, workspaceId, existing[0]?.metadata, dto),
@@ -292,6 +297,14 @@ export class ComposerSchedulingService {
           and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId)),
         );
     }
+    // "Absent keeps, present sets" (null = none).
+    if (dto.labels !== undefined) {
+      await this.postLabels?.setForPost(
+        workspaceId,
+        dto.draftId,
+        dto.labels ?? [],
+      );
+    }
 
     // Remove any prior delayed job for this draft (e.g. user re-schedules) —
     // both the composer's own and whatever job posts.job_id names (a
@@ -362,7 +375,7 @@ export class ComposerSchedulingService {
     const groupId = readScheduleGroup(stored?.metadata) ?? randomUUID();
     const shared: Record<string, unknown> = {
       ...sharedMetadata(dto),
-      // First-week tag, campaign and labels go to every sibling.
+      // First-week tag and campaign go to every sibling; labels below.
       ...carryFirstWeekMeta(stored?.metadata),
       ...(await resolveOrganise(this.db, workspaceId, stored?.metadata, dto)),
       [SCHEDULE_GROUP_KEY]: groupId,
@@ -442,6 +455,28 @@ export class ComposerSchedulingService {
           createdById: stored?.createdById ?? userId,
           ...row,
         });
+      }
+    }
+
+    // Labels go to every sibling. Sent labels are set on each; without them
+    // the draft keeps its own and the new siblings get a copy of those.
+    if (dto.labels !== undefined) {
+      for (const sibling of siblings) {
+        await this.postLabels?.setForPost(
+          workspaceId,
+          sibling.id,
+          dto.labels ?? [],
+        );
+      }
+    } else if (stored && this.postLabels) {
+      const kept =
+        (await this.postLabels.namesForPosts([dto.draftId])).get(dto.draftId) ??
+        [];
+      if (kept.length > 0) {
+        for (const sibling of siblings) {
+          if (sibling.id === dto.draftId) continue;
+          await this.postLabels.setForPost(workspaceId, sibling.id, kept);
+        }
       }
     }
 

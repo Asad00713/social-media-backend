@@ -9,14 +9,11 @@ import { isViewer, type CallerRole } from '../../guest-rules';
 import { carryFirstWeekMeta } from '../../../first-week/lib/first-week-metadata';
 import { carryApproval } from '../../lib/draft-approval';
 import { carryScheduleGroup } from '../lib/per-channel-schedule';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
-import {
-  LABEL_CATALOGUE_LIMIT,
-  normaliseLabels,
-  readOrganise,
-  resolveOrganise,
-} from '../lib/draft-organise';
+import { and, desc, eq, inArray } from 'drizzle-orm';
+import { readOrganise, resolveOrganise } from '../lib/draft-organise';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
+import { LabelsService } from '../../../labels/labels.service';
+import { PostLabelsService } from '../../../labels/post-labels.service';
 import { posts } from '../../../drizzle/schema/posts.schema';
 import type { SaveDraftDto } from '../dto/save-draft.dto';
 import { snapshotOf } from '../lib/draft-versions';
@@ -41,6 +38,10 @@ export class DraftStoreService {
     // Optional so a unit test can build the store from a db alone; the
     // module always provides it.
     @Optional() private readonly versions?: DraftVersionsService,
+    // Not @Optional: the module must provide them. Optional in the type only
+    // so a unit test that never touches labels can leave them out.
+    private readonly postLabels?: PostLabelsService,
+    private readonly labelCatalogue?: LabelsService,
   ) {}
 
   async upsert(
@@ -66,7 +67,8 @@ export class DraftStoreService {
       linkPreview: dto.base.linkPreview,
       schedule: dto.schedule,
       title: dto.title,
-      // Campaign and labels: absent keeps the stored value (see draft-organise).
+      // Campaign: absent keeps the stored value (see draft-organise). Labels
+      // go to post_labels after the row is written.
       ...(await resolveOrganise(
         this.db,
         workspaceId,
@@ -102,8 +104,9 @@ export class DraftStoreService {
           metadata: metadata as any,
         })
         .returning();
+      await this.setLabels(workspaceId, dto);
       await this.versions?.record(dto.draftId, userId, snapshotOf(dto), opts);
-      return this.toDraft(inserted);
+      return this.toDraft(inserted, await this.labelsOf(dto.draftId));
     }
 
     const [updated] = await this.db
@@ -119,8 +122,31 @@ export class DraftStoreService {
       })
       .where(and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId)))
       .returning();
+    await this.setLabels(workspaceId, dto);
     await this.versions?.record(dto.draftId, userId, snapshotOf(dto), opts);
-    return this.toDraft(updated);
+    return this.toDraft(updated, await this.labelsOf(dto.draftId));
+  }
+
+  /** "Absent keeps, present sets": only a sent `labels` (null = none) writes. */
+  private async setLabels(
+    workspaceId: string,
+    dto: Pick<SaveDraftDto, 'draftId' | 'labels'>,
+  ): Promise<void> {
+    if (dto.labels === undefined) return;
+    await this.postLabels?.setForPost(
+      workspaceId,
+      dto.draftId,
+      dto.labels ?? [],
+    );
+  }
+
+  private async labelsOf(postId: string): Promise<string[]> {
+    return (await this.namesFor([postId])).get(postId) ?? [];
+  }
+
+  /** One batched read for every row a call returns. */
+  private async namesFor(postIds: string[]): Promise<Map<string, string[]>> {
+    return (await this.postLabels?.namesForPosts(postIds)) ?? new Map();
   }
 
   /**
@@ -179,7 +205,7 @@ export class DraftStoreService {
       .limit(1);
     if (rows.length === 0)
       throw new NotFoundException(`Draft ${draftId} not found`);
-    return this.toDraft(rows[0]);
+    return this.toDraft(rows[0], await this.labelsOf(draftId));
   }
 
   async listDrafts(workspaceId: string, limit = 50): Promise<Draft[]> {
@@ -194,37 +220,13 @@ export class DraftStoreService {
       )
       .orderBy(desc(posts.updatedAt))
       .limit(limit);
-    return rows.map((r: any) => this.toDraft(r));
+    const names = await this.namesFor(rows.map((r: any) => r.id as string));
+    return rows.map((r: any) => this.toDraft(r, names.get(r.id) ?? []));
   }
 
-  /**
-   * Every label used on a post in this workspace, A to Z. Derived, not
-   * stored: a label exists while some post carries it, so there is no
-   * catalogue to keep in step and nothing to delete.
-   */
+  /** The workspace's live label names, A to Z, for the composer's picker. */
   async listLabels(workspaceId: string): Promise<string[]> {
-    // The CASE, not a WHERE on jsonb_typeof: Postgres may expand the
-    // lateral call before filtering, and expanding a non-array throws.
-    const result = await this.db.execute(sql`
-      SELECT DISTINCT label
-      FROM ${posts},
-        jsonb_array_elements_text(
-          CASE WHEN jsonb_typeof(${posts.metadata} -> 'labels') = 'array'
-            THEN ${posts.metadata} -> 'labels'
-            ELSE '[]'::jsonb
-          END
-        ) AS label
-      WHERE ${posts.workspaceId} = ${workspaceId}
-      ORDER BY label
-      LIMIT ${LABEL_CATALOGUE_LIMIT}
-    `);
-    const rows = (result?.rows ?? result ?? []) as Array<{ label: unknown }>;
-    // "Launch" and "launch" are one label to a person; the first spelling
-    // in A-to-Z order is the one offered.
-    return normaliseLabels(
-      rows.map((r) => r.label),
-      LABEL_CATALOGUE_LIMIT,
-    );
+    return (await this.labelCatalogue?.catalogueNames(workspaceId)) ?? [];
   }
 
   /** A viewer may only change drafts they created themselves. */
@@ -257,7 +259,7 @@ export class DraftStoreService {
     return { success: true };
   }
 
-  private toDraft(row: any): Draft {
+  private toDraft(row: any, labels: string[]): Draft {
     const metadata = (row.metadata ?? {}) as Record<string, any>;
     const base: BaseContent = {
       text: row.content ?? '',
@@ -280,6 +282,7 @@ export class DraftStoreService {
       channels: (row.targets ?? []) as ChannelTarget[],
       schedule,
       ...readOrganise(metadata),
+      labels,
       createdAt: row.createdAt?.toISOString?.() ?? new Date().toISOString(),
       updatedAt: row.updatedAt?.toISOString?.() ?? new Date().toISOString(),
     };

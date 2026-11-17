@@ -22,6 +22,9 @@ import { BillingModule } from '../billing/billing.module';
 // NOT pull in CampaignsModule, so this does not create a module cycle even
 // though CampaignsModule imports PostsModule.
 import { CampaignStatusSyncListener } from '../campaigns/campaign-status-sync.listener';
+// PostLabelsService, for the Planner's labelIds. LabelsModule imports only
+// Drizzle and WorkspaceRole, so this adds no cycle.
+import { LabelsModule } from '../labels/labels.module';
 
 // Publishers
 import { PublisherFactory } from './publishers/publisher.factory';
@@ -56,6 +59,7 @@ import { PublishFailureNotifier } from './services/publish-failure-notifier.serv
     MediaModule,
     BillingModule,
     EmailModule,
+    LabelsModule,
     // Circular by design: posts push to calendars (CalendarPushSyncService) and
     // calendars write back to posts (CalendarPullSyncService → PostService).
     forwardRef(() => CalendarSyncModule),

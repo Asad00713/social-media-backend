@@ -1,18 +1,21 @@
+import { BadRequestException, ValidationPipe } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import { posts, type PostStatus } from '../../drizzle/schema/posts.schema';
 import { derivePostStatus, type TargetLike } from '../../posts/lib/post-status';
 import { isPartlyPublishedSql } from '../../posts/lib/post-status.sql';
 import { PlannerPostsService } from '../../posts/services/planner-posts.service';
+import { LabelsService } from '../../labels/labels.service';
+import { PostLabelsService } from '../../labels/post-labels.service';
 import {
   describeDb,
   withRollbackDb,
   type DbType,
 } from '../testing/rollback-db';
-import type { ListTab } from '../dto/planner-list.dto';
+import { PlannerListQueryDto, type ListTab } from '../dto/planner-list.dto';
 import { encodeListCursor } from '../lib/list-cursor';
 import { PlannerListService } from './planner-list.service';
 
-const MIGRATION = '0041_post_ready.sql';
+const MIGRATIONS = ['0041_post_ready.sql', '0090_workspace_labels.sql'];
 const HOUR = 3600_000;
 
 async function workspace(client: PoolClient, tag: string) {
@@ -77,8 +80,12 @@ describeDb('PlannerListService.list', () => {
       db: DbType,
     ) => Promise<void>,
   ) =>
-    withRollbackDb([MIGRATION], async (db, client) => {
-      const svc = new PlannerListService(db, new PlannerPostsService(db));
+    withRollbackDb(MIGRATIONS, async (db, client) => {
+      const postLabels = new PostLabelsService(db, new LabelsService(db));
+      const svc = new PlannerListService(
+        db,
+        new PlannerPostsService(db, postLabels),
+      );
       await fn(svc, client, new Date(), db);
     });
 
@@ -484,5 +491,110 @@ describeDb('PlannerListService.list', () => {
       await expect(
         svc.list(w.workspaceId, { tab: 'all', limit: 2, cursor: '!!' }),
       ).rejects.toThrow('Invalid cursor');
+    }));
+
+  it('labels=<A> returns only posts carrying A, and total and counts follow the filter', () =>
+    run(async (svc, client, now, db) => {
+      const t = now.getTime();
+      const w = await workspace(client, 'a');
+      const postLabels = new PostLabelsService(db, new LabelsService(db));
+      const upA = await post(client, w, {
+        status: 'scheduled',
+        scheduledAt: iso(t + HOUR),
+      });
+      const upB = await post(client, w, {
+        status: 'scheduled',
+        scheduledAt: iso(t + 2 * HOUR),
+      });
+      const failedA = await post(client, w, {
+        status: 'failed',
+        scheduledAt: iso(t - HOUR),
+        targets: [{ channelId: '1', status: 'failed' }],
+      });
+      const failedNone = await post(client, w, {
+        status: 'failed',
+        scheduledAt: iso(t - 2 * HOUR),
+        targets: [{ channelId: '1', status: 'failed' }],
+      });
+      await postLabels.setForPost(w.workspaceId, upA, ['A', 'Shared']);
+      await postLabels.setForPost(w.workspaceId, upB, ['B', 'Shared']);
+      await postLabels.setForPost(w.workspaceId, failedA, ['a']);
+      const byPost = await postLabels.idsForPosts([upA, upB]);
+      const [a, b] = [
+        byPost.get(upA)!.find((id) => !byPost.get(upB)!.includes(id))!,
+        byPost.get(upB)!.find((id) => !byPost.get(upA)!.includes(id))!,
+      ];
+
+      const all = await svc.list(
+        w.workspaceId,
+        { tab: 'all', limit: 30, labels: a },
+        now,
+      );
+      expect(new Set(ids(all))).toEqual(new Set([upA, failedA]));
+      expect(all.total).toBe(2);
+      expect(all.counts).toEqual({ upcoming: 1, failed: 1 });
+      // The Planner calendar filters client-side on these.
+      expect(all.rows.find((r) => r.id === upA)?.labelIds).toEqual(
+        byPost.get(upA),
+      );
+
+      // Several ids: a post carrying any of them.
+      const either = await svc.list(
+        w.workspaceId,
+        { tab: 'upcoming', limit: 30, labels: `${a},${b}` },
+        now,
+      );
+      expect(new Set(ids(either))).toEqual(new Set([upA, upB]));
+      expect(either.total).toBe(2);
+
+      // A soft-deleted label filters to nothing.
+      await new LabelsService(db).remove(w.workspaceId, b);
+      const gone = await svc.list(
+        w.workspaceId,
+        { tab: 'all', limit: 30, labels: b },
+        now,
+      );
+      expect(gone).toMatchObject({
+        rows: [],
+        total: 0,
+        counts: { upcoming: 0, failed: 0 },
+      });
+
+      // No filter: everything, as before.
+      const plain = await svc.list(w.workspaceId, { tab: 'all', limit: 30 });
+      expect(plain.total).toBe(4);
+      expect(ids(plain)).toContain(failedNone);
+      expect(plain.rows.find((r) => r.id === failedNone)?.labelIds).toEqual([]);
+    }));
+
+  it('a malformed label id is a 400, from the query DTO and from the service', () =>
+    run(async (svc, client) => {
+      const w = await workspace(client, 'a');
+      const pipe = new ValidationPipe({ whitelist: true, transform: true });
+      const good = '11111111-1111-4111-8111-111111111111';
+      for (const labels of ['nope', `${good},nope`, `${good},`, '']) {
+        await expect(
+          pipe.transform(
+            { tab: 'all', labels },
+            { type: 'query', metatype: PlannerListQueryDto },
+          ),
+        ).rejects.toBeInstanceOf(BadRequestException);
+        await expect(
+          svc.list(w.workspaceId, { tab: 'all', limit: 2, labels }),
+        ).rejects.toBeInstanceOf(BadRequestException);
+      }
+      const tooMany = Array.from({ length: 21 }, () => good).join(',');
+      await expect(
+        pipe.transform(
+          { tab: 'all', labels: tooMany },
+          { type: 'query', metatype: PlannerListQueryDto },
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      await expect(
+        pipe.transform(
+          { tab: 'all', labels: good },
+          { type: 'query', metatype: PlannerListQueryDto },
+        ),
+      ).resolves.toMatchObject({ labels: good });
     }));
 });

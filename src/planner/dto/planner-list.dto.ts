@@ -17,6 +17,15 @@ export type ListTab = (typeof LIST_TABS)[number];
 
 export const DEFAULT_LIST_LIMIT = 30;
 
+/** Most label ids one list filter may name. */
+export const MAX_LIST_LABELS = 20;
+const UUID =
+  '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}';
+/** 1..20 comma-separated label UUIDs, nothing else. */
+export const LIST_LABELS_PATTERN = new RegExp(
+  `^${UUID}(,${UUID}){0,${MAX_LIST_LABELS - 1}}$`,
+);
+
 export class PlannerListQueryDto {
   @IsIn(LIST_TABS)
   tab: ListTab;
@@ -33,6 +42,14 @@ export class PlannerListQueryDto {
   @MaxLength(512)
   @Matches(/^[A-Za-z0-9_-]+$/, { message: 'Invalid cursor' })
   cursor?: string;
+
+  /** Comma-separated label ids: a post carrying any of them (live labels). */
+  @IsOptional()
+  @IsString()
+  @Matches(LIST_LABELS_PATTERN, {
+    message: `labels must be 1 to ${MAX_LIST_LABELS} comma-separated label ids`,
+  })
+  labels?: string;
 }
 
 export interface PlannerListDto {

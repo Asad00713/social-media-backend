@@ -12,6 +12,7 @@ import { PublisherFactory } from '../../publishers/publisher.factory';
 import { AnalyticsEventEmitter } from '../../../realtime/analytics-event-emitter.service';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { PostReminderService } from '../../services/post-reminder.service';
+import { PostLabelsService } from '../../../labels/post-labels.service';
 import type { Draft } from '../types/draft.types';
 
 /**
@@ -105,6 +106,7 @@ describe('PublishOrchestratorService - publish warnings', () => {
         },
         { provide: DRIZZLE, useValue: db },
         { provide: PostReminderService, useValue: { send: jest.fn() } },
+        { provide: PostLabelsService, useValue: { setForPost: jest.fn() } },
       ],
     }).compile();
     svc = mod.get(PublishOrchestratorService);

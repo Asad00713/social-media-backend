@@ -60,71 +60,124 @@ const stored = (meta: any) => [
   { id: 'd1', status: 'draft', createdById: 'u1', metadata: meta },
 ];
 
+/** PostLabelsService double: records writes, answers reads from `names`. */
+function fakeLabels(names: Record<string, string[]> = {}) {
+  return {
+    setForPost: jest.fn(async () => undefined),
+    namesForPosts: jest.fn(
+      async (ids: string[]) =>
+        new Map(ids.filter((id) => names[id]).map((id) => [id, names[id]])),
+    ),
+  };
+}
+
 describe('Save draft files the post', () => {
-  it('writes the campaign and labels it is sent', async () => {
+  it('writes the campaign to metadata and the labels through post_labels', async () => {
     const { db, writes } = fakeDb([]);
-    const draft = await new DraftStoreService(db).upsert(WS, 'u1', {
+    const labels = fakeLabels({ d1: ['Drinks', 'Launch'] });
+    const draft = await new DraftStoreService(
+      db,
+      undefined,
+      labels as any,
+    ).upsert(WS, 'u1', {
       draftId: 'd1',
       base,
       campaignId: C2,
       labels: [' Launch ', 'launch', 'Drinks'],
     } as any);
-    expect(writes.inserted.metadata).toMatchObject({
-      campaignId: C2,
-      labels: ['Launch', 'Drinks'],
-    });
-    // …and hands them back, so the composer reopens with them.
+    expect(writes.inserted.metadata).toMatchObject({ campaignId: C2 });
+    expect(writes.inserted.metadata).not.toHaveProperty('labels');
+    expect(labels.setForPost).toHaveBeenCalledTimes(1);
+    expect(labels.setForPost).toHaveBeenCalledWith(WS, 'd1', [
+      ' Launch ',
+      'launch',
+      'Drinks',
+    ]);
+    // ...and hands back what is stored, so the composer reopens with them.
     expect(draft.campaignId).toBe(C2);
-    expect(draft.labels).toEqual(['Launch', 'Drinks']);
+    expect(draft.labels).toEqual(['Drinks', 'Launch']);
   });
 
-  it('keeps them when a save does not send the keys', async () => {
+  it('keeps the campaign and does not touch labels when a save does not send the keys', async () => {
     const { db, writes } = fakeDb(stored({ campaignId: C1, labels: ['A'] }));
-    await new DraftStoreService(db).upsert(WS, 'u1', {
-      draftId: 'd1',
-      base,
-    } as any);
-    expect(writes.updated.metadata).toMatchObject({
-      campaignId: C1,
-      labels: ['A'],
-    });
-  });
-
-  it('clears them on null and an empty list', async () => {
-    const { db, writes } = fakeDb(stored({ campaignId: C1, labels: ['A'] }));
-    await new DraftStoreService(db).upsert(WS, 'u1', {
-      draftId: 'd1',
-      base,
-      campaignId: null,
-      labels: [],
-    } as any);
-    expect(writes.updated.metadata).not.toHaveProperty('campaignId');
+    const labels = fakeLabels({ d1: ['A'] });
+    const draft = await new DraftStoreService(
+      db,
+      undefined,
+      labels as any,
+    ).upsert(WS, 'u1', { draftId: 'd1', base } as any);
+    expect(writes.updated.metadata).toMatchObject({ campaignId: C1 });
     expect(writes.updated.metadata).not.toHaveProperty('labels');
+    expect(labels.setForPost).not.toHaveBeenCalled();
+    expect(draft.labels).toEqual(['A']);
+  });
+
+  it('clears the campaign on null and the labels on an empty list (or null)', async () => {
+    for (const cleared of [[], null]) {
+      const { db, writes } = fakeDb(stored({ campaignId: C1, labels: ['A'] }));
+      const labels = fakeLabels();
+      await new DraftStoreService(db, undefined, labels as any).upsert(
+        WS,
+        'u1',
+        { draftId: 'd1', base, campaignId: null, labels: cleared } as any,
+      );
+      expect(writes.updated.metadata).not.toHaveProperty('campaignId');
+      expect(labels.setForPost).toHaveBeenCalledWith(WS, 'd1', []);
+    }
   });
 
   it('refuses a campaign from another workspace and writes nothing', async () => {
     const { db, writes } = fakeDb([], false);
+    const labels = fakeLabels();
     await expect(
-      new DraftStoreService(db).upsert(WS, 'u1', {
+      new DraftStoreService(db, undefined, labels as any).upsert(WS, 'u1', {
         draftId: 'd1',
         base,
         campaignId: C2,
+        labels: ['A'],
       } as any),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(writes.inserted).toBeUndefined();
+    expect(labels.setForPost).not.toHaveBeenCalled();
+  });
+
+  it('reads labels in one batch for a list of drafts', async () => {
+    const rows = [
+      { id: 'd1', workspaceId: WS, metadata: {} },
+      { id: 'd2', workspaceId: WS, metadata: { labels: ['Stale'] } },
+    ];
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: () => ({ orderBy: () => ({ limit: async () => rows }) }),
+        }),
+      }),
+    };
+    const labels = fakeLabels({ d2: ['Live'] });
+    const list = await new DraftStoreService(
+      db,
+      undefined,
+      labels as any,
+    ).listDrafts(WS);
+    expect(labels.namesForPosts).toHaveBeenCalledTimes(1);
+    expect(labels.namesForPosts).toHaveBeenCalledWith(['d1', 'd2']);
+    expect(list.map((d) => d.labels)).toEqual([[], ['Live']]);
   });
 });
 
 describe('Schedule files the post', () => {
-  function make(existing: any[], found = true) {
+  function make(existing: any[], found = true, names = {}) {
     const { db, writes } = fakeDb(existing, found);
+    const labels = fakeLabels(names);
     const svc = new ComposerSchedulingService(
       db as any,
       { getJob: jest.fn(async () => null), add: jest.fn() } as any,
       { syncPost: jest.fn(async () => undefined) } as any,
       { enforceQueueLimit: jest.fn(async () => undefined) } as any,
+      undefined,
+      labels as any,
     );
-    return { svc, writes };
+    return { svc, writes, labels };
   }
   const dto = (over: any = {}) => ({
     draftId: 'd1',
@@ -141,13 +194,58 @@ describe('Schedule files the post', () => {
     ...over,
   });
 
-  it('writes the campaign and labels', async () => {
-    const { svc, writes } = make([]);
+  it('writes the campaign and sets the labels', async () => {
+    const { svc, writes, labels } = make([]);
     await svc.schedule(WS, 'u1', dto({ campaignId: C2, labels: ['Launch'] }));
-    expect(writes.inserted.metadata).toMatchObject({
-      campaignId: C2,
-      labels: ['Launch'],
+    expect(writes.inserted.metadata).toMatchObject({ campaignId: C2 });
+    expect(writes.inserted.metadata).not.toHaveProperty('labels');
+    expect(labels.setForPost).toHaveBeenCalledTimes(1);
+    expect(labels.setForPost).toHaveBeenCalledWith(WS, 'd1', ['Launch']);
+  });
+
+  it('does not touch labels when the schedule does not send them', async () => {
+    const { svc, labels } = make([]);
+    await svc.schedule(WS, 'u1', dto());
+    expect(labels.setForPost).not.toHaveBeenCalled();
+  });
+
+  const at = (h: number) => new Date(Date.now() + h * 3_600_000).toISOString();
+  const split = (over: any = {}) =>
+    dto({
+      scheduleMode: 'per_channel',
+      channels: [
+        { channelId: '7', platform: 'facebook', scheduleAt: at(1) },
+        { channelId: '8', platform: 'twitter', scheduleAt: at(2) },
+        { channelId: '9', platform: 'linkedin', scheduleAt: at(3) },
+      ],
+      ...over,
     });
+
+  it('a split schedule sets the labels on every sibling, once each', async () => {
+    const { svc, labels } = make([]);
+    const result = await svc.schedule(WS, 'u1', split({ labels: ['Launch'] }));
+    const ids = result.siblings!.map((s) => s.postId);
+    expect(ids).toHaveLength(3);
+    expect(labels.setForPost).toHaveBeenCalledTimes(3);
+    for (const id of ids) {
+      expect(labels.setForPost).toHaveBeenCalledWith(WS, id, ['Launch']);
+    }
+  });
+
+  it("a split without labels copies the draft's stored labels to the new siblings only", async () => {
+    const { svc, labels } = make(stored({}), true, { d1: ['Kept'] });
+    const result = await svc.schedule(WS, 'u1', split());
+    const newIds = result.siblings!.map((s) => s.postId).slice(1);
+    expect(labels.namesForPosts).toHaveBeenCalledWith(['d1']);
+    expect(labels.setForPost).toHaveBeenCalledTimes(2);
+    for (const id of newIds) {
+      expect(labels.setForPost).toHaveBeenCalledWith(WS, id, ['Kept']);
+    }
+    expect(labels.setForPost).not.toHaveBeenCalledWith(
+      WS,
+      'd1',
+      expect.anything(),
+    );
   });
 
   it('keeps a materialised post on its campaign slot when rescheduled', async () => {
@@ -177,6 +275,7 @@ describe('Schedule files the post', () => {
 describe('Publish files the post', () => {
   function make(existing: any[], found = true) {
     const { db, writes } = fakeDb(existing, found);
+    const labels = fakeLabels();
     const publisher = {
       publish: jest.fn(async () => ({
         success: true,
@@ -198,8 +297,9 @@ describe('Publish files the post', () => {
       } as any,
       db as any,
       { send: jest.fn() } as any, // PostReminderService
+      labels as any,
     );
-    return { svc, writes };
+    return { svc, writes, labels };
   }
   const input = (over: any = {}) => ({
     draftId: 'd1',
@@ -215,26 +315,24 @@ describe('Publish files the post', () => {
     ...over,
   });
 
-  it('writes the campaign and labels on insert and on conflict', async () => {
-    const { svc, writes } = make([]);
+  it('writes the campaign on insert and on conflict, and sets the labels', async () => {
+    const { svc, writes, labels } = make([]);
     await svc.publishInline(WS, 'u1', input({ campaignId: C2, labels: ['A'] }));
-    expect(writes.inserted.metadata).toMatchObject({
-      campaignId: C2,
-      labels: ['A'],
-    });
-    expect(writes.conflictSet.metadata).toMatchObject({
-      campaignId: C2,
-      labels: ['A'],
-    });
+    expect(writes.inserted.metadata).toMatchObject({ campaignId: C2 });
+    expect(writes.conflictSet.metadata).toMatchObject({ campaignId: C2 });
+    expect(writes.inserted.metadata).not.toHaveProperty('labels');
+    expect(writes.conflictSet.metadata).not.toHaveProperty('labels');
+    expect(labels.setForPost).toHaveBeenCalledTimes(1);
+    expect(labels.setForPost).toHaveBeenCalledWith(WS, 'd1', ['A']);
   });
 
-  it('keeps the stored filing when the publish does not send it', async () => {
-    const { svc, writes } = make(stored({ campaignId: C1, labels: ['B'] }));
+  it('keeps the stored campaign and labels when the publish does not send them', async () => {
+    const { svc, writes, labels } = make(
+      stored({ campaignId: C1, labels: ['B'] }),
+    );
     await svc.publishInline(WS, 'u1', input());
-    expect(writes.conflictSet.metadata).toMatchObject({
-      campaignId: C1,
-      labels: ['B'],
-    });
+    expect(writes.conflictSet.metadata).toMatchObject({ campaignId: C1 });
+    expect(labels.setForPost).not.toHaveBeenCalled();
   });
 
   it('refuses a campaign from another workspace before publishing', async () => {

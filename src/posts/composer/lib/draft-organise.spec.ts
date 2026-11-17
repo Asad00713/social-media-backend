@@ -38,21 +38,26 @@ describe('normaliseLabels', () => {
 describe('organiseMeta — absent keeps, present sets', () => {
   const stored = { campaignId: C1, labels: ['Launch'], title: 'x' };
 
-  it('keeps the stored campaign and labels when the keys are absent', () => {
-    expect(organiseMeta(stored, {})).toEqual({
-      campaignId: C1,
-      labels: ['Launch'],
-    });
+  it('keeps the stored campaign when the key is absent', () => {
+    expect(organiseMeta(stored, {})).toEqual({ campaignId: C1 });
   });
 
-  it('null clears the campaign; an empty list clears the labels', () => {
+  it('null clears the campaign', () => {
     expect(organiseMeta(stored, { campaignId: null, labels: [] })).toEqual({});
   });
 
-  it('a string sets the campaign and a list replaces the labels', () => {
+  it('a string sets the campaign', () => {
     expect(
       organiseMeta(stored, { campaignId: C2, labels: ['Drinks', 'drinks'] }),
-    ).toEqual({ campaignId: C2, labels: ['Drinks'] });
+    ).toEqual({ campaignId: C2 });
+  });
+
+  it('never writes labels: they live in post_labels', () => {
+    expect(organiseMeta(stored, { labels: ['x'] })).not.toHaveProperty(
+      'labels',
+    );
+    expect(organiseMeta({ labels: ['Old'] }, {})).not.toHaveProperty('labels');
+    expect(organiseMeta(undefined, { labels: ['x'] })).toEqual({});
   });
 
   it('carries the slot of a materialised post while its campaign stays', () => {
@@ -72,23 +77,21 @@ describe('organiseMeta — absent keeps, present sets', () => {
     expect(organiseMeta(materialised, { campaignId: null })).toEqual({});
   });
 
-  it('writes nothing for a post that never had either', () => {
+  it('writes nothing for a post that never had a campaign', () => {
     expect(organiseMeta(undefined, {})).toEqual({});
     expect(organiseMeta(null, { labels: null })).toEqual({});
   });
 });
 
 describe('readOrganise', () => {
-  it('reads the stored filing, defaulting to none', () => {
+  it('reads the stored campaign only, defaulting to none', () => {
     expect(readOrganise({ campaignId: C1, labels: ['A'] })).toEqual({
       campaignId: C1,
-      labels: ['A'],
     });
     expect(readOrganise({ campaignId: 7, labels: 'A' })).toEqual({
       campaignId: null,
-      labels: [],
     });
-    expect(readOrganise(null)).toEqual({ campaignId: null, labels: [] });
+    expect(readOrganise(null)).toEqual({ campaignId: null });
   });
 });
 
