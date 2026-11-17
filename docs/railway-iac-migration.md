@@ -1,21 +1,50 @@
 # Railway: migrating off `railway.json` before 2026-12-01
 
-**This is an owner task.** It needs the Railway CLI signed in to the project,
-and Infrastructure as Code is applied from a terminal, not on deploy. Nothing
-in this repository can do it.
+## ✅ The urgent part is done (2026-11-17)
 
-## Why it cannot wait
+The three deploy settings are **set, applied and verified** — in the
+dashboard, which turned out not to need the migration at all.
 
-Railway deprecated Config as Code. **It stops reading `railway.json` on
-2026-12-01.** Our file only sets the builder today, so nothing breaks loudly —
-but the migration is also the only way to set the three deploy settings the
-graceful-shutdown work depends on. Until they are set:
+| Setting | Was | Now |
+|---|---|---|
+| Draining | **0 seconds** | **60 seconds** |
+| Healthcheck Path | *(empty)* | `/health/live` |
+| Restart Policy | On Failure | On Failure, 10 retries |
 
-- **`drainingSeconds` is unset** — the shutdown sequence starts on SIGTERM and
-  is killed partway through, so a publish in flight can still be cut off. The
-  code added in BE #233 runs, but may not finish.
-- **No healthcheck** — a wedged instance keeps receiving traffic.
-- **No restart policy** — nothing brings a crashed instance back.
+**Draining was 0**, which means SIGTERM was followed immediately by SIGKILL
+and every hook in BE #233 was dead on production: workers were never drained,
+the pool was never closed, and a publish in flight could be cut mid-loop —
+the exact stranded-post case the sweeper in BE #234 exists to clean up after.
+
+Two things that cost time finding:
+
+- **Draining and Overlap are hidden until the "Teardown" toggle is enabled.**
+  With it off there is nothing on the page to suggest they exist.
+- **The deploy that applies a draining change does not benefit from it.** The
+  instance being killed started under the old value, so the gain appears from
+  the next deploy onward.
+
+Verified after the deploy: `/health/live` → 200, `/health/ready` → 200
+`{"database":"up","redis":"up"}`.
+
+There is also a `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` service variable that
+sets the same thing, should the UI route ever be unavailable.
+
+## What is left, and why it is not urgent
+
+Only the file migration. Three distinct things are easy to conflate:
+
+| | | After 2026-12-01 |
+|---|---|---|
+| Dashboard UI | clicking in Settings | ✅ unaffected, always works |
+| `railway.json` (Config as Code) | the old file | ❌ no longer read |
+| `.railway/railway.ts` (IaC) | the new file | ✅ the replacement |
+
+The deadline is **not** "configuration must move to the dashboard" — the
+dashboard is unaffected. It is that the old *file* stops being read. Ours
+only sets `builder` and `dockerfilePath`, and the dashboard already shows
+Dockerfile selected, so the likely effect of doing nothing is nothing. The
+file is dead weight either way.
 
 ## The steps
 
@@ -63,11 +92,11 @@ On the backend service:
 | graceful shutdown window | **≈ 60** | Long enough for a publish in flight to finish. |
 | restart policy | `ON_FAILURE`, bounded retries | Brings back a crashed instance without looping forever on a broken deploy. |
 
-⚠ **The last two field names are not in Railway's IaC docs.** The docs say to
-read them off a service that already has them: set them once in the dashboard
-(service → Settings → Deploy), then run `railway config pull --force` and copy
-how they are rendered. Do not guess the names — a key Railway does not
-recognise is silently ignored, and the setting looks applied when it is not.
+⚠ **The last two field names are not in Railway's IaC docs.** Do not guess
+them — a key Railway does not recognise is silently ignored, and the setting
+looks applied when it is not. They are now set on the service, so
+`railway config pull --force` renders them with their real names: generate the
+file, do not write it.
 
 ## Verifying
 
