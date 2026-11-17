@@ -3,6 +3,7 @@ import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { DbType } from '../drizzle/db';
 import { DRIZZLE } from '../drizzle/drizzle.module';
 import { notificationPreferences } from '../drizzle/schema/notification-preferences.schema';
+import { users } from '../drizzle/schema/users.schema';
 import type { PreferenceChannel } from './notification-events';
 
 export interface PreferenceOverride {
@@ -71,5 +72,23 @@ export class NotificationPreferencesRepository {
         targetWhere: sql`${p.workspaceId} is not null`,
         set,
       });
+  }
+
+  /** When the user's notification pause ends; null if never set or cleared. */
+  async pausedUntil(userId: string): Promise<Date | null> {
+    const [row] = await this.db
+      .select({ until: users.notificationsPausedUntil })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    return row?.until ?? null;
+  }
+
+  /** Sets the pause end, or clears it with null. */
+  async setPausedUntil(userId: string, until: Date | null): Promise<void> {
+    await this.db
+      .update(users)
+      .set({ notificationsPausedUntil: until })
+      .where(eq(users.id, userId));
   }
 }

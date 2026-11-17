@@ -7,7 +7,12 @@ import {
 } from '../planner/testing/rollback-db';
 import { NotificationPreferencesRepository } from './notification-preferences.repository';
 
-const MIGRATIONS = ['0068_notification_preferences.sql'];
+// 0043 is 0088's own prerequisite: 0088 backfills from planner_preferences.
+const MIGRATIONS = [
+  '0043_planner_preferences.sql',
+  '0068_notification_preferences.sql',
+  '0088_user_account_settings.sql',
+];
 
 function run<T>(
   fn: (
@@ -161,6 +166,62 @@ describeDb('NotificationPreferencesRepository (database)', () => {
 
       expect(await count(client, 'user_id = $1', [memberId])).toBe(0);
       expect(await count(client)).toBe(1);
+    });
+  });
+
+  describe('pause (users.notifications_paused_until)', () => {
+    it('is null for a user who never paused', async () => {
+      await run(async (repo, client) => {
+        const { ownerId } = await seedWorkspace(client);
+        expect(await repo.pausedUntil(ownerId)).toBeNull();
+      });
+    });
+
+    it('is null for an unknown user', async () => {
+      await run(async (repo) => {
+        expect(
+          await repo.pausedUntil('00000000-0000-4000-8000-000000000000'),
+        ).toBeNull();
+      });
+    });
+
+    it('stores an instant to the millisecond and reads it back as a Date', async () => {
+      await run(async (repo, client) => {
+        const { ownerId } = await seedWorkspace(client);
+        const until = new Date('2026-12-01T10:30:15.123Z');
+        await repo.setPausedUntil(ownerId, until);
+        const read = await repo.pausedUntil(ownerId);
+        expect(read).toBeInstanceOf(Date);
+        expect(read?.toISOString()).toBe(until.toISOString());
+      });
+    });
+
+    it('null clears it, and a second set overwrites the first', async () => {
+      await run(async (repo, client) => {
+        const { ownerId } = await seedWorkspace(client);
+        await repo.setPausedUntil(ownerId, new Date('2026-12-01T00:00:00Z'));
+        await repo.setPausedUntil(ownerId, new Date('2026-12-05T00:00:00Z'));
+        expect((await repo.pausedUntil(ownerId))?.toISOString()).toBe(
+          '2026-12-05T00:00:00.000Z',
+        );
+        await repo.setPausedUntil(ownerId, null);
+        expect(await repo.pausedUntil(ownerId)).toBeNull();
+        const raw = await client.query<{ n: string }>(
+          'SELECT count(*) AS n FROM users WHERE id = $1 AND notifications_paused_until IS NULL',
+          [ownerId],
+        );
+        expect(Number(raw.rows[0].n)).toBe(1);
+      });
+    });
+
+    it('only touches the one user', async () => {
+      await run(async (repo, client) => {
+        const { workspaceId, ownerId } = await seedWorkspace(client);
+        const memberId = await seedMember(client, workspaceId, 'MEMBER');
+        await repo.setPausedUntil(ownerId, new Date('2026-12-01T00:00:00Z'));
+        expect(await repo.pausedUntil(memberId)).toBeNull();
+        expect(await repo.pausedUntil(ownerId)).not.toBeNull();
+      });
     });
   });
 });

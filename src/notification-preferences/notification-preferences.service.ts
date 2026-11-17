@@ -2,6 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { WorkspaceRoleService } from '../workspace-members/workspace-role.service';
 import {
   ACCOUNT_STORED_EVENTS,
+  PAUSE_EXEMPT_EVENTS,
   NOTIFICATION_EVENT_KEYS,
   NOTIFICATION_EVENTS,
   storageWorkspaceId,
@@ -53,7 +54,10 @@ export class NotificationPreferencesService {
   /**
    * Whether `userId` should be notified of `event` on `channel` right now. Called
    * at send time, so an unsubscribe or a removal after enqueue is honoured.
-   * Order: unavailable channel, locked channel, membership, override, default.
+   * Order: unavailable channel, locked channel, pause, membership, override,
+   * default. A pause (users.notifications_paused_until, still in the future)
+   * mutes every event except PAUSE_EXEMPT_EVENTS, on both channels. Slack
+   * routes are a different sender and are not touched.
    * `workspaceId` null means an account-level event: no membership check.
    * A security event reads its account-level row whatever `workspaceId` is.
    */
@@ -66,6 +70,10 @@ export class NotificationPreferencesService {
     const rule = NOTIFICATION_EVENTS[event][channel];
     if (!rule) return false;
     if (rule.locked) return true;
+    if (!PAUSE_EXEMPT_EVENTS.has(event)) {
+      const until = await this.repo.pausedUntil(userId);
+      if (until && until > new Date()) return false;
+    }
     if (workspaceId !== null) {
       const role = await this.roles.getRole(workspaceId, userId);
       if (!role) return false;
