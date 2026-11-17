@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  NotFoundException,
   CanActivate,
   ExecutionContext,
   ForbiddenException,
@@ -93,12 +94,27 @@ export class WorkspaceSuspendedGuard implements CanActivate {
         isActive: workspace.isActive,
         reason: workspace.suspendedReason,
         ownerId: workspace.ownerId,
+        deletedAt: workspace.deletedAt,
       })
       .from(workspace)
-      .where(and(eq(workspace.id, workspaceId), liveWorkspaces()))
+      .where(eq(workspace.id, workspaceId))
       .limit(1);
 
     const ws = wsRows[0];
+
+    // A soft-deleted workspace is gone as far as anyone outside the purge job
+    // is concerned (migration 0088). Filtering it out of this query instead
+    // would be worse than useless: no row means "nothing to enforce", so the
+    // guard would wave the request through and every membership-based access
+    // check downstream — which reads workspaceInvitation, not workspace —
+    // would admit a member to a workspace its owner had deleted.
+    //
+    // Answering 404 here closes that in one place, for every workspace-scoped
+    // route, rather than asking ten callers to remember.
+    if (ws?.deletedAt) {
+      throw new NotFoundException('Workspace not found');
+    }
+
     if (ws && ws.isActive === false) {
       throw new ForbiddenException({
         statusCode: 403,

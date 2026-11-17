@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ExecutionContext,
   ForbiddenException,
+  NotFoundException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { WorkspaceSuspendedGuard } from './workspace-suspended.guard';
@@ -201,5 +202,74 @@ describe('WorkspaceSuspendedGuard', () => {
     ).rejects.toBeInstanceOf(ForbiddenException);
     // Only one query (the workspace lookup) should have run.
     expect(select).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Soft delete (migration 0088).
+ *
+ * This guard is the single place a deleted workspace is refused. The
+ * membership checks scattered across the app read `workspaceInvitation`, not
+ * `workspace`, so they cannot see that a workspace was deleted — an accepted
+ * member would otherwise keep full access to a workspace its owner removed,
+ * while the owner themselves was correctly shut out. A security review caught
+ * exactly that asymmetry.
+ */
+describe('WorkspaceSuspendedGuard and soft-deleted workspaces', () => {
+  it('answers 404 for a soft-deleted workspace', async () => {
+    const { db } = mockDb([
+      {
+        isActive: true,
+        reason: null,
+        ownerId: 'owner-1',
+        deletedAt: new Date('2026-11-01T00:00:00.000Z'),
+      },
+    ]);
+    const guard = new WorkspaceSuspendedGuard(db, mockReflector(false));
+
+    await expect(
+      guard.canActivate(mockContext({ workspaceId: WS_1 })),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  /**
+   * The reason the guard reads `deleted_at` instead of filtering on it. A
+   * filtered query returns no row for a deleted workspace, and "no row" is
+   * this guard's signal that there is nothing to enforce — so it would wave
+   * the request straight through, which is the opposite of what is wanted.
+   */
+  it('does not treat a deleted workspace as "nothing to enforce"', async () => {
+    const { db, where } = mockDb([
+      { isActive: true, reason: null, ownerId: 'o', deletedAt: new Date() },
+    ]);
+    const guard = new WorkspaceSuspendedGuard(db, mockReflector(false));
+
+    await expect(
+      guard.canActivate(mockContext({ workspaceId: WS_1 })),
+    ).rejects.toBeInstanceOf(NotFoundException);
+
+    // One query, and it must not have excluded the deleted row.
+    expect(where).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets a live workspace through as before', async () => {
+    const { db } = mockDb(
+      [{ isActive: true, reason: null, ownerId: 'owner-1', deletedAt: null }],
+      [],
+    );
+    const guard = new WorkspaceSuspendedGuard(db, mockReflector(false));
+
+    await expect(
+      guard.canActivate(mockContext({ workspaceId: WS_2 })),
+    ).resolves.toBe(true);
+  });
+
+  it('still allows a workspace that does not exist at all', async () => {
+    const { db } = mockDb([], []);
+    const guard = new WorkspaceSuspendedGuard(db, mockReflector(false));
+
+    await expect(
+      guard.canActivate(mockContext({ workspaceId: WS_1 })),
+    ).resolves.toBe(true);
   });
 });
