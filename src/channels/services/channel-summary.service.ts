@@ -298,6 +298,7 @@ export class ChannelSummaryService {
       FROM posts p
       CROSS JOIN LATERAL jsonb_array_elements(p.targets) e
       WHERE p.workspace_id = ${workspaceId}
+        AND p.deleted_at IS NULL
         AND p.status IN ('scheduled', 'published', 'partially_published')
       GROUP BY 1
     `);
@@ -330,6 +331,7 @@ export class ChannelSummaryService {
       FROM posts p
       CROSS JOIN LATERAL jsonb_array_elements(p.targets) e
       WHERE p.workspace_id = ${workspaceId}
+        AND p.deleted_at IS NULL
         AND p.status = 'scheduled'
         AND p.scheduled_at > ${now}
         AND COALESCE(e->>'status', '') NOT IN ('published', 'failed')

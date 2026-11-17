@@ -45,6 +45,7 @@ import { ChannelPauseService } from './channel-pause.service';
 import { ChannelPostsCleanupService } from './channel-posts-cleanup.service';
 import { GOOGLE_PLATFORMS, GoogleOauthRevokeService } from './google-oauth-revoke.service';
 import { TelegramService } from './telegram.service';
+import { livePosts } from '../../posts/soft-delete/soft-delete';
 
 type ChannelRow = typeof socialMediaChannels.$inferSelect;
 
@@ -275,13 +276,11 @@ export class ChannelDisconnectService {
       const rows = await tx
         .select({ id: posts.id, targets: posts.targets })
         .from(posts)
-        .where(
-          and(
+        .where(and(and(
             eq(posts.workspaceId, workspaceId),
             eq(posts.status, 'scheduled'),
             sql`EXISTS (SELECT 1 FROM jsonb_array_elements(${posts.targets}) AS t WHERE t->>'channelId' = ${id})`,
-          ),
-        )
+          ), livePosts()))
         .for('update');
       for (const row of rows) {
         let dirty = false;
@@ -665,13 +664,11 @@ export class ChannelDisconnectService {
       const rows = await tx
         .select({ id: posts.id, targets: posts.targets })
         .from(posts)
-        .where(
-          and(
+        .where(and(and(
             eq(posts.workspaceId, workspaceId),
             eq(posts.status, 'scheduled'),
             sql`EXISTS (SELECT 1 FROM jsonb_array_elements(${posts.targets}) AS t WHERE t->>'channelId' = ${id} AND t->>'heldAt' IS NOT NULL)`,
-          ),
-        )
+          ), livePosts()))
         .for('update');
       for (const row of rows) {
         const targets = (row.targets ?? []).map((t: PostTarget) =>

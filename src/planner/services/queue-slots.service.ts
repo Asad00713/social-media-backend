@@ -13,6 +13,7 @@ import {
 } from '../lib/queue-slots';
 import { loadWorkspaceTimezone } from '../lib/workspace-time';
 import { PlannerPreferencesService } from './planner-preferences.service';
+import { livePosts } from '../../posts/soft-delete/soft-delete';
 
 const DAY_MS = 86_400_000;
 
@@ -85,8 +86,7 @@ export class QueueSlotsService {
         targets: posts.targets,
       })
       .from(posts)
-      .where(
-        and(
+      .where(and(and(
           eq(posts.workspaceId, workspaceId),
           eq(posts.status, 'scheduled'),
           gte(
@@ -97,8 +97,7 @@ export class QueueSlotsService {
             posts.scheduledAt,
             new Date(now.getTime() + (QUEUE_HORIZON_DAYS + 1) * DAY_MS),
           ),
-        ),
-      );
+        ), livePosts()));
     return takenMinuteKeys(rows, query);
   }
 }

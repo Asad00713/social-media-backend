@@ -22,6 +22,7 @@ import {
 import { PlannerPostsService } from '../../posts/services/planner-posts.service';
 import type { ListTab, PlannerListDto } from '../dto/planner-list.dto';
 import { decodeListCursor, encodeListCursor } from '../lib/list-cursor';
+import { livePosts } from '../../posts/soft-delete/soft-delete';
 
 /**
  * The list's sort key is the Planner instant, `plannerAtSql`:
@@ -87,7 +88,7 @@ export class PlannerListService {
           key: keyMsSql.as('occurred_ms'),
         })
         .from(posts)
-        .where(and(base, tab, keyset))
+        .where(and(base, tab, keyset, livePosts()))
         .orderBy(dir(keyMsSql), dir(posts.id))
         .limit(q.limit + 1),
       this.db
@@ -97,7 +98,7 @@ export class PlannerListService {
           failed: sql<string>`count(*) FILTER (WHERE ${failed})`,
         })
         .from(posts)
-        .where(base),
+        .where(and(base, livePosts())),
     ]);
 
     const page = rows.slice(0, q.limit);

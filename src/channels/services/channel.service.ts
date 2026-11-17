@@ -58,6 +58,7 @@ import {
   mustDeleteOnDisconnect,
 } from '../lib/disconnect-policy';
 import { ChannelPauseService } from './channel-pause.service';
+import { livePosts } from '../../posts/soft-delete/soft-delete';
 
 /**
  * Shared "is this channel usable right now" predicate. A channel counts as
@@ -510,15 +511,13 @@ export class ChannelService {
         targets: posts.targets,
       })
       .from(posts)
-      .where(
-        and(
+      .where(and(and(
           eq(posts.workspaceId, workspaceId),
           // jsonb-contains: at least one target on this platform
           sql`${posts.targets} @> ${JSON.stringify([{ platform }])}::jsonb`,
           // limit to posts published in window
           sql`(${posts.publishedAt} IS NULL OR ${posts.publishedAt} >= ${sixtyDaysAgo})`,
-        ),
-      );
+        ), livePosts()));
 
     let updated = 0;
     for (const post of candidates) {

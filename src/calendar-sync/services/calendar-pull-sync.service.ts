@@ -55,6 +55,7 @@ import {
 } from '../calendar-sync.mapper';
 import { CalendarPushSyncService } from './calendar-push-sync.service';
 import { ExternalCalendarsService } from './external-calendars.service';
+import { livePosts } from '../../posts/soft-delete/soft-delete';
 
 // Calendar channel platforms that participate in the pull (external import).
 const CALENDAR_PLATFORMS = ['google_calendar', 'outlook_calendar'] as const;
@@ -956,7 +957,10 @@ export class CalendarPullSyncService {
   }
 
   private async loadPost(postId: string): Promise<Post | undefined> {
-    const [post] = await db.select().from(posts).where(eq(posts.id, postId));
+    const [post] = await db
+      .select()
+      .from(posts)
+      .where(and(eq(posts.id, postId), livePosts()));
     return post;
   }
 

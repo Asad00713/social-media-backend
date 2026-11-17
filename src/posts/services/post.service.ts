@@ -97,6 +97,7 @@ import {
   classifyPublishError,
 } from '../composer/services/composer-error-mapper.service';
 import { REMINDER_FAILURE_PREFIX } from '../lib/post-failure';
+import { livePosts } from '../soft-delete/soft-delete';
 
 export interface CreatePostDto {
   content?: string;
@@ -292,7 +293,7 @@ export class PostService {
       const [updatedPost] = await db
         .select()
         .from(posts)
-        .where(eq(posts.id, post.id));
+        .where(and(eq(posts.id, post.id), livePosts()));
 
       this.logger.log(
         `Post ${post.id} created with status ${status}, jobId: ${jobId}`,
@@ -317,7 +318,7 @@ export class PostService {
     const [post] = await db
       .select()
       .from(posts)
-      .where(and(eq(posts.id, postId), eq(posts.workspaceId, workspaceId)));
+      .where(and(eq(posts.id, postId), eq(posts.workspaceId, workspaceId), livePosts()));
 
     if (!post) {
       throw new NotFoundException('Post not found');
@@ -502,7 +503,7 @@ export class PostService {
       const [refetched] = await db
         .select()
         .from(posts)
-        .where(eq(posts.id, postId));
+        .where(and(eq(posts.id, postId), livePosts()));
       updatedPost = refetched;
     } else {
       const [result] = await db
@@ -595,7 +596,18 @@ export class PostService {
       );
     }
 
-    await db.delete(posts).where(eq(posts.id, postId));
+    // Soft delete (migration 0088). The row is kept for 30 days so a mistake
+    // can be undone, then PostPurgeService removes it for good. Everything
+    // below still runs — the calendar event is deleted, the queue job is
+    // cancelled — so to the user and to every other part of the system the
+    // post is gone the moment this returns.
+    //
+    // Guarded on livePosts() so deleting twice cannot overwrite the first
+    // deletion's timestamp and silently extend the retention window.
+    await db
+      .update(posts)
+      .set({ deletedAt: new Date(), deletedById: userId, updatedAt: new Date() })
+      .where(and(eq(posts.id, postId), livePosts()));
 
     // Fire-and-forget the provider-side event deletes using the in-memory link
     // data (rows are already cascade-gone). Never awaited — the user's delete
@@ -1647,14 +1659,12 @@ export class PostService {
     return await db
       .select()
       .from(posts)
-      .where(
-        and(
+      .where(and(and(
           eq(posts.workspaceId, workspaceId),
           eq(posts.status, 'scheduled'),
           gte(posts.scheduledAt, fromDate),
           lte(posts.scheduledAt, toDate),
-        ),
-      )
+        ), livePosts()))
       .orderBy(posts.scheduledAt);
   }
 
@@ -1688,7 +1698,7 @@ export class PostService {
     return await db
       .select()
       .from(posts)
-      .where(calendarRangeWhere(workspaceId, fromDate, toDate))
+      .where(and(calendarRangeWhere(workspaceId, fromDate, toDate), livePosts()))
       .orderBy(occurredAtSql);
   }
 

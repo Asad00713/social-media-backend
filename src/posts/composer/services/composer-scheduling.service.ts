@@ -39,6 +39,7 @@ import { PostQueueService } from '../../../billing/services/post-queue.service';
 import { loadWorkspaceTimezone } from '../../../planner/lib/workspace-time';
 import { parseRule, startSeries } from '../../lib/recurrence';
 import { parseVariationSources } from '../../lib/rotating-variations';
+import { livePosts } from '../../soft-delete/soft-delete';
 
 export interface ScheduleResult {
   postId: string;
@@ -201,7 +202,7 @@ export class ComposerSchedulingService {
     const existing = await this.db
       .select()
       .from(posts)
-      .where(and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId)))
+      .where(and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId), livePosts()))
       .limit(1);
 
     // A first-week draft keeps its tag when scheduled from the composer (the
@@ -355,7 +356,7 @@ export class ComposerSchedulingService {
     const existing: StoredPost[] = await this.db
       .select()
       .from(posts)
-      .where(and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId)))
+      .where(and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId), livePosts()))
       .limit(1);
     const stored = existing[0] as StoredPost | undefined;
 
@@ -529,7 +530,7 @@ export class ComposerSchedulingService {
     const [row] = await this.db
       .select()
       .from(posts)
-      .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId)))
+      .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId), livePosts()))
       .limit(1);
     await this.removeJobs(`composer-publish-${draftId}`, row?.jobId);
 

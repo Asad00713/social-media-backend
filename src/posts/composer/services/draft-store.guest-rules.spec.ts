@@ -19,7 +19,11 @@ function fakeDb(existing: any[]) {
     }),
     update: () => ({
       set: (v: any) => {
-        calls.updated++;
+        // Discarding a draft is a soft delete (migration 0088): an UPDATE
+        // setting deleted_at, not a DELETE. These tests are about who is
+        // ALLOWED to discard, so they count the discard however it is spelled.
+        if (v && v.deletedAt) calls.deleted++;
+        else calls.updated++;
         return {
           where: () => ({
             returning: async () => [

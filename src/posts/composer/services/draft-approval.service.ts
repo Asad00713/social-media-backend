@@ -43,6 +43,7 @@ import {
   type DraftApproval,
 } from '../../lib/draft-approval';
 import { readyPreview } from '../../services/post-drafts.service';
+import { livePosts } from '../../soft-delete/soft-delete';
 
 export interface ApprovalPerson {
   id: string;
@@ -298,7 +299,7 @@ export class DraftApprovalService {
         versionMicros: versionMicrosSql,
       })
       .from(posts)
-      .where(and(eq(posts.id, postId), eq(posts.workspaceId, workspaceId)));
+      .where(and(eq(posts.id, postId), eq(posts.workspaceId, workspaceId), livePosts()));
     return row ?? null;
   }
 
