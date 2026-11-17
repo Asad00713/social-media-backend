@@ -118,10 +118,15 @@ export interface PaymentProviderAdapter {
   resume(subscriptionId: number): Promise<void>;
   cancel(subscriptionId: number, atPeriodEnd: boolean): Promise<void>;
 
-  /** A signed link into the provider's hosted billing portal. */
+  /**
+   * A signed link into the provider's hosted billing portal. `workspaceId` is
+   * the workspace the caller is acting in: where the portal sends the person
+   * back to. A provider with no such notion ignores it.
+   */
   createPortalLink(
     subscriptionId: number,
     intent: PortalIntent,
+    opts?: { workspaceId?: string },
   ): Promise<{ url: string }>;
 
   /** Newest first, at most `limit`. */

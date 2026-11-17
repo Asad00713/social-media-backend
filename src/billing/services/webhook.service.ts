@@ -31,13 +31,20 @@ import {
 } from '../providers/stripe-provider-row.util';
 import { BillingEmailService, billingEmailKey } from './billing-email.service';
 
+/**
+ * Days a customer keeps their plan after a payment fails. One number for the
+ * dunning rules here and the "update your card by" date the settings billing
+ * page shows (BillingOverviewService), so the two cannot drift apart.
+ */
+export const PAYMENT_GRACE_DAYS = 7;
+
 @Injectable()
 export class WebhookService {
   private readonly logger = new Logger(WebhookService.name);
 
   // Configuration for failed payment handling
   private readonly MAX_FAILED_ATTEMPTS = 3;
-  private readonly GRACE_PERIOD_DAYS = 7;
+  private readonly GRACE_PERIOD_DAYS = PAYMENT_GRACE_DAYS;
 
   constructor(
     private subscriptionService: SubscriptionService,

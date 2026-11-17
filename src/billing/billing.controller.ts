@@ -24,6 +24,7 @@ import type { PurchaseAddonOutcome } from './services/addon.service';
 import { PlanChangeService } from './services/plan-change.service';
 import { DashboardService } from './services/dashboard.service';
 import { InvoiceService } from './services/invoice.service';
+import { BillingOverviewService } from './services/billing-overview.service';
 import { PaymentMethodService } from './services/payment-method.service';
 import { StripeService } from '../stripe/stripe.service';
 import {
@@ -36,6 +37,7 @@ import {
   AddPaymentMethodBodyDto,
 } from './dto/billing.dto';
 import type { AddonTypeDto } from './dto/billing.dto';
+import { PortalLinkDto } from './dto/portal-link.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { SkipSuspendCheck } from '../auth/decorators/skip-suspend-check.decorator';
@@ -58,6 +60,7 @@ export class BillingController {
     private invoiceService: InvoiceService,
     private paymentMethodService: PaymentMethodService,
     private stripeService: StripeService,
+    private billingOverviewService: BillingOverviewService,
   ) {}
 
   /**
@@ -324,6 +327,41 @@ export class BillingController {
     return await this.dashboardService.getSubscriptionHistory(
       workspaceId,
       limit ? parseInt(limit, 10) : 20,
+    );
+  }
+
+  // Settings > Plan & billing: one call for the whole page, the provider's own
+  // invoice list, and a signed link into the provider's portal.
+  @Get('workspaces/:workspaceId/overview')
+  @RequireCapability('billing:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  async getBillingOverview(@Param('workspaceId') workspaceId: string) {
+    return await this.billingOverviewService.overview(workspaceId);
+  }
+
+  // Declared before any `invoices/:x` route so "provider" is never read as an id.
+  @Get('workspaces/:workspaceId/invoices/provider')
+  @RequireCapability('billing:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  async getProviderInvoices(
+    @Param('workspaceId') workspaceId: string,
+    @Query('limit') limit?: string,
+  ) {
+    const parsed = limit ? parseInt(limit, 10) : undefined;
+    return await this.billingOverviewService.invoices(workspaceId, parsed);
+  }
+
+  @Post('workspaces/:workspaceId/portal-link')
+  @RequireCapability('billing:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  @HttpCode(HttpStatus.OK)
+  async createPortalLink(
+    @Param('workspaceId') workspaceId: string,
+    @Body() body: PortalLinkDto,
+  ) {
+    return await this.billingOverviewService.portalLink(
+      workspaceId,
+      body.intent,
     );
   }
 

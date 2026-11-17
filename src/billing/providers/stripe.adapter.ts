@@ -415,13 +415,16 @@ export class StripeAdapter implements PaymentProviderAdapter {
 
   /**
    * A one-shot Stripe billing-portal session. The customer comes back to the
-   * billing settings of the workspace they were last in, so the portal never
-   * strands them on a Stripe page. `update_payment_method` opens the card form
-   * directly (`flow_data`), skipping the portal's home screen.
+   * billing settings of the workspace the caller names (`opts.workspaceId`, the
+   * route's guard-validated one), else the one they were last in, so the portal
+   * never strands them on a Stripe page.
+   * `update_payment_method` opens the card form directly (`flow_data`), skipping
+   * the portal's home screen.
    */
   async createPortalLink(
     subscriptionId: number,
     intent: PortalIntent,
+    opts?: { workspaceId?: string },
   ): Promise<{ url: string }> {
     await this.rowsFor(subscriptionId);
     const { userId } = await this.accountOf(subscriptionId);
@@ -436,7 +439,9 @@ export class StripeAdapter implements PaymentProviderAdapter {
       .getClient()
       .billingPortal.sessions.create({
         customer,
-        return_url: await this.billingReturnUrl(userId),
+        return_url: opts?.workspaceId
+          ? this.links.billing(opts.workspaceId)
+          : await this.billingReturnUrl(userId),
         ...(intent === 'update_payment_method'
           ? { flow_data: { type: 'payment_method_update' as const } }
           : {}),

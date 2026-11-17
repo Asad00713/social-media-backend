@@ -496,6 +496,13 @@ describe('LemonSqueezyAdapter portal, invoices and billing profile', () => {
       );
     });
 
+    it('accepts, and ignores, the workspace a caller names', async () => {
+      stubFetch({ 'subscriptions/100': SUB });
+      await expect(
+        build([BASE]).createPortalLink(1, 'portal', { workspaceId: 'ws-1' }),
+      ).resolves.toEqual({ url: 'https://ls.test/portal' });
+    });
+
     it('opens the customer portal for the portal intent', async () => {
       stubFetch({ 'subscriptions/100': SUB });
       await expect(

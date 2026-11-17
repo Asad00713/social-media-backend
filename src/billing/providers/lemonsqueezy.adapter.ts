@@ -348,11 +348,13 @@ export class LemonSqueezyAdapter implements PaymentProviderAdapter {
    * Lemon Squeezy's portal URLs are per SUBSCRIPTION and signed, and the base
    * plan's subscription is the one the customer thinks of as "my account".
    * A response without the URL is the provider's fault, not the caller's, so
-   * it is a 502 with a machine code rather than a 500.
+   * it is a 502 with a machine code rather than a 500. The portal has no return
+   * URL to set here, so `_opts.workspaceId` is accepted and ignored.
    */
   async createPortalLink(
     subscriptionId: number,
     intent: PortalIntent,
+    _opts?: { workspaceId?: string },
   ): Promise<{ url: string }> {
     const base = await this.requireRow(subscriptionId, 'BASE_PLAN');
     const res = await this.client.get<LsPortalResponse>(

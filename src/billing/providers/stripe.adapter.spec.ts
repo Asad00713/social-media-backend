@@ -518,6 +518,23 @@ describe('StripeAdapter portal, invoices and billing profile', () => {
       });
     });
 
+    it('returns to the workspace the caller names, ahead of any lookup', async () => {
+      const { adapter, sessionsCreate } = build({
+        stripeCustomers: [{ id: 'cus_9' }],
+        users: [{ id: 'ws-last' }],
+      });
+
+      await adapter.createPortalLink(1, 'portal', {
+        workspaceId: 'ws-route',
+      });
+
+      expect(sessionsCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          return_url: 'https://app.test/w/ws-route/settings/billing',
+        }),
+      );
+    });
+
     it('goes straight to the card form for update_payment_method', async () => {
       const { adapter, sessionsCreate } = build({
         stripeCustomers: [{ id: 'cus_9' }],
