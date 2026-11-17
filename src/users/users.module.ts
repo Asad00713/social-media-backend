@@ -6,6 +6,8 @@ import { EmailModule } from '../email/email.module';
 import { GeoipService } from '../auth/services/geoip.service';
 import { AccountSecurityService } from './account-security.service';
 import { EmailChangeService } from './email-change.service';
+import { AccountSettingsController } from './account-settings.controller';
+import { UserPreferencesService } from './preferences/user-preferences.service';
 
 @Module({
   // For R2, which issues the presigned URL a profile picture is uploaded to.
@@ -18,10 +20,13 @@ import { EmailChangeService } from './email-change.service';
     UsersService,
     AccountSecurityService,
     EmailChangeService,
+    UserPreferencesService,
     GeoipService,
   ],
   // AccountSecurityController lives in AuthModule (it needs AuthService).
-  controllers: [UsersController],
+  // AccountSettingsController stays FIRST: its `users/me/...` routes must be
+  // registered before UsersController's `users/:id`.
+  controllers: [AccountSettingsController, UsersController],
   exports: [UsersService, AccountSecurityService, EmailChangeService],
 })
 export class UsersModule {}

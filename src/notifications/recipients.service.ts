@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
+import { isIanaTimeZone } from '../common/validators/is-iana-time-zone';
 import type { DbType } from '../drizzle/db';
 import { DRIZZLE } from '../drizzle/drizzle.module';
 import { users } from '../drizzle/schema/users.schema';
@@ -79,15 +80,23 @@ export class RecipientsService {
   }
 
   /**
-   * There is no user time zone: use the one of the workspace the person last
-   * opened, else UTC.
+   * The zone times are shown in for this person: the one they chose on the
+   * Preferences page, else the zone of the workspace they last opened, else
+   * UTC. The workspace is LEFT-joined: a person with a saved zone but no
+   * last-opened workspace must still get it.
    */
   async userTimezone(userId: string): Promise<string> {
     const [row] = await this.db
-      .select({ timezone: workspace.timezone })
+      .select({
+        preference: sql<string | null>`${users.preferences}->>'timezone'`,
+        timezone: workspace.timezone,
+      })
       .from(users)
-      .innerJoin(workspace, eq(workspace.id, users.lastAccessedWorkspaceId))
+      .leftJoin(workspace, eq(workspace.id, users.lastAccessedWorkspaceId))
       .where(eq(users.id, userId));
+    if (row?.preference && isIanaTimeZone(row.preference)) {
+      return row.preference;
+    }
     return row?.timezone || DEFAULT_TIMEZONE;
   }
 

@@ -7,12 +7,14 @@ import {
 } from '../planner/testing/rollback-db';
 import { RecipientsService } from './recipients.service';
 
+// 0088 adds users.preferences, which userTimezone() reads.
+const MIGRATIONS = ['0088_user_account_settings.sql'];
 const UNKNOWN_ID = '00000000-0000-4000-8000-000000000000';
 
 function run<T>(
   fn: (service: RecipientsService, client: PoolClient) => Promise<T>,
 ): Promise<T> {
-  return withRollbackDb([], (db, client) =>
+  return withRollbackDb(MIGRATIONS, (db, client) =>
     fn(new RecipientsService(db), client),
   );
 }
@@ -140,6 +142,36 @@ describeDb('RecipientsService (database)', () => {
       );
       expect(await service.userTimezone(ownerId)).toBe('UTC');
       expect(await service.userTimezone(UNKNOWN_ID)).toBe('UTC');
+    });
+  });
+
+  it('userTimezone() prefers the saved preference, even with no last workspace', async () => {
+    await run(async (service, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client, {
+        timezone: 'Asia/Karachi',
+      });
+      const setPrefs = (json: string) =>
+        client.query(`UPDATE users SET preferences = $1::jsonb WHERE id = $2`, [
+          json,
+          ownerId,
+        ]);
+
+      // No last-accessed workspace at all: the preference alone decides.
+      await setPrefs('{"timezone":"Europe/Paris"}');
+      expect(await service.userTimezone(ownerId)).toBe('Europe/Paris');
+
+      // With a last-accessed workspace in another zone, the preference wins.
+      await client.query(
+        `UPDATE users SET last_accessed_workspace_id = $1 WHERE id = $2`,
+        [workspaceId, ownerId],
+      );
+      expect(await service.userTimezone(ownerId)).toBe('Europe/Paris');
+
+      // null (follow the device) and an invalid stored zone use the workspace.
+      await setPrefs('{"timezone":null}');
+      expect(await service.userTimezone(ownerId)).toBe('Asia/Karachi');
+      await setPrefs('{"timezone":"Mars/Olympus"}');
+      expect(await service.userTimezone(ownerId)).toBe('Asia/Karachi');
     });
   });
 });
