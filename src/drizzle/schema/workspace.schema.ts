@@ -6,54 +6,88 @@ import {
   boolean,
   text,
   integer,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 import { users } from './users.schema';
 
-export const workspace = pgTable('workspace', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  name: varchar('name', { length: 40 }).notNull(),
-  slug: text('slug').notNull().unique(),
-  description: text('description'),
-  logo: text('logo'),
-  ownerId: uuid('owner_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  timezone: text('timezone').notNull().default('UTC'),
+// Who needs approval before a post is published (0089). 'members' covers
+// people holding the MEMBER role; 'none' is how every workspace behaved
+// before the setting existed.
+export const APPROVAL_POLICIES = ['none', 'members', 'everyone'] as const;
+export type ApprovalPolicy = (typeof APPROVAL_POLICIES)[number];
 
-  // AI provider preference (null = system default)
-  preferredAiProvider: varchar('preferred_ai_provider', { length: 20 }),
+export const workspace = pgTable(
+  'workspace',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: varchar('name', { length: 40 }).notNull(),
+    slug: text('slug').notNull().unique(),
+    description: text('description'),
+    logo: text('logo'),
+    ownerId: uuid('owner_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    timezone: text('timezone').notNull().default('UTC'),
 
-  // --- Maestro BYOK (bring your own Anthropic key) ---
-  // The workspace's own Anthropic API key, ENCRYPTED at rest (AES-256-GCM via
-  // common/utils/encryption.util). Null = use the platform key and bill the
-  // workspace's plan credits. Set = the workspace pays Anthropic directly, so
-  // Maestro turns are logged but NOT billed against plan credits.
-  // Never returned to the client — the API exposes `maestroKeyHint` instead.
-  maestroAnthropicKey: text('maestro_anthropic_key'),
-  // Last 4 characters of the live key, stored in PLAINTEXT purely so settings
-  // can render "sk-ant-…4f2a" without ever decrypting the real key.
-  maestroAnthropicKeyHint: varchar('maestro_anthropic_key_hint', { length: 8 }),
-  // When the key was last saved/replaced (shown in settings).
-  maestroAnthropicKeySetAt: timestamp('maestro_anthropic_key_set_at'),
-  // Marks the first-run Maestro wizard as finished, so it runs once, not on
-  // every reload. Null = the user has not completed it yet.
-  maestroOnboardedAt: timestamp('maestro_onboarded_at'),
+    // AI provider preference (null = system default)
+    preferredAiProvider: varchar('preferred_ai_provider', { length: 20 }),
 
-  // How many posts a week the team aims to publish. Drives the "Posting goal"
-  // ring on Home. Editable by members who can publish.
-  weeklyPostGoal: integer('weekly_post_goal').notNull().default(5),
+    // --- Maestro BYOK (bring your own Anthropic key) ---
+    // The workspace's own Anthropic API key, ENCRYPTED at rest (AES-256-GCM via
+    // common/utils/encryption.util). Null = use the platform key and bill the
+    // workspace's plan credits. Set = the workspace pays Anthropic directly, so
+    // Maestro turns are logged but NOT billed against plan credits.
+    // Never returned to the client — the API exposes `maestroKeyHint` instead.
+    maestroAnthropicKey: text('maestro_anthropic_key'),
+    // Last 4 characters of the live key, stored in PLAINTEXT purely so settings
+    // can render "sk-ant-…4f2a" without ever decrypting the real key.
+    maestroAnthropicKeyHint: varchar('maestro_anthropic_key_hint', {
+      length: 8,
+    }),
+    // When the key was last saved/replaced (shown in settings).
+    maestroAnthropicKeySetAt: timestamp('maestro_anthropic_key_set_at'),
+    // Marks the first-run Maestro wizard as finished, so it runs once, not on
+    // every reload. Null = the user has not completed it yet.
+    maestroOnboardedAt: timestamp('maestro_onboarded_at'),
 
-  // Workspace suspension
-  isActive: boolean('is_active').notNull().default(true),
-  suspendedAt: timestamp('suspended_at'),
-  suspendedReason: varchar('suspended_reason', { length: 50 }), // non_payment, policy_violation, abuse, manual
-  suspendedById: uuid('suspended_by_id'),
-  suspensionNote: text('suspension_note'),
+    // How many posts a week the team aims to publish. Drives the "Posting goal"
+    // ring on Home. Editable by members who can publish.
+    weeklyPostGoal: integer('weekly_post_goal').notNull().default(5),
 
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
+    // --- Publishing defaults and join link (0089) ---
+    approvalPolicy: text('approval_policy')
+      .$type<ApprovalPolicy>()
+      .notNull()
+      .default('none'),
+    // The composer starts with these switched on.
+    shortenLinksDefault: boolean('shorten_links_default')
+      .notNull()
+      .default(false),
+    utmDefault: boolean('utm_default').notNull().default(false),
+    // Shareable join link. Null until an admin first turns it on; unique across
+    // workspaces (see the workspace_invite_link_code_uq index below).
+    inviteLinkCode: varchar('invite_link_code', { length: 32 }),
+    inviteLinkEnabled: boolean('invite_link_enabled').notNull().default(false),
+
+    // Workspace suspension
+    isActive: boolean('is_active').notNull().default(true),
+    suspendedAt: timestamp('suspended_at'),
+    suspendedReason: varchar('suspended_reason', { length: 50 }), // non_payment, policy_violation, abuse, manual
+    suspendedById: uuid('suspended_by_id'),
+    suspensionNote: text('suspension_note'),
+
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (t) => ({
+    // A uniqueIndex, not .unique(): .unique() would name the constraint
+    // workspace_invite_link_code_unique, while 0089 creates this index.
+    inviteLinkCodeUq: uniqueIndex('workspace_invite_link_code_uq').on(
+      t.inviteLinkCode,
+    ),
+  }),
+);
 
 // Reverse of usersRelations.ownedWorkspaces — also powers `with: { owner }`
 // queries (e.g. workspace general settings). Without this, Drizzle's relational

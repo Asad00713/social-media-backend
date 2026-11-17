@@ -1,4 +1,11 @@
-import { pgTable, uuid, timestamp, varchar, pgEnum } from 'drizzle-orm/pg-core';
+import {
+  pgTable,
+  uuid,
+  timestamp,
+  varchar,
+  pgEnum,
+  text,
+} from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 import { workspace } from './workspace.schema';
 import { users } from './users.schema';
@@ -39,6 +46,8 @@ export const workspaceInvitation = pgTable('workspace_invitations', {
   removedBy: uuid('removed_by').references(() => users.id, {
     onDelete: 'set null',
   }),
+  // Optional personal note from the inviter, shown in the invitation email (0089).
+  message: text('message'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });

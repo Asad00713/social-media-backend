@@ -39,6 +39,8 @@ import { readMigrations } from './runner';
  * EXCLUSIVE). 0086 builds an index on posts (SHARE) and 0087 one on
  * error_logs (SHARE), each with a tighter bound of its own, checked below.
  * 0088 adds four columns to users (ACCESS EXCLUSIVE, catalog-only).
+ * 0089 adds five columns to workspace and one to workspace_invitations
+ * (ACCESS EXCLUSIVE, catalog-only), then a unique index on workspace (SHARE).
  */
 const FILES = [
   '0046_inbox_items_thread_key.sql',
@@ -61,6 +63,7 @@ const FILES = [
   '0082_error_logs_request_id.sql',
   '0083_platform_status.sql',
   '0088_user_account_settings.sql',
+  '0089_workspace_settings.sql',
 ];
 
 const firstStatement = (sql: string): string =>
