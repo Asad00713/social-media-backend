@@ -11,7 +11,6 @@ import type { DbType } from '../../drizzle/db';
 import {
   aiUsageLog,
   billingPaymentAlerts,
-  workspace,
   type Subscription,
 } from '../../drizzle/schema';
 import { BestTimesCache } from '../../planner/lib/best-times-cache';
@@ -198,7 +197,7 @@ export class BillingOverviewService {
       status === 'past_due' && paidSub && adapter
         ? this.paymentFailureOf(adapter, paidSub, ownerId, monthlyTotal)
         : Promise.resolve(null),
-      this.aiUsageByFeature(ownerId),
+      this.aiUsageByFeature(workspaceId),
     ]);
 
     const usage = dash.usage;
@@ -413,13 +412,15 @@ export class BillingOverviewService {
   }
 
   /**
-   * AI credits spent this month by operation, across every workspace the
-   * account owns (credits are per workspace, the plan is per account).
+   * AI credits spent this month by operation in THIS workspace: the same
+   * scope as `usage.aiCredits.used` and `limit` (credits are metered per
+   * workspace), so the breakdown adds up to the meter above it and a billing
+   * member never sees another workspace's usage.
    * BYOK rows (`*_byok`) were not charged to the plan and are left out, as are
    * failed calls. `null` when nothing was logged.
    */
   private async aiUsageByFeature(
-    ownerId: string,
+    workspaceId: string,
   ): Promise<Array<{ feature: string; used: number }> | null> {
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -430,10 +431,9 @@ export class BillingOverviewService {
         used: sql<string>`coalesce(sum(${aiUsageLog.tokensUsed}), 0)`,
       })
       .from(aiUsageLog)
-      .innerJoin(workspace, eq(workspace.id, aiUsageLog.workspaceId))
       .where(
         and(
-          eq(workspace.ownerId, ownerId),
+          eq(aiUsageLog.workspaceId, workspaceId),
           gte(aiUsageLog.createdAt, monthStart),
           eq(aiUsageLog.success, true),
           notLike(aiUsageLog.operation, '%\\_byok'),

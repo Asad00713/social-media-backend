@@ -1,4 +1,6 @@
 import { Logger } from '@nestjs/common';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import {
   BillingOverviewService,
   MAX_INVOICE_LIMIT,
@@ -94,17 +96,32 @@ const PROFILE: BillingProfile = {
  * that table, whatever clauses follow.
  */
 function fakeDb(rowsByTable: Map<unknown, unknown[]>) {
-  const chain = (rows: unknown[]) => {
+  /** Every clause handed to `.where()`, per table read. */
+  const wheres = new Map<unknown, unknown[]>();
+  const joins: unknown[] = [];
+  const chain = (table: unknown, rows: unknown[]) => {
     const c: Record<string, unknown> = {};
-    for (const m of ['innerJoin', 'where', 'orderBy', 'limit', 'groupBy']) {
+    for (const m of ['orderBy', 'limit', 'groupBy']) {
       c[m] = jest.fn(() => c);
     }
+    c.innerJoin = jest.fn((t: unknown) => {
+      joins.push(t);
+      return c;
+    });
+    c.where = jest.fn((cond: unknown) => {
+      wheres.set(table, [...(wheres.get(table) ?? []), cond]);
+      return c;
+    });
     c.then = (resolve: (v: unknown[]) => unknown) => resolve(rows);
     return c;
   };
   return {
+    wheres,
+    joins,
     select: jest.fn(() => ({
-      from: jest.fn((table: unknown) => chain(rowsByTable.get(table) ?? [])),
+      from: jest.fn((table: unknown) =>
+        chain(table, rowsByTable.get(table) ?? []),
+      ),
     })),
   };
 }
@@ -407,6 +424,33 @@ describe('BillingOverviewService', () => {
     });
 
     describe('usage by feature', () => {
+      /** The SQL text and bound params of the ai_usage_log read's WHERE. */
+      function aiWhere(db: ReturnType<typeof fakeDb>) {
+        const [cond] = db.wheres.get(aiUsageLog) ?? [];
+        return new PgDialect().sqlToQuery(cond as SQL);
+      }
+
+      it('is scoped to the route workspace, the same scope as the meter', async () => {
+        const { service, db } = build({
+          aiRows: [{ feature: 'generate_post', used: '260' }],
+        });
+
+        await service.overview(WS);
+
+        const { sql: text, params } = aiWhere(db);
+        expect(text).toContain('"ai_usage_log"."workspace_id" = $');
+        expect(params).toContain(WS);
+        // Not the owner's other workspaces: no join through workspace.owner_id.
+        expect(params).not.toContain(OWNER);
+        expect(db.joins).toHaveLength(0);
+      });
+
+      it('asks for a different workspace when the route names one', async () => {
+        const { service, db } = build();
+        await service.overview('ws-other');
+        expect(aiWhere(db).params).toContain('ws-other');
+      });
+
       it("lists this month's credits per operation, biggest first", async () => {
         const { service } = build({
           aiRows: [

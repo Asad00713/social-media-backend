@@ -32,9 +32,11 @@ import {
 import { BillingEmailService, billingEmailKey } from './billing-email.service';
 
 /**
- * Days a customer keeps their plan after a payment fails. One number for the
- * dunning rules here and the "update your card by" date the settings billing
- * page shows (BillingOverviewService), so the two cannot drift apart.
+ * Days added to the first failed payment to get the "update your card by" date
+ * the settings billing page shows (BillingOverviewService). DISPLAY ONLY:
+ * nothing enforces it. What actually ends dunning is `MAX_FAILED_ATTEMPTS`
+ * (unresolved failed invoices), below, so the date is informational and the
+ * UI must not promise a hard cutoff on it.
  */
 export const PAYMENT_GRACE_DAYS = 7;
 

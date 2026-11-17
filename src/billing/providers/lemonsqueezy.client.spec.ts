@@ -1,4 +1,7 @@
-import { LemonSqueezyClient } from './lemonsqueezy.client';
+import {
+  LemonSqueezyClient,
+  LS_REQUEST_TIMEOUT_MS,
+} from './lemonsqueezy.client';
 
 describe('LemonSqueezyClient', () => {
   const OLD_KEY = process.env.LEMONSQUEEZY_API_KEY;
@@ -30,6 +33,44 @@ describe('LemonSqueezyClient', () => {
     >;
     expect(headers['Accept']).toBe('application/vnd.api+json');
     expect(headers['Content-Type']).toBe('application/vnd.api+json');
+  });
+
+  it('cancels a call that hangs once the timeout fires, and says so', async () => {
+    // AbortSignal.timeout runs on native timers that jest's fake clock cannot
+    // advance, so hand the client a controllable signal and check the duration
+    // it asked for.
+    const controller = new AbortController();
+    const timeout = jest
+      .spyOn(AbortSignal, 'timeout')
+      .mockReturnValue(controller.signal);
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(
+      (_url: string, init: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          init.signal.addEventListener('abort', () =>
+            reject(init.signal.reason),
+          );
+        }),
+    );
+
+    const caught = new LemonSqueezyClient()
+      .get('subscriptions/1')
+      .catch((e: unknown) => e);
+    controller.abort(new DOMException('timed out', 'TimeoutError'));
+
+    expect(timeout).toHaveBeenCalledWith(LS_REQUEST_TIMEOUT_MS);
+    expect(LS_REQUEST_TIMEOUT_MS).toBe(10_000);
+    expect(String(await caught)).toContain(
+      'subscriptions/1 timed out after 10000ms',
+    );
+  });
+
+  it('gives every request an abort signal', async () => {
+    const fetchMock = mockFetch(200, { data: {} });
+    await new LemonSqueezyClient().get('subscriptions/1');
+    await new LemonSqueezyClient().post('subscriptions', {});
+    for (const call of fetchMock.mock.calls) {
+      expect(call[1].signal).toBeInstanceOf(AbortSignal);
+    }
   });
 
   it('sends the bearer token', async () => {
