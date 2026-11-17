@@ -23,15 +23,10 @@ const SRC = join(__dirname, '..', '..');
 const REPO = join(SRC, '..');
 
 /**
- * Scoped to `workspace` for now. `posts` gained the same columns in migration
- * 0088, but its ~49 read sites are a separate change: several carry real
- * product decisions (does a deleted post still count towards a plan's quota;
- * do deleted posts leave analytics and insights totals), and bundling them
- * here would make both halves harder to review.
- *
- * Widen these two patterns to `(posts|workspace)` when that lands — nothing
- * else in this file needs to change, which is the point of discovering the
- * read sites from disk rather than listing them.
+ * Covers both tables. `workspace` shipped first and `posts` followed, and
+ * widening these patterns was the whole change on this side — the read sites
+ * are discovered from disk rather than listed, so neither half needed a new
+ * inventory.
  */
 const BUILDER_READ = /\.from\(\s*(?:posts|workspace)\s*\)/;
 
@@ -95,7 +90,7 @@ function collectReadSites(): ReadSite[] {
     }));
 }
 
-describe('every read of workspace excludes soft-deleted rows', () => {
+describe('every read of posts or workspace excludes soft-deleted rows', () => {
   const sites = collectReadSites();
 
   it('discovers a plausible number of read sites', () => {
