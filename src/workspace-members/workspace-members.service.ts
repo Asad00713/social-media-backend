@@ -1138,7 +1138,8 @@ export class WorkspaceMembersService {
     invitation: {
       id: string;
       workspaceId: string;
-      invitedBy: string;
+      // NULL once the inviter's account was deleted (0091): nobody to tell.
+      invitedBy: string | null;
       workspace: { name: string; timezone?: string | null };
     },
     member: { id: string; name: string | null; email: string },
@@ -1146,7 +1147,7 @@ export class WorkspaceMembersService {
   ): Promise<void> {
     try {
       const inviterId = invitation.invitedBy;
-      if (inviterId === member.id) return;
+      if (inviterId === null || inviterId === member.id) return;
       const memberName = this.recipients.displayName(member);
       const workspaceName = invitation.workspace.name;
       await this.notifyService.notify({

@@ -25,9 +25,11 @@ export const workspace = pgTable(
     slug: text('slug').notNull().unique(),
     description: text('description'),
     logo: text('logo'),
+    // RESTRICT (0091): deleting an owner's account never takes the workspace
+    // with it; the account-delete flow transfers or deletes it first.
     ownerId: uuid('owner_id')
       .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
+      .references(() => users.id, { onDelete: 'restrict' }),
     timezone: text('timezone').notNull().default('UTC'),
 
     // AI provider preference (null = system default)

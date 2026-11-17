@@ -48,6 +48,7 @@ function fakeDb(selects: unknown[][]) {
         return { where: () => Promise.resolve() };
       },
     })),
+    delete: jest.fn(() => ({ where: () => Promise.resolve() })),
   };
 }
 
@@ -298,6 +299,41 @@ describe('UserInactivityService', () => {
       const logged = log.mock.calls.map((c) => String(c[0])).join(' ');
       expect(logged).toContain('notice not queued');
       expect(logged).not.toContain('(notice queued)');
+    });
+  });
+
+  describe('365-day purge', () => {
+    it('skips workspace owners (0091 makes owner_id RESTRICT) and deletes the rest', async () => {
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+      jest.spyOn(Logger.prototype, 'log').mockImplementation();
+      const owner = { id: 'u-owner', email: 'owner@acme.test', name: 'O' };
+      const other = { id: 'u-other', email: 'other@acme.test', name: 'X' };
+      const { service, db, notifications } = make([
+        [], // approaching deletion
+        [owner, other], // due for deletion
+        [{ ownerId: 'u-owner' }, { ownerId: 'u-owner' }], // owners among them
+        ADMINS,
+      ]);
+      await service['process365DayInactiveUsers']();
+
+      expect(db.delete).toHaveBeenCalledTimes(1);
+      const skipped = warn.mock.calls.map((c) => String(c[0]));
+      expect(skipped).toHaveLength(1);
+      expect(skipped[0]).toContain('u-owner');
+      expect(skipped[0]).not.toContain('owner@acme.test');
+      const [, payload] = notifications.notifyUsers.mock.calls[0] as [
+        unknown,
+        { message: string },
+      ];
+      expect(payload.message).toContain('other@acme.test');
+      expect(payload.message).not.toContain('owner@acme.test');
+    });
+
+    it('deletes nobody and does not look up owners when nobody is due', async () => {
+      const { service, db } = make([[], []]);
+      await service['process365DayInactiveUsers']();
+      expect(db.select).toHaveBeenCalledTimes(2);
+      expect(db.delete).not.toHaveBeenCalled();
     });
   });
 

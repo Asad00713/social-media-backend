@@ -43,6 +43,8 @@ import { readMigrations } from './runner';
  * (ACCESS EXCLUSIVE, catalog-only), then a unique index on workspace (SHARE).
  * 0090 creates workspace_labels and post_labels with foreign keys to
  * workspace, users, posts and workspace_labels (SHARE ROW EXCLUSIVE on each).
+ * 0091 drops and re-adds the foreign keys to users on six tables plus
+ * workspace.owner_id (ACCESS EXCLUSIVE on each table and on users).
  */
 const FILES = [
   '0046_inbox_items_thread_key.sql',
@@ -67,6 +69,7 @@ const FILES = [
   '0088_user_account_settings.sql',
   '0089_workspace_settings.sql',
   '0090_workspace_labels.sql',
+  '0091_users_fk_set_null.sql',
 ];
 
 const firstStatement = (sql: string): string =>

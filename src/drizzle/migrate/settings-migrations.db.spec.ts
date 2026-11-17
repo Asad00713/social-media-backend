@@ -14,6 +14,9 @@ import { describeDb, withRollbackDb } from '../../planner/testing/rollback-db';
  *         workspace_invitations gains message.
  *   0090  workspace_labels (the catalogue) and post_labels (the join),
  *         filled from posts.metadata.labels.
+ *   0091  every foreign key to users stops blocking a user delete: actor
+ *         columns SET NULL, the Canva grant CASCADE, and
+ *         workspace.owner_id RESTRICT (never deleted by accident).
  *
  * The harness applies each file twice BEFORE the test body runs, which proves
  * idempotency on an empty table only. A backfill test therefore seeds its
@@ -30,6 +33,7 @@ const MIGRATIONS_DIR = join(
 const FILE_0088 = '0088_user_account_settings.sql';
 const FILE_0089 = '0089_workspace_settings.sql';
 const FILE_0090 = '0090_workspace_labels.sql';
+const FILE_0091 = '0091_users_fk_set_null.sql';
 const rand = () => Math.random().toString(36).slice(2, 10);
 
 async function seedUser(client: PoolClient): Promise<string> {
@@ -791,5 +795,276 @@ describeDb('migration 0090 workspace labels', () => {
     });
 
     expect(counts).toEqual({ before: 3, afterPost: 1, afterLabel: 0 });
+  });
+});
+
+/** The six actor columns 0091 moves to SET NULL / CASCADE, and owner_id. */
+const USER_FK_ACTIONS = [
+  { table: 'workspace_invitations', column: 'invited_by', action: 'n' },
+  { table: 'subscription_changes', column: 'changed_by_user_id', action: 'n' },
+  { table: 'usage_events', column: 'triggered_by_user_id', action: 'n' },
+  { table: 'drip_posts', column: 'reviewed_by_id', action: 'n' },
+  { table: 'drip_campaign_history', column: 'performed_by_id', action: 'n' },
+  { table: 'canva_connections', column: 'user_id', action: 'c' },
+  { table: 'workspace', column: 'owner_id', action: 'r' },
+];
+
+/**
+ * Every foreign key from `table.column` to users, with its ON DELETE action
+ * as pg_constraint spells it: a = NO ACTION, r = RESTRICT, c = CASCADE,
+ * n = SET NULL.
+ */
+async function userFkActions(
+  client: PoolClient,
+  table: string,
+  column: string,
+): Promise<string[]> {
+  const r = await client.query<{ confdeltype: string }>(
+    `SELECT c.confdeltype
+       FROM pg_constraint c
+       JOIN pg_attribute a
+         ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+      WHERE c.contype = 'f'
+        AND c.conrelid = to_regclass($1)
+        AND c.confrelid = 'users'::regclass
+        AND a.attname = $2`,
+    [table, column],
+  );
+  return r.rows.map((row) => row.confdeltype);
+}
+
+async function countWhere(
+  client: PoolClient,
+  sql: string,
+  id: string,
+): Promise<number> {
+  const r = await client.query<{ n: string }>(sql, [id]);
+  return Number(r.rows[0].n);
+}
+
+describeDb('migration 0091 user foreign keys', () => {
+  const MIGRATIONS = [FILE_0091];
+
+  it('0091 leaves no foreign key to users at NO ACTION', async () => {
+    const leftovers = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const r = await client.query<{ table_name: string; column_name: string }>(
+        `SELECT c.conrelid::regclass::text AS table_name,
+                a.attname AS column_name
+           FROM pg_constraint c
+           JOIN pg_attribute a
+             ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+          WHERE c.contype = 'f'
+            AND c.confrelid = 'users'::regclass
+            AND c.confdeltype = 'a'`,
+      );
+      return r.rows;
+    });
+
+    expect(leftovers).toEqual([]);
+  });
+
+  it('0091 gives each listed column exactly one foreign key to users, with the planned action', async () => {
+    const actions = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const out: Record<string, string[]> = {};
+      for (const { table, column } of USER_FK_ACTIONS) {
+        out[`${table}.${column}`] = await userFkActions(client, table, column);
+      }
+      return out;
+    });
+
+    // The harness applied the file twice: still one constraint per column.
+    expect(actions).toEqual(
+      Object.fromEntries(
+        USER_FK_ACTIONS.map(({ table, column, action }) => [
+          `${table}.${column}`,
+          [action],
+        ]),
+      ),
+    );
+  });
+
+  it('0091 makes workspace.owner_id ON DELETE RESTRICT', async () => {
+    const actions = await withRollbackDb(MIGRATIONS, (_db, client) =>
+      userFkActions(client, 'workspace', 'owner_id'),
+    );
+
+    expect(actions).toEqual(['r']);
+  });
+
+  it('0091 lets workspace_invitations.invited_by be NULL', async () => {
+    const nullable = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const r = await client.query<{ is_nullable: string }>(
+        `SELECT is_nullable FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name = 'workspace_invitations'
+            AND column_name = 'invited_by'`,
+      );
+      return r.rows[0].is_nullable;
+    });
+
+    expect(nullable).toBe('YES');
+  });
+
+  it('0091 hard-deleting a non-owner who invited, changed a plan, triggered usage, reviewed a drip and connected Canva succeeds', async () => {
+    const after = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const ownerId = await seedUser(client);
+      const workspaceId = await seedWorkspace(client, ownerId);
+      const userId = await seedUser(client);
+
+      const invitation = await client.query<{ id: string }>(
+        `INSERT INTO workspace_invitations
+           (workspace_id, email, invited_by, token, expires_at)
+         VALUES ($1, $2, $3, $4, now() + interval '7 days')
+         RETURNING id`,
+        [
+          workspaceId,
+          `i-${rand()}@example.com`,
+          userId,
+          `t-${rand()}${rand()}`,
+        ],
+      );
+
+      // The subscription is the owner's; U only recorded a change on it.
+      const planCode = `T${rand()}`;
+      await client.query(
+        `INSERT INTO plans (code, name, base_price_cents,
+                            channels_per_workspace, members_per_workspace,
+                            max_workspaces)
+         VALUES ($1, 'Test', 0, 1, 1, 1)`,
+        [planCode],
+      );
+      const subscription = await client.query<{ id: string }>(
+        `INSERT INTO subscriptions (user_id, plan_code, status)
+         VALUES ($1, $2, 'active') RETURNING id`,
+        [ownerId, planCode],
+      );
+      const change = await client.query<{ id: string }>(
+        `INSERT INTO subscription_changes
+           (subscription_id, change_type, changed_by_user_id)
+         VALUES ($1, 'PLAN_UPGRADED', $2) RETURNING id`,
+        [subscription.rows[0].id, userId],
+      );
+
+      const usage = await client.query<{ id: string }>(
+        `INSERT INTO usage_events
+           (workspace_id, event_type, resource_type, quantity_before,
+            quantity_after, quantity_delta, triggered_by_user_id)
+         VALUES ($1, 'MEMBER_ADDED', 'MEMBER', 0, 1, 1, $2) RETURNING id`,
+        [workspaceId, userId],
+      );
+
+      // The campaign is the owner's; U only reviewed a post and acted on it.
+      const campaign = await client.query<{ id: string }>(
+        `INSERT INTO drip_campaigns
+           (workspace_id, created_by_id, name, niche, target_channel_ids,
+            occurrence_type, publish_time, start_date, end_date)
+         VALUES ($1, $2, 'c', 'n', '[]'::jsonb, 'daily', '09:00',
+                 '2026-01-01', '2026-01-31')
+         RETURNING id`,
+        [workspaceId, ownerId],
+      );
+      const campaignId = campaign.rows[0].id;
+      const dripPost = await client.query<{ id: string }>(
+        `INSERT INTO drip_posts
+           (drip_campaign_id, occurrence_number, scheduled_date,
+            scheduled_time, scheduled_at, ai_generation_at,
+            email_notification_at, reviewed_by_id)
+         VALUES ($1, 1, '2026-01-01', '09:00', now(), now(), now(), $2)
+         RETURNING id`,
+        [campaignId, userId],
+      );
+      const history = await client.query<{ id: string }>(
+        `INSERT INTO drip_campaign_history
+           (drip_campaign_id, action, performed_by_id)
+         VALUES ($1, 'paused', $2) RETURNING id`,
+        [campaignId, userId],
+      );
+
+      await client.query(
+        `INSERT INTO canva_connections
+           (workspace_id, user_id, access_token, refresh_token,
+            token_expires_at)
+         VALUES ($1, $2, 'a', 'r', now() + interval '1 hour')`,
+        [workspaceId, userId],
+      );
+
+      const deleted = await client.query(`DELETE FROM users WHERE id = $1`, [
+        userId,
+      ]);
+
+      const actor = async (sql: string, id: string) =>
+        (await client.query<{ v: string | null }>(sql, [id])).rows[0]?.v;
+      return {
+        deleted: deleted.rowCount,
+        invitedBy: await actor(
+          `SELECT invited_by AS v FROM workspace_invitations WHERE id = $1`,
+          invitation.rows[0].id,
+        ),
+        changedBy: await actor(
+          `SELECT changed_by_user_id AS v FROM subscription_changes WHERE id = $1`,
+          change.rows[0].id,
+        ),
+        triggeredBy: await actor(
+          `SELECT triggered_by_user_id AS v FROM usage_events WHERE id = $1`,
+          usage.rows[0].id,
+        ),
+        reviewedBy: await actor(
+          `SELECT reviewed_by_id AS v FROM drip_posts WHERE id = $1`,
+          dripPost.rows[0].id,
+        ),
+        performedBy: await actor(
+          `SELECT performed_by_id AS v FROM drip_campaign_history WHERE id = $1`,
+          history.rows[0].id,
+        ),
+        canvaRows: await countWhere(
+          client,
+          `SELECT count(*) AS n FROM canva_connections WHERE workspace_id = $1`,
+          workspaceId,
+        ),
+        workspaceRows: await countWhere(
+          client,
+          `SELECT count(*) AS n FROM workspace WHERE id = $1`,
+          workspaceId,
+        ),
+      };
+    });
+
+    // Every row survives with its actor cleared (a row that vanished would
+    // read as undefined, not null); the person's own Canva grant goes with
+    // them, and the owner's workspace is untouched.
+    expect(after).toEqual({
+      deleted: 1,
+      invitedBy: null,
+      changedBy: null,
+      triggeredBy: null,
+      reviewedBy: null,
+      performedBy: null,
+      canvaRows: 0,
+      workspaceRows: 1,
+    });
+  });
+
+  it('0091 refuses to delete a user who owns a workspace (23001), and the workspace survives', async () => {
+    const survivors = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const ownerId = await seedUser(client);
+      const workspaceId = await seedWorkspace(client, ownerId);
+      await expectPgError(client, '23001', () =>
+        client.query(`DELETE FROM users WHERE id = $1`, [ownerId]),
+      );
+      return {
+        users: await countWhere(
+          client,
+          `SELECT count(*) AS n FROM users WHERE id = $1`,
+          ownerId,
+        ),
+        workspaces: await countWhere(
+          client,
+          `SELECT count(*) AS n FROM workspace WHERE id = $1`,
+          workspaceId,
+        ),
+      };
+    });
+
+    expect(survivors).toEqual({ users: 1, workspaces: 1 });
   });
 });

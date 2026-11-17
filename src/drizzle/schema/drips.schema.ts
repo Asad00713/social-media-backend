@@ -198,7 +198,10 @@ export const dripPosts = pgTable('drip_posts', {
 
   // User review
   reviewedAt: timestamp('reviewed_at'),
-  reviewedById: uuid('reviewed_by_id').references(() => users.id),
+  // SET NULL (0091): a deleted reviewer leaves the post in place.
+  reviewedById: uuid('reviewed_by_id').references(() => users.id, {
+    onDelete: 'set null',
+  }),
   userEdits: jsonb('user_edits').$type<{
     originalContent: string;
     editedContent: string;
@@ -234,7 +237,10 @@ export const dripCampaignHistory = pgTable('drip_campaign_history', {
   previousStatus: varchar('previous_status', { length: 20 }),
   newStatus: varchar('new_status', { length: 20 }),
 
-  performedById: uuid('performed_by_id').references(() => users.id),
+  // SET NULL (0091): the history outlives the account that acted.
+  performedById: uuid('performed_by_id').references(() => users.id, {
+    onDelete: 'set null',
+  }),
   performedBySystem: boolean('performed_by_system').default(false).notNull(),
 
   details: jsonb('details').$type<Record<string, any>>(),
