@@ -7,11 +7,12 @@ import {
 import { MyWorkspacesService } from './my-workspaces.service';
 
 // 0080: REMOVED invitations. 0089: workspace columns the schema selects.
-// 0091 is not needed: nothing here deletes a user.
+// 0091: invited_by becomes NULLable (an invitation outlives its inviter).
 const MIGRATIONS = [
   '0080_member_soft_removal.sql',
   '0088_user_account_settings.sql',
   '0089_workspace_settings.sql',
+  '0091_users_fk_set_null.sql',
 ];
 
 const rand = () => Math.random().toString(36).slice(2, 10);
