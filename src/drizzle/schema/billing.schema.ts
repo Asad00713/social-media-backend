@@ -487,6 +487,20 @@ export const failedPayments = pgTable('failed_payments', {
   invoiceId: integer('invoice_id').references(() => invoices.id, {
     onDelete: 'set null',
   }),
+  /**
+   * The Stripe event that recorded this failure (migration 0089).
+   *
+   * The row's identity, so a redelivery cannot append a second one. It has to
+   * have one: the dunning gate counts ROWS (`unresolvedFailures.length >=
+   * MAX_FAILED_ATTEMPTS`), so a duplicate restricts an account a full failure
+   * early - and the webhook gate now releases its claim when a handler throws,
+   * precisely so that Stripe WILL retry.
+   *
+   * Nullable for the rows written before 0089, and the unique index is PARTIAL
+   * for the same reason: under a plain unique index every NULL is distinct in
+   * Postgres, which would permit exactly the duplicates this is meant to stop.
+   */
+  stripeEventId: varchar('stripe_event_id', { length: 255 }),
   failureReason: text('failure_reason'),
   attemptCount: integer('attempt_count').default(1).notNull(),
   userNotified: boolean('user_notified').default(false).notNull(),
