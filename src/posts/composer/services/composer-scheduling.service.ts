@@ -11,6 +11,7 @@ import {
   approvalForPart,
   assertApprovedFor,
   assertPolicyAllowsDirectSend,
+  canonicalJson,
   carryApproval,
   contentFingerprint,
   type ApprovableContent,
@@ -73,6 +74,66 @@ interface StoredPost {
   content: string | null;
   mediaItems: unknown;
   platformContent: unknown;
+}
+
+/** The shared metadata keys the publishers read (see sharedMetadata). */
+const SHARED_PUBLISH_KEYS = [
+  'hashtags',
+  'mentions',
+  'linkPreview',
+  'title',
+] as const;
+
+/** The server-owned series state on a stored repeat rule. */
+const SERIES_STATE_KEYS = [
+  'seriesId',
+  'occurrence',
+  'anchorDate',
+  'time',
+  'variations',
+];
+
+/**
+ * Besides the approvable content, what a pure re-time must leave unchanged
+ * for the approval policy to let it through.
+ */
+interface PublishExtras {
+  shared: Record<string, unknown>;
+  /** The repeat rule without its series state; null for no repeat. */
+  rule: unknown;
+  /** The rotating variations; left out when the request keeps the stored ones. */
+  variations?: unknown;
+}
+
+function pickShared(metadata: unknown): Record<string, unknown> {
+  const m = (metadata ?? {}) as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of SHARED_PUBLISH_KEYS) out[key] = m[key];
+  return out;
+}
+
+function ruleOf(recurrence: unknown): unknown {
+  if (!recurrence || typeof recurrence !== 'object') return null;
+  const rule: Record<string, unknown> = { ...(recurrence as object) };
+  for (const key of SERIES_STATE_KEYS) delete rule[key];
+  return rule;
+}
+
+/** The stored row's extras, shaped like the request's for comparison. */
+function storedExtras(
+  metadata: unknown,
+  outgoing: PublishExtras,
+): PublishExtras {
+  const recurrence = (
+    (metadata ?? {}) as { schedule?: { recurrence?: { variations?: unknown } } }
+  ).schedule?.recurrence;
+  return {
+    shared: pickShared(metadata),
+    rule: ruleOf(recurrence),
+    ...('variations' in outgoing
+      ? { variations: recurrence?.variations ?? null }
+      : {}),
+  };
 }
 
 /** What the approval-policy check reads from a stored row. */
@@ -140,22 +201,27 @@ export class ComposerSchedulingService {
 
   /**
    * The workspace approval policy for one send. A pure time move of a post
-   * that is already scheduled (same content, media, per-channel content and
-   * channels) is not gated, as in PostService.updatePost: it may predate the
-   * policy, and moving it sends nothing new.
+   * that is already scheduled is not gated, as in PostService.updatePost: it
+   * may predate the policy, and moving it sends nothing new. It is pure only
+   * when nothing that reaches the publishers changes: the content fingerprint
+   * (content, media, per-channel content, channels) AND the extras (the
+   * shared metadata, the repeat rule and the rotating variations).
    */
   private async assertPolicyAllows(
     workspaceId: string,
     userId: string,
     stored: PolicyRow | undefined,
     outgoing: ApprovableContent,
+    outgoingExtras: PublishExtras,
   ): Promise<void> {
     if (
       stored?.status === 'scheduled' &&
       contentFingerprint({
         ...stored,
         targets: stored.targets as ApprovableContent['targets'],
-      }) === contentFingerprint(outgoing)
+      }) === contentFingerprint(outgoing) &&
+      canonicalJson(storedExtras(stored.metadata, outgoingExtras)) ===
+        canonicalJson(outgoingExtras)
     ) {
       return;
     }
@@ -328,7 +394,11 @@ export class ComposerSchedulingService {
       platformContent: dto.perPlatform ?? {},
       targets: dto.channels,
     };
-    await this.assertPolicyAllows(workspaceId, userId, existing[0], outgoing);
+    await this.assertPolicyAllows(workspaceId, userId, existing[0], outgoing, {
+      shared: pickShared(metadata),
+      rule: rule ?? null,
+      ...(variations === undefined ? {} : { variations }),
+    });
     assertApprovedFor(existing[0]?.metadata, outgoing);
     Object.assign(metadata, carryApproval(existing[0]?.metadata, outgoing));
 
@@ -487,7 +557,11 @@ export class ComposerSchedulingService {
     };
     // The policy, once for the whole; approvalForPart then runs
     // assertApprovedFor for the whole and for each part.
-    await this.assertPolicyAllows(workspaceId, userId, stored, whole);
+    // A time per channel never repeats (refused above), so no rule.
+    await this.assertPolicyAllows(workspaceId, userId, stored, whole, {
+      shared: pickShared(shared),
+      rule: null,
+    });
 
     const siblings = groups.map((group, i) => {
       const perPlatform = overridesFor(dto.perPlatform, group.channels);

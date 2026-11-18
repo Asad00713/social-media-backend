@@ -31,6 +31,7 @@ import { assertNotInPast, refusal } from '../lib/refusal';
 import {
   assertApprovedFor,
   assertPolicyAllowsDirectSend,
+  canonicalJson,
   carryApproval,
   contentFingerprint,
   readApproval,
@@ -456,12 +457,20 @@ export class PostService {
         ? dto.scheduledAt !== null
         : existingPost.status === 'scheduled';
     // The workspace approval policy: a covered author's post with no approval
-    // request may not become scheduled, nor have its content changed while
-    // scheduled. A pure time move of a post already scheduled is not gated:
-    // calendar pull-sync moves posts that may predate the policy.
+    // request may not become scheduled, nor have what it publishes changed
+    // while scheduled. A pure time move of a post already scheduled is not
+    // gated (calendar pull-sync moves posts that may predate the policy), and
+    // it is pure only when nothing else that reaches the publishers changes:
+    // the content fingerprint AND metadata (thread, poll, firstComment and
+    // title live there on a legacy row).
+    const metadataChanged =
+      dto.metadata !== undefined &&
+      canonicalJson(withoutApproval(dto.metadata) ?? {}) !==
+        canonicalJson(withoutApproval(existingPost.metadata ?? {}) ?? {});
     if (
       willBeScheduled &&
       (existingPost.status !== 'scheduled' ||
+        metadataChanged ||
         contentFingerprint(nextContent) !== contentFingerprint(existingPost))
     ) {
       assertPolicyAllowsDirectSend(

@@ -653,6 +653,27 @@ describeDb('Draft approvals (database)', () => {
             ),
           ),
         ).toBe('APPROVAL_REQUIRED');
+        // So is a re-time that changes the title or starts a repeat: both
+        // reach what is published, though the content is the same.
+        const later = new Date(Date.now() + 10_800_000).toISOString();
+        for (const extra of [
+          { title: 'A new title' },
+          {
+            recurrence: { freq: 'daily', interval: 1, ends: { type: 'never' } },
+          },
+          { base: { ...scheduleBody(id).base, hashtags: ['#sale'] } },
+        ]) {
+          expect(
+            await codeOf(
+              h.scheduling.schedule(ws, member, {
+                ...scheduleBody(id),
+                scheduledAt: later,
+                ...extra,
+              } as any),
+            ),
+          ).toBe('APPROVAL_REQUIRED');
+        }
+        expect(h.queue.add).toHaveBeenCalledTimes(2);
       });
     });
 

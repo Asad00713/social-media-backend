@@ -35,7 +35,7 @@ const POLICY_403 = {
   error: 'Forbidden',
   code: 'APPROVAL_REQUIRED_BY_POLICY',
   message:
-    'Your workspace needs approval before posts go out. Ask an admin to launch this.',
+    'Your workspace needs approval before posts go out. Ask an admin or the owner to launch this.',
 };
 
 function build(covers: boolean) {
@@ -113,6 +113,53 @@ describe('DripService and the workspace approval policy', () => {
     expect(generate).toHaveBeenCalled();
     expect(scheduleAll).toHaveBeenCalled();
     await svc.approveDripPost('dp1', WS, ACTOR);
+    expect(writes).toContain('update');
+  });
+
+  it('refuses a covered person changing what an ACTIVE drip publishes', async () => {
+    const { svc } = build(true);
+    jest.spyOn(svc, 'getDripCampaign').mockResolvedValue({
+      id: 'd1',
+      status: 'active',
+      autoApprove: false,
+      tone: 'professional',
+      additionalPrompt: null,
+    } as any);
+    for (const dto of [
+      { autoApprove: true },
+      { tone: 'playful' },
+      { additionalPrompt: 'mention the sale' },
+    ]) {
+      expectPolicy403(
+        await errorOf(svc.updateDripCampaign('d1', WS, ACTOR, dto)),
+      );
+    }
+    expect(writes).toEqual([]);
+    // Same values, and fields that change nothing that goes out, are fine.
+    await svc.updateDripCampaign('d1', WS, ACTOR, {
+      tone: 'professional',
+      autoApprove: false,
+      name: 'Renamed',
+    });
+    expect(writes).toContain('update');
+  });
+
+  it('leaves a draft or paused drip, and an uncovered person, free to edit', async () => {
+    const covered = build(true);
+    await covered.svc.updateDripCampaign('d1', WS, ACTOR, { tone: 'playful' });
+    expect(covered.coversAuthor).not.toHaveBeenCalled();
+
+    const uncovered = build(false);
+    jest.spyOn(uncovered.svc, 'getDripCampaign').mockResolvedValue({
+      id: 'd1',
+      status: 'active',
+      autoApprove: false,
+      tone: 'professional',
+      additionalPrompt: null,
+    } as any);
+    await uncovered.svc.updateDripCampaign('d1', WS, ACTOR, {
+      autoApprove: true,
+    });
     expect(writes).toContain('update');
   });
 

@@ -43,7 +43,7 @@ const POLICY_403 = {
   error: 'Forbidden',
   code: 'APPROVAL_REQUIRED_BY_POLICY',
   message:
-    'Your workspace needs approval before posts go out. Ask an admin to launch this.',
+    'Your workspace needs approval before posts go out. Ask an admin or the owner to launch this.',
 };
 
 /** The real assertMayActivate over a coversAuthor double. */
@@ -194,13 +194,11 @@ describe('EvergreenService and the workspace approval policy', () => {
       .spyOn(svc as any, 'loadOwnedCampaign')
       .mockResolvedValue({ id: 'c1', status });
     jest.spyOn(svc as any, 'loadOwnedCategory').mockResolvedValue({ id: 'k1' });
-    jest
-      .spyOn(svc as any, 'loadOwnedPost')
-      .mockResolvedValue({
-        id: 'e1',
-        variations: [],
-        content: { caption: 'c' },
-      });
+    jest.spyOn(svc as any, 'loadOwnedPost').mockResolvedValue({
+      id: 'e1',
+      variations: [],
+      content: { caption: 'c' },
+    });
     jest.spyOn(svc, 'assembleEvergreen').mockResolvedValue({ id: 'c1' } as any);
     return { svc, pol };
   }
@@ -244,6 +242,61 @@ describe('EvergreenService and the workspace approval policy', () => {
       ACTOR,
     );
     expect(live.pol.coversAuthor).not.toHaveBeenCalled();
+  });
+
+  const category = {
+    id: 'k1',
+    channelIds: ['7', '8'],
+    schedule: { weekdays: [1], times: ['10:00'] },
+  };
+
+  it('refuses a covered person redirecting an ACTIVE campaign (channels, schedule)', async () => {
+    const { svc } = build(true, 'active');
+    selectRow = category;
+    expectPolicy403(
+      await errorOf(
+        svc.updateCategory(WS, 'c1', 'k1', { channelIds: ['7'] } as any, ACTOR),
+      ),
+    );
+    expectPolicy403(
+      await errorOf(
+        svc.updateCategory(
+          WS,
+          'c1',
+          'k1',
+          { schedule: { weekdays: [2], times: ['10:00'] } } as any,
+          ACTOR,
+        ),
+      ),
+    );
+    expect(writes).toEqual([]);
+    // The same channels in another order, the same schedule, or a rename.
+    await svc.updateCategory(
+      WS,
+      'c1',
+      'k1',
+      {
+        channelIds: ['8', '7'],
+        schedule: { times: ['10:00'], weekdays: [1] },
+        name: 'Tips',
+      } as any,
+      ACTOR,
+    );
+    expect(writes).toEqual(['update']);
+  });
+
+  it("leaves a draft campaign's categories free to edit", async () => {
+    const { svc, pol } = build(true, 'draft');
+    selectRow = category;
+    await svc.updateCategory(
+      WS,
+      'c1',
+      'k1',
+      { channelIds: ['9'] } as any,
+      ACTOR,
+    );
+    expect(pol.coversAuthor).not.toHaveBeenCalled();
+    expect(writes).toEqual(['update']);
   });
 
   it('lets an uncovered person add to a live pool', async () => {

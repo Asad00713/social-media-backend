@@ -9,7 +9,7 @@ import {
 import type { WorkspaceRole } from '../../../workspace-members/role-capabilities';
 import { WorkspaceRoleService } from '../../../workspace-members/workspace-role.service';
 import {
-  ACTIVATION_NEEDS_APPROVER_MESSAGE,
+  activationNeedsApproverMessage,
   approvalRequiredByPolicy,
 } from '../../lib/draft-approval';
 
@@ -57,14 +57,22 @@ export class ApprovalPolicyService {
   ) {}
 
   async coversAuthor(workspaceId: string, userId: string): Promise<boolean> {
+    return (await this.coveringPolicy(workspaceId, userId)) !== null;
+  }
+
+  /** The policy that covers this person, or null when none does. */
+  private async coveringPolicy(
+    workspaceId: string,
+    userId: string,
+  ): Promise<Exclude<ApprovalPolicy, 'none'> | null> {
     const [ws] = await this.db
       .select({ approvalPolicy: workspace.approvalPolicy })
       .from(workspace)
       .where(eq(workspace.id, workspaceId))
       .limit(1);
-    if (!ws || ws.approvalPolicy === 'none') return false;
+    if (!ws || ws.approvalPolicy === 'none') return null;
     const role = await this.roles.getRole(workspaceId, userId);
-    return policyCovers(ws.approvalPolicy, role);
+    return policyCovers(ws.approvalPolicy, role) ? ws.approvalPolicy : null;
   }
 
   /**
@@ -72,8 +80,9 @@ export class ApprovalPolicyService {
    * evergreen or drip activation. Call before the first write.
    */
   async assertMayActivate(workspaceId: string, userId: string): Promise<void> {
-    if (await this.coversAuthor(workspaceId, userId)) {
-      throw approvalRequiredByPolicy(ACTIVATION_NEEDS_APPROVER_MESSAGE);
+    const policy = await this.coveringPolicy(workspaceId, userId);
+    if (policy) {
+      throw approvalRequiredByPolicy(activationNeedsApproverMessage(policy));
     }
   }
 }

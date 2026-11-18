@@ -211,14 +211,13 @@ export class CampaignsService {
   /**
    * The workspace approval policy: campaign posts carry no per-post
    * approval, so a covered person may not set any going out (launch, resume,
-   * or a content edit of a launched slot). `actorId` is the caller; the
-   * controller always passes it.
+   * or a content edit of a launched slot). `actorId` is the caller, and is
+   * required: a check that an omitted id silently skipped would fail open.
    */
   private async assertMayActivate(
     workspaceId: string,
-    actorId: string | undefined,
+    actorId: string,
   ): Promise<void> {
-    if (!actorId) return;
     await this.approvalPolicy?.assertMayActivate(workspaceId, actorId);
   }
 
@@ -1073,7 +1072,7 @@ export class CampaignsService {
   async launch(
     workspaceId: string,
     id: string,
-    actorId?: string,
+    actorId: string,
   ): Promise<CampaignDto | EvergreenCampaignDto> {
     const campaign = await this.getOne(workspaceId, id); // 404 if wrong workspace
     // Every type, evergreen included, before anything is written.
@@ -1270,7 +1269,7 @@ export class CampaignsService {
   async resume(
     workspaceId: string,
     id: string,
-    actorId?: string,
+    actorId: string,
   ): Promise<CampaignDto | EvergreenCampaignDto> {
     const campaign = await this.getOne(workspaceId, id); // 404 if wrong workspace
     // Resume re-materializes pending slots: an activation like launch.
@@ -1544,7 +1543,7 @@ export class CampaignsService {
     workspaceId: string,
     id: string,
     dto: UpdateEventDto,
-    actorId?: string,
+    actorId: string,
   ): Promise<CampaignDto> {
     const campaign = await this.getOne(workspaceId, id);
 

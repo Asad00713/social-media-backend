@@ -61,8 +61,15 @@ export class EvergreenController {
     @Param('id') id: string,
     @Param('catId') catId: string,
     @Body() dto: UpdateEvergreenCategoryDto,
+    @CurrentUser() user: { userId: string; email: string },
   ) {
-    return this.evergreen.updateCategory(workspaceId, id, catId, dto);
+    return this.evergreen.updateCategory(
+      workspaceId,
+      id,
+      catId,
+      dto,
+      user.userId,
+    );
   }
 
   @RequireCapability('posts:publish')

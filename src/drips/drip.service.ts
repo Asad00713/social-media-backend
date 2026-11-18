@@ -51,6 +51,9 @@ export interface UpdateDripCampaignDto {
   autoApprove?: boolean;
 }
 
+/** Fields that change what an active drip campaign publishes. */
+const DRIP_PUBLISH_FIELDS = ['autoApprove', 'tone', 'additionalPrompt'] as const;
+
 @Injectable()
 export class DripService {
   private readonly logger = new Logger(DripService.name);
@@ -599,6 +602,18 @@ export class DripService {
           `Cannot update ${disallowedFields.join(', ')} for non-draft campaigns`,
         );
       }
+    }
+
+    // On an ACTIVE campaign these change what goes out (whether AI posts
+    // publish without review, and what the AI writes): an activation in all
+    // but name, so the approval policy applies.
+    if (
+      campaign.status === 'active' &&
+      DRIP_PUBLISH_FIELDS.some(
+        (f) => dto[f] !== undefined && dto[f] !== campaign[f],
+      )
+    ) {
+      await this.assertMayActivate(workspaceId, userId);
     }
 
     const [updatedCampaign] = await db

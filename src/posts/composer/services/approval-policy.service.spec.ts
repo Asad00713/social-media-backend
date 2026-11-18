@@ -68,22 +68,35 @@ describe('ApprovalPolicyService.coversAuthor', () => {
     ).resolves.toBe(false);
   });
 
-  it('assertMayActivate refuses a covered person with the policy 403', async () => {
-    const err = await build('members', 'MEMBER')
-      .svc.assertMayActivate('ws-1', 'u-1')
-      .then(
-        () => null,
-        (e: unknown) => e,
-      );
-    expect(err).toBeInstanceOf(ForbiddenException);
-    expect((err as ForbiddenException).getResponse()).toEqual({
-      statusCode: 403,
-      error: 'Forbidden',
-      code: 'APPROVAL_REQUIRED_BY_POLICY',
-      message:
-        'Your workspace needs approval before posts go out. Ask an admin to launch this.',
-    });
-  });
+  it.each<[ApprovalPolicy, WorkspaceRole, string]>([
+    [
+      'members',
+      'MEMBER',
+      'Your workspace needs approval before posts go out. Ask an admin or the owner to launch this.',
+    ],
+    [
+      'everyone',
+      'ADMIN',
+      'Your workspace needs approval before posts go out. Ask the workspace owner to launch this.',
+    ],
+  ])(
+    'assertMayActivate under %s refuses a covered %s with the policy 403 and its own wording',
+    async (policy, role, message) => {
+      const err = await build(policy, role)
+        .svc.assertMayActivate('ws-1', 'u-1')
+        .then(
+          () => null,
+          (e: unknown) => e,
+        );
+      expect(err).toBeInstanceOf(ForbiddenException);
+      expect((err as ForbiddenException).getResponse()).toEqual({
+        statusCode: 403,
+        error: 'Forbidden',
+        code: 'APPROVAL_REQUIRED_BY_POLICY',
+        message,
+      });
+    },
+  );
 
   it('assertMayActivate lets an uncovered person through', async () => {
     await expect(

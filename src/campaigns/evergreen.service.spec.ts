@@ -538,7 +538,7 @@ describe('EvergreenService.updateCategory', () => {
       CATEGORY_ID,
       {
         name: 'Tips & Tricks',
-      },
+      }, 'actor-1',
     );
 
     expect(dto.categories[0].name).toBe('Tips & Tricks');
@@ -603,7 +603,7 @@ describe('EvergreenService.addPost', () => {
         threadParts: [],
         templateIds: [],
       },
-    });
+    }, 'actor-1');
 
     expect(inserts.posts).toHaveLength(1);
     const inserted = inserts.posts[0] as {
@@ -638,7 +638,7 @@ describe('EvergreenService.addPost', () => {
         templateIds: [],
       },
       recyclePolicy: { mode: 'maxCount', maxCount: 5 },
-    });
+    }, 'actor-1');
 
     const inserted = inserts.posts[0] as {
       recyclePolicy: { mode: string; maxCount?: number };
@@ -663,7 +663,7 @@ describe('EvergreenService.updatePost', () => {
       POST_ID,
       {
         minGapHours: 12,
-      },
+      }, 'actor-1',
     );
 
     expect(dto.categories[0].posts[0].minGapHours).toBe(12);

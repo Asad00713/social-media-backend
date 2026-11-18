@@ -100,9 +100,17 @@ export function newApprovalRequest(
 /** 403 code: the workspace approval policy forbids this action. */
 export const APPROVAL_REQUIRED_BY_POLICY = 'APPROVAL_REQUIRED_BY_POLICY';
 
-/** Why a campaign, evergreen or drip activation is refused under the policy. */
-export const ACTIVATION_NEEDS_APPROVER_MESSAGE =
-  'Your workspace needs approval before posts go out. Ask an admin to launch this.';
+/**
+ * Why a campaign, evergreen or drip activation is refused under the policy.
+ * Under `everyone` an ADMIN is covered too, so only the owner can launch.
+ */
+export function activationNeedsApproverMessage(
+  policy: 'members' | 'everyone',
+): string {
+  return policy === 'everyone'
+    ? 'Your workspace needs approval before posts go out. Ask the workspace owner to launch this.'
+    : 'Your workspace needs approval before posts go out. Ask an admin or the owner to launch this.';
+}
 
 /** The policy's 403, in the `{ statusCode, error, code, message }` shape. */
 export function approvalRequiredByPolicy(message: string): ForbiddenException {

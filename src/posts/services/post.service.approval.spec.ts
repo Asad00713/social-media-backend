@@ -299,6 +299,46 @@ describe('PostService and the workspace approval policy (covered author)', () =>
     expect(writes.sets.length).toBeGreaterThan(0);
   });
 
+  it('a time move that also changes metadata (thread, firstComment, title) is not pure', async () => {
+    for (const metadata of [
+      { title: 'T', firstComment: 'Link in bio' },
+      { title: 'T', thread: [{ text: 'and another thing' }] },
+      { title: 'Retitled' },
+    ]) {
+      const svc = makeService(plain('scheduled'), true);
+      expect(
+        await codeOf(
+          svc.updatePost(
+            'p1',
+            WS,
+            'u1',
+            { scheduledAt: later(), metadata } as any,
+            'MEMBER',
+          ),
+        ),
+      ).toBe('APPROVAL_REQUIRED');
+      // No time at all: still a change to a scheduled post.
+      expect(
+        await codeOf(
+          svc.updatePost('p1', WS, 'u1', { metadata } as any, 'MEMBER'),
+        ),
+      ).toBe('APPROVAL_REQUIRED');
+    }
+    expect(writes.sets).toHaveLength(0);
+  });
+
+  it('a time move that resends the stored metadata unchanged is still pure', async () => {
+    const svc = makeService(plain('scheduled'), true);
+    await svc.updatePost(
+      'p1',
+      WS,
+      'u1',
+      { scheduledAt: later(), metadata: { title: 'T' } } as any,
+      'MEMBER',
+    );
+    expect(writes.sets.length).toBeGreaterThan(0);
+  });
+
   it("refuses a person's Publish now, but not a drip occurrence (trigger scheduled)", async () => {
     const svc = makeService(plain('draft'), true);
     expect(await codeOf(svc.publishPost('p1', WS, 'u1'))).toBe(

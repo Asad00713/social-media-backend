@@ -33,6 +33,7 @@ import {
 } from './evergreen-rotation.util';
 import { CampaignPublishingService } from './campaign-publishing.service';
 import { ApprovalPolicyService } from '../posts/composer/services/approval-policy.service';
+import { canonicalJson } from '../posts/lib/draft-approval';
 import { QUEUES } from '../queue/queue.module';
 import { GroqService, type Platform } from '../ai/groq.service';
 import { AiTokenService } from '../ai/services/ai-token.service';
@@ -151,9 +152,9 @@ export class EvergreenService {
   private async assertMayChangeLivePool(
     workspaceId: string,
     campaign: Campaign,
-    actorId: string | undefined,
+    actorId: string,
   ): Promise<void> {
-    if (!actorId || campaign.status !== 'active') return;
+    if (campaign.status !== 'active') return;
     await this.approvalPolicy?.assertMayActivate(workspaceId, actorId);
   }
 
@@ -395,8 +396,9 @@ export class EvergreenService {
     campaignId: string,
     categoryId: string,
     dto: UpdateEvergreenCategoryDto,
+    actorId: string,
   ): Promise<EvergreenCampaignDto> {
-    await this.loadOwnedCampaign(workspaceId, campaignId);
+    const campaign = await this.loadOwnedCampaign(workspaceId, campaignId);
 
     const [existing] = await db
       .select()
@@ -409,6 +411,20 @@ export class EvergreenService {
       );
     if (!existing) {
       throw new NotFoundException('Category not found');
+    }
+
+    // Where and when an ACTIVE campaign's approved pool goes out is part of
+    // what it publishes: a covered person may not redirect it.
+    const sameChannels = (a: unknown, b: unknown): boolean =>
+      canonicalJson([...((a as string[]) ?? [])].sort()) ===
+      canonicalJson([...((b as string[]) ?? [])].sort());
+    if (
+      (dto.channelIds !== undefined &&
+        !sameChannels(dto.channelIds, existing.channelIds)) ||
+      (dto.schedule !== undefined &&
+        canonicalJson(dto.schedule) !== canonicalJson(existing.schedule))
+    ) {
+      await this.assertMayChangeLivePool(workspaceId, campaign, actorId);
     }
 
     const updates: Partial<EvergreenCategory> = { updatedAt: new Date() };
@@ -508,7 +524,7 @@ export class EvergreenService {
     campaignId: string,
     categoryId: string,
     dto: CreateEvergreenPostDto,
-    actorId?: string,
+    actorId: string,
   ): Promise<EvergreenCampaignDto> {
     const campaign = await this.loadOwnedCampaign(workspaceId, campaignId);
     await this.loadOwnedCategory(campaignId, categoryId);
@@ -537,7 +553,7 @@ export class EvergreenService {
     categoryId: string,
     postId: string,
     dto: UpdateEvergreenPostDto,
-    actorId?: string,
+    actorId: string,
   ): Promise<EvergreenCampaignDto> {
     const campaign = await this.loadOwnedCampaign(workspaceId, campaignId);
     await this.loadOwnedCategory(campaignId, categoryId);
@@ -730,7 +746,7 @@ export class EvergreenService {
     categoryId: string,
     postId: string,
     dto: AddVariationDto,
-    actorId?: string,
+    actorId: string,
   ): Promise<EvergreenCampaignDto> {
     const campaign = await this.loadOwnedCampaign(workspaceId, campaignId);
     await this.loadOwnedCategory(campaignId, categoryId);

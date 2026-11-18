@@ -56,12 +56,13 @@ describe('EvergreenController', () => {
 
   it('updateCategory delegates to service.updateCategory(workspaceId, campaignId, categoryId, dto)', async () => {
     const dto = { name: 'Renamed' } as UpdateEvergreenCategoryDto;
-    await controller.updateCategory(workspaceId, campaignId, categoryId, dto);
+    await controller.updateCategory(workspaceId, campaignId, categoryId, dto, user);
     expect(mockService.updateCategory).toHaveBeenCalledWith(
       workspaceId,
       campaignId,
       categoryId,
       dto,
+      user.userId,
     );
   });
 
