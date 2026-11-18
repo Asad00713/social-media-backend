@@ -426,10 +426,14 @@ describe('WorkspaceMembersService.restoreMember', () => {
     });
     expect(res.droppedInvitations).toEqual([]);
     expect(JSON.stringify(res)).not.toContain('secret');
+    // The fourth argument is the transaction, and it is the point: the
+    // increment has to run inside the one holding the seat lock, or the next
+    // seat check reads a stale count and a rollback leaves the seat counted.
     expect(usage.incrementMemberCount).toHaveBeenCalledWith(
       WS,
       ADMIN,
       MEMBER_USER,
+      expect.objectContaining({ update: expect.any(Function) }),
     );
     // Conditional on REMOVED, the window, and nobody with this user or
     // address ACCEPTED meanwhile: a double click or a racing accept counts once.
