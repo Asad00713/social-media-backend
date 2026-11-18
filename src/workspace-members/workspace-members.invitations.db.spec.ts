@@ -53,13 +53,14 @@ async function seedInvitation(
     email?: string;
     message?: string | null;
     createdAtMsAgo?: number;
+    role?: 'ADMIN' | 'MEMBER' | 'GUEST';
   },
 ): Promise<{ id: string; token: string }> {
   const token = rand() + rand();
   const r = await client.query<{ id: string }>(
     `INSERT INTO workspace_invitations
        (workspace_id, email, role, status, invited_by, token, expires_at, message, created_at)
-     VALUES ($1, $2, 'MEMBER', $3, $4, $5, $6::timestamp, $7, $8::timestamp)
+     VALUES ($1, $2, $9::member_role, $3, $4, $5, $6::timestamp, $7, $8::timestamp)
      RETURNING id`,
     [
       workspaceId,
@@ -70,6 +71,7 @@ async function seedInvitation(
       new Date(Date.now() + opts.expiresInMs).toISOString(),
       opts.message ?? null,
       new Date(Date.now() - (opts.createdAtMsAgo ?? 0)).toISOString(),
+      opts.role ?? 'MEMBER',
     ],
   );
   return { id: r.rows[0].id, token };
@@ -103,6 +105,8 @@ function run<T>(
   return withRollbackDb(MIGRATIONS, (db: DbType, client) => {
     const usage = {
       getWorkspaceUsage: jest.fn().mockResolvedValue(opts),
+      incrementMemberCount: jest.fn().mockResolvedValue(undefined),
+      decrementMemberCount: jest.fn().mockResolvedValue(undefined),
     };
     const roleService = {
       isPlatformSuperAdmin: jest.fn().mockResolvedValue(false),
@@ -568,6 +572,125 @@ describeDb('WorkspaceMembersService.resendInvitation (database)', () => {
       await expect(
         service.resendInvitation(ws, inv.id, owner.id),
       ).rejects.toMatchObject({ status: 404 });
+    });
+  });
+});
+
+describeDb('guests use no seat (database)', () => {
+  it('pending guest invitations do not reduce freeSeats; pending member and admin ones do', async () => {
+    await run({ membersLimit: 5, membersCount: 1 }, async (service, client) => {
+      const owner = await seedUser(client, 'Owner');
+      const ws = await seedWorkspace(client, owner.id);
+      for (const role of ['GUEST', 'GUEST', 'MEMBER', 'ADMIN'] as const) {
+        await seedInvitation(client, ws, {
+          status: 'PENDING',
+          expiresInMs: DAY_MS,
+          invitedBy: owner.id,
+          role,
+        });
+      }
+      // 5 - (1 accepted + 2 seat-holding pending)
+      expect(await service.freeSeats(ws)).toBe(2);
+    });
+  });
+
+  it('a full workspace takes a batch of guests and refuses one of members, with the code', async () => {
+    await run(FULL, async (service, client) => {
+      const owner = await seedUser(client, 'Owner');
+      const ws = await seedWorkspace(client, owner.id);
+
+      const res = await service.batchInvite(
+        ws,
+        [
+          { email: `${rand()}@example.test`, role: 'GUEST' },
+          { email: `${rand()}@example.test`, role: 'GUEST' },
+        ],
+        owner.id,
+      );
+      expect(res.results.map((r) => r.status)).toEqual(['invited', 'invited']);
+
+      const err = await service
+        .batchInvite(
+          ws,
+          [{ email: `${rand()}@example.test`, role: 'MEMBER' }],
+          owner.id,
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ForbiddenException);
+      expect((err as ForbiddenException).getResponse()).toMatchObject({
+        statusCode: 403,
+        code: 'SEAT_LIMIT_EXCEEDED',
+      });
+    });
+  });
+
+  it('an expired guest invitation is resent on a full workspace', async () => {
+    await run(FULL, async (service, client) => {
+      const owner = await seedUser(client, 'Owner');
+      const ws = await seedWorkspace(client, owner.id);
+      const inv = await seedInvitation(client, ws, {
+        status: 'EXPIRED',
+        expiresInMs: -2 * DAY_MS,
+        invitedBy: owner.id,
+        role: 'GUEST',
+      });
+
+      const view = await service.resendInvitation(ws, inv.id, owner.id);
+
+      expect(view.status).toBe('PENDING');
+      expect((await rowState(client, inv.id)).status).toBe('PENDING');
+    });
+  });
+
+  it('promoting a guest needs a free seat, and demoting frees one', async () => {
+    await run(FULL, async (service, client) => {
+      const owner = await seedUser(client, 'Owner');
+      const ws = await seedWorkspace(client, owner.id);
+      const guest = await seedUser(client, 'Guest');
+      const row = await client.query<{ id: string }>(
+        `INSERT INTO workspace_invitations
+           (workspace_id, email, user_id, role, status, token, expires_at, accepted_at)
+         VALUES ($1, $2, $3, 'GUEST', 'ACCEPTED', $4, now(), now())
+         RETURNING id`,
+        [ws, guest.email, guest.id, rand() + rand()],
+      );
+      const id = row.rows[0].id;
+      const roleOf = async () =>
+        (
+          await client.query<{ role: string }>(
+            `SELECT role FROM workspace_invitations WHERE id = $1`,
+            [id],
+          )
+        ).rows[0].role;
+
+      const err = await service
+        .updateMemberRole(ws, id, { role: 'MEMBER' } as never, owner.id)
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ForbiddenException);
+      expect((err as ForbiddenException).getResponse()).toMatchObject({
+        code: 'SEAT_LIMIT_EXCEEDED',
+      });
+      expect(await roleOf()).toBe('GUEST');
+    });
+
+    await run(ROOMY, async (service, client) => {
+      const owner = await seedUser(client, 'Owner');
+      const ws = await seedWorkspace(client, owner.id);
+      const member = await seedUser(client, 'Member');
+      const row = await client.query<{ id: string }>(
+        `INSERT INTO workspace_invitations
+           (workspace_id, email, user_id, role, status, token, expires_at, accepted_at)
+         VALUES ($1, $2, $3, 'MEMBER', 'ACCEPTED', $4, now(), now())
+         RETURNING id`,
+        [ws, member.email, member.id, rand() + rand()],
+      );
+      const updated = await service.updateMemberRole(
+        ws,
+        row.rows[0].id,
+        { role: 'GUEST' } as never,
+        owner.id,
+      );
+      expect(updated.role).toBe('GUEST');
     });
   });
 });

@@ -4,7 +4,7 @@ import {
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, ne, sql } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import {
   workspaceUsage,
@@ -367,7 +367,9 @@ export class UsageService {
 
   // Recalculate workspace usage from actual data
   async recalculateWorkspaceUsage(workspaceId: string): Promise<void> {
-    // Count actual members (ACCEPTED invitations)
+    // Count actual members (ACCEPTED invitations). Guests are free and use no
+    // seat, so they are not counted: this must agree with the increments and
+    // decrements in WorkspaceMembersService.
     const [memberResult] = await db
       .select({ count: sql<number>`count(*)` })
       .from(workspaceInvitation)
@@ -375,6 +377,7 @@ export class UsageService {
         and(
           eq(workspaceInvitation.workspaceId, workspaceId),
           eq(workspaceInvitation.status, 'ACCEPTED'),
+          ne(workspaceInvitation.role, 'GUEST'),
         ),
       );
 

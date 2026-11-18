@@ -125,13 +125,33 @@ export async function lockWorkspaceSeats(
   );
 }
 
+export const SEAT_LIMIT_EXCEEDED = 'SEAT_LIMIT_EXCEEDED' as const;
+
+/**
+ * Guests are free: they never take a seat. Only an ADMIN or a MEMBER does,
+ * whether as an accepted member or as a pending invitation. A role left out
+ * of an invite defaults to MEMBER, so it takes a seat.
+ */
+export function usesSeat(role: string | null | undefined): boolean {
+  return role !== 'GUEST';
+}
+
+/**
+ * The 403 for "no seat left". The body keeps the text the message always had
+ * (older clients parse `SEAT_LIMIT_EXCEEDED:` out of it) and adds a
+ * machine-readable `code`, as CHANNEL_LIMIT_REACHED does. An object response
+ * is sent as-is, so the standard fields are spelled out.
+ */
 function seatLimitExceeded(
   free: number,
   requested: number,
 ): ForbiddenException {
-  return new ForbiddenException(
-    `SEAT_LIMIT_EXCEEDED: ${Math.max(0, free)} seat(s) left, ${requested} requested`,
-  );
+  return new ForbiddenException({
+    statusCode: 403,
+    error: 'Forbidden',
+    code: SEAT_LIMIT_EXCEEDED,
+    message: `SEAT_LIMIT_EXCEEDED: ${Math.max(0, free)} seat(s) left, ${requested} requested`,
+  });
 }
 
 @Injectable()
@@ -178,11 +198,14 @@ export class WorkspaceMembersService {
 
     // Seat gate and insert under the workspace's seat lock, so two invites
     // racing for the last seat cannot both get it. Same gate as batch invite:
-    // accepted members + pending invitations against the limit.
+    // accepted members + pending invitations against the limit. A guest is
+    // free and is never refused for seats.
     const invitation = await this.db.transaction(async (tx) => {
       await lockWorkspaceSeats(tx, workspaceId);
-      const free = await this.freeSeats(workspaceId, undefined, tx);
-      if (free < 1) throw seatLimitExceeded(free, 1);
+      if (usesSeat(inviteMemberDto.role)) {
+        const free = await this.freeSeats(workspaceId, undefined, tx);
+        if (free < 1) throw seatLimitExceeded(free, 1);
+      }
       return this.createInvitation(tx, workspaceData.ownerId, workspaceId, {
         email: inviteMemberDto.email,
         role: inviteMemberDto.role as MemberRoleName | undefined,
@@ -313,9 +336,14 @@ export class WorkspaceMembersService {
     // only that address). Emails go out after the commit.
     const outcomes = await this.db.transaction(async (tx) => {
       await lockWorkspaceSeats(tx, workspaceId);
-      const free = await this.freeSeats(workspaceId, undefined, tx);
-      if (invites.length > free) {
-        throw seatLimitExceeded(free, invites.length);
+      // Only the invites that take a seat are counted: guests are free, so a
+      // full workspace still takes a batch of guests.
+      const seatsNeeded = invites.filter((i) => usesSeat(i.role)).length;
+      if (seatsNeeded > 0) {
+        const free = await this.freeSeats(workspaceId, undefined, tx);
+        if (seatsNeeded > free) {
+          throw seatLimitExceeded(free, seatsNeeded);
+        }
       }
 
       const out: {
@@ -463,15 +491,18 @@ export class WorkspaceMembersService {
       }
 
       // Counted before the lock is released, so the next seat check sees it.
-      try {
-        await this.usageService.incrementMemberCount(
-          invitation.workspaceId,
-          currentUserId,
-          currentUserId,
-        );
-      } catch (error) {
-        // Log but don't fail if usage tracking fails
-        console.error('Failed to track member usage:', error);
+      // A guest holds no seat, so the seat counter is left alone.
+      if (usesSeat(accepted.role)) {
+        try {
+          await this.usageService.incrementMemberCount(
+            invitation.workspaceId,
+            currentUserId,
+            currentUserId,
+          );
+        } catch (error) {
+          // Log but don't fail if usage tracking fails
+          console.error('Failed to track member usage:', error);
+        }
       }
       return accepted;
     });
@@ -718,8 +749,11 @@ export class WorkspaceMembersService {
         }
         // A lapsed PENDING row is counted by freeSeats already; leaving this
         // address out makes both kinds of lapsed row ask for the seat anew.
-        const free = await this.freeSeats(workspaceId, email, tx);
-        if (free < 1) throw seatLimitExceeded(free, 1);
+        // A guest invitation holds no seat, so it is never refused for one.
+        if (usesSeat(row.role)) {
+          const free = await this.freeSeats(workspaceId, email, tx);
+          if (free < 1) throw seatLimitExceeded(free, 1);
+        }
       }
 
       const [updated] = await tx
@@ -938,16 +972,67 @@ export class WorkspaceMembersService {
       throw new NotFoundException('Member not found in this workspace');
     }
 
-    const [updatedMember] = await this.db
-      .update(workspaceInvitation)
-      .set({
-        role: updateMemberDto.role as 'ADMIN' | 'MEMBER' | 'GUEST',
-        updatedAt: new Date(),
-      })
-      .where(eq(workspaceInvitation.id, memberId))
-      .returning();
+    const newRole = updateMemberDto.role as MemberRoleName;
 
-    return withoutToken(updatedMember);
+    // Under the workspace's seat lock: moving between GUEST and a seat role
+    // changes the seats in use, so it is checked and counted like an accept.
+    // The row is read again inside the lock, so the move is judged against
+    // the role it really has by then.
+    const updated = await this.db.transaction(async (tx) => {
+      await lockWorkspaceSeats(tx, workspaceId);
+
+      const current = await tx.query.workspaceInvitation.findFirst({
+        where: and(
+          eq(workspaceInvitation.workspaceId, workspaceId),
+          eq(workspaceInvitation.id, memberId),
+          eq(workspaceInvitation.status, 'ACCEPTED'),
+        ),
+      });
+      if (!current) {
+        throw new NotFoundException('Member not found in this workspace');
+      }
+
+      // +1 promoting a guest, -1 demoting to guest, 0 otherwise.
+      const seatDelta =
+        usesSeat(newRole) === usesSeat(current.role)
+          ? 0
+          : usesSeat(newRole)
+            ? 1
+            : -1;
+      if (seatDelta === 1) {
+        const free = await this.freeSeats(workspaceId, undefined, tx);
+        if (free < 1) throw seatLimitExceeded(free, 1);
+      }
+
+      const [row] = await tx
+        .update(workspaceInvitation)
+        .set({ role: newRole, updatedAt: new Date() })
+        .where(eq(workspaceInvitation.id, memberId))
+        .returning();
+
+      // Counted before the lock is released, so the next seat check sees it.
+      try {
+        if (seatDelta === 1) {
+          await this.usageService.incrementMemberCount(
+            workspaceId,
+            currentUserId,
+            current.userId || undefined,
+          );
+        } else if (seatDelta === -1) {
+          await this.usageService.decrementMemberCount(
+            workspaceId,
+            currentUserId,
+            current.userId || undefined,
+          );
+        }
+      } catch (error) {
+        // Log but don't fail if usage tracking fails (as accept and remove do)
+        console.error('Failed to track member role change:', error);
+      }
+      return row;
+    });
+
+    return withoutToken(updated);
   }
 
   // Remove member (only ACCEPTED members)
@@ -1015,16 +1100,18 @@ export class WorkspaceMembersService {
       throw new NotFoundException('Member not found in this workspace');
     }
 
-    // Track usage - decrement member count
-    try {
-      await this.usageService.decrementMemberCount(
-        workspaceId,
-        currentUserId,
-        member.userId || undefined,
-      );
-    } catch (error) {
-      // Log but don't fail if usage tracking fails
-      console.error('Failed to track member removal:', error);
+    // Track usage - decrement member count. A guest never took a seat.
+    if (usesSeat(member.role)) {
+      try {
+        await this.usageService.decrementMemberCount(
+          workspaceId,
+          currentUserId,
+          member.userId || undefined,
+        );
+      } catch (error) {
+        // Log but don't fail if usage tracking fails
+        console.error('Failed to track member removal:', error);
+      }
     }
 
     if (member.userId && member.userId !== currentUserId) {
@@ -1158,12 +1245,15 @@ export class WorkspaceMembersService {
       }
 
       // The re-invitation deleted below does not hold a seat against this.
-      const free = await this.freeSeats(workspaceId, email, tx);
-      if (free < 1) {
-        throw memberConflict(
-          'SEAT_LIMIT_EXCEEDED',
-          'SEAT_LIMIT_EXCEEDED: 0 seat(s) left, 1 requested',
-        );
+      // A removed guest took no seat, so restoring one needs none.
+      if (usesSeat(row.role)) {
+        const free = await this.freeSeats(workspaceId, email, tx);
+        if (free < 1) {
+          throw memberConflict(
+            'SEAT_LIMIT_EXCEEDED',
+            'SEAT_LIMIT_EXCEEDED: 0 seat(s) left, 1 requested',
+          );
+        }
       }
 
       // Conditional on: still REMOVED, inside the window, and nobody with
@@ -1215,15 +1305,17 @@ export class WorkspaceMembersService {
         });
 
       // Counted before the lock is released, so the next seat check sees it.
-      try {
-        await this.usageService.incrementMemberCount(
-          workspaceId,
-          currentUserId,
-          userId,
-        );
-      } catch (error) {
-        // Log but don't fail if usage tracking fails (as accept and remove do)
-        console.error('Failed to track member restore:', error);
+      if (usesSeat(restoredRow.role)) {
+        try {
+          await this.usageService.incrementMemberCount(
+            workspaceId,
+            currentUserId,
+            userId,
+          );
+        } catch (error) {
+          // Log but don't fail if usage tracking fails (as accept and remove do)
+          console.error('Failed to track member restore:', error);
+        }
       }
 
       return { restored: restoredRow, dropped: droppedRows };
@@ -1264,7 +1356,9 @@ export class WorkspaceMembersService {
 
   /**
    * Seats left: the member limit (with purchased extras) minus accepted
-   * members and pending invitations, which reserve a seat each.
+   * members and pending invitations, which reserve a seat each. Guests use
+   * no seat: `membersCount` leaves them out (accept, restore, remove and role
+   * changes keep it so) and a pending GUEST invitation reserves nothing.
    * `exceptPendingTo` leaves out pending invitations to that normalized
    * address. No usage record reads as no seats, conservatively for a gate.
    */
@@ -1290,12 +1384,13 @@ export class WorkspaceMembersService {
         eq(workspaceInvitation.workspaceId, workspaceId),
         eq(workspaceInvitation.status, 'PENDING'),
       ),
-      columns: { email: true },
+      columns: { email: true, role: true },
     });
+    const seatHolders = pending.filter((p) => usesSeat(p.role));
     const reservedByPending = exceptPendingTo
-      ? pending.filter((p) => normalizeEmail(p.email) !== exceptPendingTo)
+      ? seatHolders.filter((p) => normalizeEmail(p.email) !== exceptPendingTo)
           .length
-      : pending.length;
+      : seatHolders.length;
     return membersLimit - (membersCount + reservedByPending);
   }
 
