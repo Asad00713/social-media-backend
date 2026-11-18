@@ -27,13 +27,19 @@ SET members_count = s.n,
     last_calculated_at = now(),
     updated_at = now()
 FROM (
+  -- One grouped pass over workspace_invitations (no per-row subquery: the
+  -- table has no workspace_id index, so a correlated count would scan it once
+  -- per workspace).
   SELECT wu.workspace_id,
-         (SELECT count(*)
-            FROM workspace_invitations i
-           WHERE i.workspace_id = wu.workspace_id
-             AND i.status = 'ACCEPTED'
-             AND i.role <> 'GUEST')::int AS n
+         COALESCE(c.n, 0)::int AS n
     FROM workspace_usage wu
+    LEFT JOIN (
+      SELECT i.workspace_id, count(*) AS n
+        FROM workspace_invitations i
+       WHERE i.status = 'ACCEPTED'
+         AND i.role <> 'GUEST'
+       GROUP BY i.workspace_id
+    ) c ON c.workspace_id = wu.workspace_id
 ) s
 WHERE s.workspace_id = u.workspace_id
   AND u.members_count IS DISTINCT FROM s.n;
