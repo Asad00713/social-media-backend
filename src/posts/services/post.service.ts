@@ -102,7 +102,7 @@ import {
   classifyPublishError,
 } from '../composer/services/composer-error-mapper.service';
 import { REMINDER_FAILURE_PREFIX } from '../lib/post-failure';
-import { livePosts } from '../soft-delete/soft-delete';
+import { livePosts, liveWorkspacePosts } from '../soft-delete/soft-delete';
 
 export interface CreatePostDto {
   content?: string;
@@ -316,6 +316,25 @@ export class PostService {
   /**
    * Get a post by ID
    */
+  /**
+   * One post, or a 404.
+   *
+   * `liveWorkspacePosts()` matters here more than anywhere else: this is the
+   * ONLY read `publishPost` performs to load the row, and the direct-publish
+   * callers do not go through `PostPublishProcessor`, so its own guard is not
+   * in their path. The drip processor calls `publishPost` straight
+   * (`drips/processors/drip.processor.ts`), and a drip post in a soft-deleted
+   * workspace published to the platform for real.
+   *
+   * So this is the chokepoint rather than one more guarded read: every caller
+   * that publishes without the processor funnels through here. Guarding each
+   * background read one at a time structurally cannot reach `src/campaigns` or
+   * `src/drips`.
+   *
+   * Safe for the user-facing callers: they all pass a `workspaceId` the
+   * request is already scoped to, and a deleted workspace is unreachable by
+   * routing, so this can only ever reject a post nobody could have asked for.
+   */
   async getPost(
     postId: string,
     workspaceId: string,
@@ -323,7 +342,14 @@ export class PostService {
     const [post] = await db
       .select()
       .from(posts)
-      .where(and(eq(posts.id, postId), eq(posts.workspaceId, workspaceId), livePosts()));
+      .where(
+        and(
+          eq(posts.id, postId),
+          eq(posts.workspaceId, workspaceId),
+          livePosts(),
+          liveWorkspacePosts(),
+        ),
+      );
 
     if (!post) {
       throw new NotFoundException('Post not found');
@@ -611,7 +637,11 @@ export class PostService {
     // deletion's timestamp and silently extend the retention window.
     await db
       .update(posts)
-      .set({ deletedAt: new Date(), deletedById: userId, updatedAt: new Date() })
+      .set({
+        deletedAt: new Date(),
+        deletedById: userId,
+        updatedAt: new Date(),
+      })
       .where(and(eq(posts.id, postId), livePosts()));
 
     // Fire-and-forget the provider-side event deletes using the in-memory link
@@ -736,7 +766,13 @@ export class PostService {
     // `publishing`, no retry burned.
     const pending = post.targets.filter((t) => t.status !== 'published');
     if (pending.length > 0 && pending.every(isPausedTarget)) {
-      return this.holdPausedTargets(post, isPausedTarget, holdReasonOf, userId, trigger);
+      return this.holdPausedTargets(
+        post,
+        isPausedTarget,
+        holdReasonOf,
+        userId,
+        trigger,
+      );
     }
 
     const previousStatus = post.status;
@@ -1768,12 +1804,17 @@ export class PostService {
     return await db
       .select()
       .from(posts)
-      .where(and(and(
-          eq(posts.workspaceId, workspaceId),
-          eq(posts.status, 'scheduled'),
-          gte(posts.scheduledAt, fromDate),
-          lte(posts.scheduledAt, toDate),
-        ), livePosts()))
+      .where(
+        and(
+          and(
+            eq(posts.workspaceId, workspaceId),
+            eq(posts.status, 'scheduled'),
+            gte(posts.scheduledAt, fromDate),
+            lte(posts.scheduledAt, toDate),
+          ),
+          livePosts(),
+        ),
+      )
       .orderBy(posts.scheduledAt);
   }
 
@@ -1807,7 +1848,9 @@ export class PostService {
     return await db
       .select()
       .from(posts)
-      .where(and(calendarRangeWhere(workspaceId, fromDate, toDate), livePosts()))
+      .where(
+        and(calendarRangeWhere(workspaceId, fromDate, toDate), livePosts()),
+      )
       .orderBy(occurredAtSql);
   }
 

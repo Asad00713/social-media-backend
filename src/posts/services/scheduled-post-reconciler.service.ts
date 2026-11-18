@@ -11,7 +11,7 @@ import {
   isHeldByUserAction,
   PUBLISH_LATE_GRACE_MS,
 } from '../lib/held-targets';
-import { livePosts } from '../soft-delete/soft-delete';
+import { livePosts, liveWorkspacePosts } from '../soft-delete/soft-delete';
 
 /**
  * How far past its time a post may be re-armed and still sent.
@@ -133,12 +133,18 @@ export class ScheduledPostReconcilerService implements OnApplicationBootstrap {
         targets: posts.targets,
       })
       .from(posts)
-      .where(and(and(
-          eq(posts.status, 'scheduled'),
-          isNotNull(posts.scheduledAt),
-          // Settled rows only — see SETTLE_MS.
-          lt(posts.updatedAt, new Date(now.getTime() - SETTLE_MS)),
-        ), livePosts()))
+      .where(
+        and(
+          and(
+            eq(posts.status, 'scheduled'),
+            isNotNull(posts.scheduledAt),
+            // Settled rows only — see SETTLE_MS.
+            lt(posts.updatedAt, new Date(now.getTime() - SETTLE_MS)),
+          ),
+          livePosts(),
+          liveWorkspacePosts(),
+        ),
+      )
       .limit(BATCH);
 
     result.checked = candidates.length;
@@ -205,7 +211,12 @@ export class ScheduledPostReconcilerService implements OnApplicationBootstrap {
     const job = await this.publishingQueue.add(
       'publish-post',
       { postId },
-      { delay, jobId, attempts: 3, backoff: { type: 'exponential', delay: 5000 } },
+      {
+        delay,
+        jobId,
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 5000 },
+      },
     );
 
     // The processor skips a job the row no longer names, so this write is

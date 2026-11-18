@@ -102,11 +102,16 @@ export class StrandedPostSweeperService implements OnApplicationBootstrap {
         publishedAt: posts.publishedAt,
       })
       .from(posts)
-      .where(and(and(
-          eq(posts.id, postId),
-          eq(posts.status, 'publishing'),
-          lt(posts.updatedAt, cutoff),
-        ), livePosts()))
+      .where(
+        and(
+          and(
+            eq(posts.id, postId),
+            eq(posts.status, 'publishing'),
+            lt(posts.updatedAt, cutoff),
+          ),
+          livePosts(),
+        ),
+      )
       .limit(1);
 
     if (!post) return false;
@@ -128,7 +133,13 @@ export class StrandedPostSweeperService implements OnApplicationBootstrap {
         updatedAt: posts.updatedAt,
       })
       .from(posts)
-      .where(and(eq(posts.status, 'publishing'), lt(posts.updatedAt, cutoff), livePosts()))
+      .where(
+        and(
+          eq(posts.status, 'publishing'),
+          lt(posts.updatedAt, cutoff),
+          livePosts(),
+        ),
+      )
       .limit(BATCH);
 
     if (stranded.length === 0) return 0;

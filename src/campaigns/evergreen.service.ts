@@ -18,6 +18,11 @@ import {
 } from '../drizzle/schema/campaigns.schema';
 import { socialMediaChannels } from '../drizzle/schema/channels.schema';
 import { posts } from '../drizzle/schema/posts.schema';
+import { workspace } from '../drizzle/schema/workspace.schema';
+import {
+  isWorkspaceLive,
+  liveWorkspaces,
+} from '../posts/soft-delete/soft-delete';
 import {
   evergreenCategories,
   evergreenOccurrences,
@@ -938,6 +943,29 @@ export class EvergreenService {
       return;
     }
 
+    // A deleted workspace fires nothing, and is NOT re-armed.
+    //
+    // Deliberately before the `try`: the `finally` below always calls
+    // `armCategory`, whatever happened, so a check inside it would stop this
+    // occurrence and immediately schedule the next one. Returning here ends
+    // the rotation chain instead.
+    //
+    // Deleting a workspace is a soft delete that marks only the `workspace`
+    // row, so the campaign and its posts all still read as live. Without this
+    // the series went on materializing `posts` rows, bumping `recycledCount`
+    // and marking occurrences `published` for a workspace the user deleted,
+    // daily, until the purge 30 days later. The platform call itself was
+    // stopped by the publish processor's own guard — but only that.
+    //
+    // Same shape as the `liveChannel()` check further down: this path was
+    // already soft-delete aware for CHANNELS and not for workspaces.
+    if (!(await isWorkspaceLive(db, campaign.workspaceId))) {
+      this.logger.log(
+        `fireOccurrence(${occurrenceId}): workspace ${campaign.workspaceId} is deleted — not firing, not re-arming.`,
+      );
+      return;
+    }
+
     const now = new Date();
 
     try {
@@ -1228,9 +1256,18 @@ export class EvergreenService {
    * on a daily cron (`EvergreenReconcileCron`); safe to call ad hoc too.
    */
   async reconcile(): Promise<void> {
+    // `liveWorkspaces()` on the JOIN, not a filter after the fact: this is an
+    // unscoped sweep over every campaign in the system, so a deleted
+    // workspace's evergreen campaign was armed daily and fired for 30 days.
     const activeCampaigns = (
-      await db.select().from(campaigns)
-    ).filter((c) => c.type === 'evergreen' && c.status === 'active');
+      await db
+        .select({ campaign: campaigns })
+        .from(campaigns)
+        .innerJoin(workspace, eq(workspace.id, campaigns.workspaceId))
+        .where(liveWorkspaces())
+    )
+      .map((r) => r.campaign)
+      .filter((c) => c.type === 'evergreen' && c.status === 'active');
 
     const now = new Date();
 
