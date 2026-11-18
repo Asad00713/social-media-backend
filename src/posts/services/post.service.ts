@@ -80,6 +80,7 @@ import {
   holdTarget,
   holdingReasonOf,
   isHeld,
+  isMissedRelease,
   publishRefusalFor,
   releaseTarget,
   soonestRetry,
@@ -856,6 +857,48 @@ export class PostService {
         continue;
       }
 
+      // A rate-limit hold whose window reopened, but whose time has long
+      // passed: fail it as missed rather than publish it late.
+      //
+      // This must run BEFORE releaseTarget below, and before the limit checks.
+      // Once the window clears, both checks return `allowed` and the target
+      // publishes — so a grace check placed after the publish can only ever
+      // catch a target that was re-held on the same run, which is to say only
+      // while the limit is still full. That is the one case where lateness
+      // does not matter yet.
+      //
+      // Same reasoning and same message as the `missedHeld` branch above; the
+      // difference is only which hold reason got here.
+      if (
+        storedTarget.heldReason === HELD_REASON_RATE_LIMITED &&
+        isMissedRelease(post.scheduledAt, PUBLISH_LATE_GRACE_MS, now)
+      ) {
+        updatedTargets.push({
+          ...releaseTarget(storedTarget),
+          status: 'failed',
+          errorMessage: MISSED_HELD_MESSAGE,
+          errorCode: 'rate_limited',
+          warnings: undefined,
+        });
+        allSuccess = false;
+        this.logger.warn(
+          `Post ${postId} target ${String(storedTarget.channelId)} was rate-limited and its time has passed; failing it as missed rather than publishing late`,
+        );
+        await this.recordHistory(
+          postId,
+          'rate_limited',
+          'publishing',
+          'failed',
+          storedTarget.channelId,
+          userId,
+          {
+            platform: storedTarget.platform,
+            errorMessage: MISSED_HELD_MESSAGE,
+          },
+        );
+        continue;
+      }
+
       // Attempted now, so no longer held.
       const target = releaseTarget(storedTarget);
       attemptedChannelIds.push(String(target.channelId));
@@ -1078,35 +1121,12 @@ export class PostService {
       }
     }
 
-    // A rate limit holds the post until the window reopens — unless the post
-    // is already so late that publishing it would surprise its author more
-    // than skipping it. Past the grace the held targets are failed with the
-    // same message a missed held post gets, because it is the same situation:
-    // its time came and went while it could not be sent.
-    const rateLimited = updatedTargets.filter(
+    // The grace is enforced before the publish attempt, at the top of the
+    // loop — once a limit window reopens the target simply publishes, so a
+    // check here could only ever catch a target still held by a full limit.
+    const heldForRateLimit = updatedTargets.some(
       (t) => t.heldReason === HELD_REASON_RATE_LIMITED,
     );
-    const lateBy = post.scheduledAt
-      ? now.getTime() - new Date(post.scheduledAt).getTime()
-      : 0;
-    const rateLimitExpired = rateLimited.length > 0 && lateBy > PUBLISH_LATE_GRACE_MS;
-
-    if (rateLimitExpired) {
-      for (const target of rateLimited) {
-        const index = updatedTargets.indexOf(target);
-        updatedTargets[index] = {
-          ...releaseTarget(target),
-          status: 'failed',
-          errorMessage: MISSED_HELD_MESSAGE,
-          errorCode: 'rate_limited',
-        };
-      }
-      this.logger.warn(
-        `Post ${postId} was rate-limited and is ${Math.round(lateBy / 60_000)} min past its time; failing ${rateLimited.length} target(s) rather than publishing late`,
-      );
-    }
-
-    const heldForRateLimit = rateLimitExpired ? false : rateLimited.length > 0;
 
     // Determine final status
     let finalStatus: PostStatus;
@@ -1139,9 +1159,19 @@ export class PostService {
     if (newSuccess && !post.publishedAt) {
       postUpdateData.publishedAt = new Date();
     }
-    postUpdateData.lastError = allSuccess
-      ? null
-      : 'Some channels failed to publish';
+    // `allSuccess` is false for a hold as well as a failure — a rate-limited
+    // target did not publish, so the publish was not wholly successful — but a
+    // post that is merely waiting has no error. Writing one here would be read
+    // back as a failure: present-post uses `lastError` as the fallback text
+    // for a failed target, and emitPostStatusChanged ships it, so a
+    // `scheduled` post would carry "Some channels failed to publish" and could
+    // later surface that against an unrelated failure.
+    //
+    // A paused hold never set this, because it does not touch `allSuccess` at
+    // all; this keeps the two hold kinds the same shape in the row.
+    const nothingFailed = updatedTargets.every((t) => t.status !== 'failed');
+    postUpdateData.lastError =
+      allSuccess || nothingFailed ? null : 'Some channels failed to publish';
     const [updatedPost] = await db
       .update(posts)
       .set(postUpdateData)

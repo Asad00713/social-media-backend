@@ -24,6 +24,9 @@ function read(relative: string): string {
 }
 
 const service = read('posts/services/post.service.ts');
+const reconciler = read('posts/services/scheduled-post-reconciler.service.ts');
+const pauseService = read('channels/services/channel-pause.service.ts');
+const presenter = read('posts/lib/present-post.ts');
 const limiter = read('queue/rate-limiter.service.ts');
 const held = read('posts/lib/held-targets.ts');
 
@@ -112,7 +115,10 @@ describe('the six-hour grace has one definition', () => {
   });
 
   it('fails a post that is past the grace instead of holding it forever', () => {
-    expect(service).toMatch(/lateBy > PUBLISH_LATE_GRACE_MS/);
+    // Asserted via isMissedRelease rather than a hand-written comparison:
+    // the grace moved ahead of the publish call, and the shared helper is
+    // what the reconciler uses for the same question.
+    expect(service).toMatch(/isMissedRelease\(/);
     expect(service).toMatch(/MISSED_HELD_MESSAGE/);
   });
 });
@@ -134,5 +140,94 @@ describe('the app-wide limit is not a customer quota', () => {
 
   it('keeps the per-account denominator keyed by channel', () => {
     expect(limiter).toMatch(/ratelimit:channel:\$\{platform\}:\$\{channelId\}/);
+  });
+});
+
+/**
+ * Found by review, not by me, and all three were real.
+ *
+ * The first is the one that mattered: the grace check sat AFTER the publish
+ * call, so it could only ever fire while the limit was still full — the moment
+ * the window reopened the target simply published, however late. A post held
+ * at 09:00 with a 20h retry would have gone out the next morning, twenty hours
+ * late, marked `published`, with nothing said to anyone.
+ */
+describe('the grace is enforced before the publish, not after', () => {
+  it('checks lateness before releaseTarget strips the hold', () => {
+    const graceAt = service.indexOf('isMissedRelease(post.scheduledAt');
+    const releaseAt = service.indexOf('const target = releaseTarget(storedTarget)');
+    const publishAt = service.indexOf('this.publishToChannel(post, target)');
+    expect(graceAt).toBeGreaterThan(-1);
+    expect(graceAt).toBeLessThan(releaseAt);
+    expect(graceAt).toBeLessThan(publishAt);
+  });
+
+  it('reads the stored target, whose hold markers still exist', () => {
+    const block = service.slice(service.indexOf('isMissedRelease(post.scheduledAt') - 200);
+    expect(block.slice(0, 260)).toMatch(/storedTarget\.heldReason === HELD_REASON_RATE_LIMITED/);
+  });
+
+  it('reuses the shared missed-release helper and message', () => {
+    expect(service).toMatch(/isMissedRelease\(\s*post\.scheduledAt,\s*PUBLISH_LATE_GRACE_MS/);
+    const block = service.slice(service.indexOf('isMissedRelease(post.scheduledAt'));
+    expect(block.slice(0, 500)).toMatch(/MISSED_HELD_MESSAGE/);
+  });
+});
+
+/**
+ * A rate-limit hold has no user action behind it, so anything that decides
+ * "leave held posts alone" has to distinguish it from a paused one — or the
+ * post is stranded with no way out.
+ */
+describe('a rate-limit hold is not a user-caused hold', () => {
+  it('the library draws the distinction in one place', () => {
+    expect(held).toMatch(/export function isHeldByUserAction/);
+  });
+
+  /**
+   * The reconciler skips held posts so it cannot publish to a paused channel.
+   * Applying that to a rate-limit hold made it refuse to rebuild the one thing
+   * that releases it: lose the job (a Redis flush) and the post sits
+   * `scheduled` forever, never publishing and never failing.
+   */
+  it('the reconciler can still re-arm a rate-limited post', () => {
+    expect(reconciler).toMatch(/some\(isHeldByUserAction\)/);
+    expect(reconciler).not.toMatch(/some\(isHeld\)/);
+  });
+
+  /**
+   * The mirror image of holdRateLimited's guard. Relabelling a rate-limit
+   * hold as `channel_paused` stops it releasing itself, and its retry job then
+   * fires into a paused target and re-holds it — the post never publishes.
+   */
+  it('a channel reconnect leaves a rate-limit hold alone', () => {
+    expect(pauseService).toMatch(/heldReason !== HELD_REASON_RATE_LIMITED/);
+  });
+});
+
+describe('what the customer is told', () => {
+  /**
+   * The presenter collapsed every reason but `channel_disconnected` to
+   * `channel_paused`, so a rate-limited post told the user to resume a channel
+   * they had never paused — and there was no resume to press.
+   */
+  it('reports rate_limited rather than calling it a pause', () => {
+    expect(presenter).toMatch(/target\.heldReason === 'rate_limited'/);
+  });
+
+  it('the planner DTO carries the third reason', () => {
+    expect(read('posts/dto/planner-post.dto.ts')).toMatch(
+      /'channel_paused' \| 'channel_disconnected' \| 'rate_limited'/,
+    );
+  });
+
+  /**
+   * `allSuccess` is false for a hold as well as a failure, so this wrote
+   * "Some channels failed to publish" onto a post that was merely waiting —
+   * and present-post reuses lastError as fallback text for a failed target.
+   */
+  it('a post that is only waiting carries no error', () => {
+    expect(service).toMatch(/const nothingFailed = updatedTargets\.every/);
+    expect(service).toMatch(/allSuccess \|\| nothingFailed \? null/);
   });
 });

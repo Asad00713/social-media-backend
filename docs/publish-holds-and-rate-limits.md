@@ -69,6 +69,18 @@ six hours stale surprises its author more than skipping it. Past
 the same message a held post gets when its channel comes back too late, because
 it is the same situation: its time came and went while it could not be sent.
 
+**The check runs before the publish attempt, at the top of the loop, reading
+`storedTarget` while its hold markers still exist.** This is load-bearing and
+was wrong in the first draft of this work. Once a limit window reopens, both
+limit checks return `allowed` and the target publishes — so a grace check
+placed after the publish can only ever catch a target that was *re-held* on the
+same run, which is to say only while the limit is still full. That is precisely
+the case where lateness does not matter yet. A post held at 09:00 with a
+twenty-hour retry would have published the next morning, twenty hours late,
+marked `published`, with nothing said to anyone.
+
+The reconciler gets this right the same way, by checking before re-arming.
+
 That constant lives in `held-targets.ts`, not in either service. The publish
 path and `ScheduledPostReconciler` are answering the same question — *may this
 post still go out?* — and two copies of six hours drift. A change to one that
@@ -102,6 +114,33 @@ The real limit is `PER_CHANNEL_LIMITS`, keyed by channel, with the numbers the
 platforms actually allow. A platform absent from that map is not rate-limited
 here; only the three that already restricted are listed, because adding a
 fourth would newly cap customers who are not capped today.
+
+## A rate-limit hold is not a user-caused hold
+
+Anywhere code decides whether it may send or release a held post, the reason
+has to be consulted — `isHeldByUserAction` draws the line in one place.
+
+A paused or disconnected hold has a person behind it, so leaving it alone is
+safe: resuming or reconnecting is what sends the post. A rate-limit hold has
+nobody behind it. Only time releases it, and only a job carries that time, so
+"leave it alone" is how it gets stranded. Three places had to learn the
+difference:
+
+| Place | Without the distinction |
+|---|---|
+| `ScheduledPostReconciler` skips held posts | Lose the retry job (a Redis flush) and the post sits `scheduled` and held forever — never publishing, never failing. The one component that rebuilds lost jobs was refusing to. |
+| `ChannelPauseService.releaseAfterReconnect` relabels this channel's holds | A `rate_limited` hold became `channel_paused`, so it stopped releasing itself and waited for a resume the user had no reason to expect — while its retry job fired into a paused target and re-held it. |
+| `holdRateLimited` itself | The same downgrade from the other direction: a paused channel relabelled `rate_limited` would publish on a timer to a channel someone deliberately paused. |
+
+## What the customer sees
+
+The Planner shows the hold with its own reason. This matters because the copy
+differs in kind: a paused channel says *resume it to publish now*, and for a
+rate limit there is nothing to press — it retries itself. Collapsing the
+reasons told people to resume a channel they had never paused.
+
+`present-post.ts` passes `rate_limited` through, and `PlannerPostDto` carries
+it, so the frontend type knows all three values.
 
 ## Degradation
 

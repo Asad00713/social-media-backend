@@ -8,7 +8,7 @@ import { posts } from '../../drizzle/schema';
 import { QUEUES } from '../../queue/queue.module';
 import {
   isJobPending,
-  isHeld,
+  isHeldByUserAction,
   PUBLISH_LATE_GRACE_MS,
 } from '../lib/held-targets';
 import { livePosts } from '../soft-delete/soft-delete';
@@ -151,7 +151,14 @@ export class ScheduledPostReconcilerService implements OnApplicationBootstrap {
         // the channel is what sends it (see held-targets.ts and
         // ChannelPauseService.releaseAfterReconnect). Re-arming it here would
         // publish to a channel the user deliberately paused.
-        if ((post.targets ?? []).some(isHeld)) continue;
+        //
+        // A rate-limit hold is the opposite case and must NOT be skipped. No
+        // user action releases it — a delayed job was its only way out, so a
+        // post whose job is gone (a Redis flush) would otherwise sit
+        // `scheduled` and held forever, never publishing and never failing.
+        // It still has to reach the job check below, which skips it while its
+        // retry is pending, so the two never both re-arm the same post.
+        if ((post.targets ?? []).some(isHeldByUserAction)) continue;
 
         if (await isJobPending(this.publishingQueue, post.jobId)) continue;
 

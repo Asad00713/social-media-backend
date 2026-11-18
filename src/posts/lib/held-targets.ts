@@ -110,6 +110,23 @@ export function holdTarget<T extends PostTarget>(
 }
 
 /**
+ * True when the target is held for a reason only a person can clear — a
+ * paused or disconnected channel.
+ *
+ * The distinction matters wherever code decides whether it may send a held
+ * post. A user-caused hold must be left alone: re-arming it would publish to
+ * a channel someone deliberately paused. A `rate_limited` hold is the
+ * opposite — nothing but time releases it, so leaving it alone forever is the
+ * failure mode, and anything that recovers lost jobs has to be allowed to
+ * rebuild its retry.
+ */
+export function isHeldByUserAction(
+  target: Pick<PostTarget, 'heldAt' | 'heldReason'>,
+): boolean {
+  return isHeld(target) && target.heldReason !== HELD_REASON_RATE_LIMITED;
+}
+
+/**
  * The target, held because its platform rate limit is full.
  *
  * Deliberately NOT `holdTarget(t, now, HELD_REASON_RATE_LIMITED)`:

@@ -63,12 +63,20 @@ function presentTarget(
       status === 'scheduled' && typeof target.heldAt === 'string'
         ? target.heldAt
         : undefined,
-    // Why it waits: a pause (resume sends it) or a disconnect (the undo or
-    // a reconnect does). A hold written before reasons existed is a pause.
+    // Why it waits: a pause (resume sends it), a disconnect (the undo or a
+    // reconnect does), or a full platform rate limit (nothing to press — it
+    // retries itself when the window reopens). A hold written before reasons
+    // existed is a pause.
+    //
+    // Passed through rather than collapsed to a default: telling someone to
+    // resume a channel they never paused is worse than saying nothing, and
+    // the copy for a pause ("resume it to publish now") is simply false for a
+    // rate limit.
     heldReason:
       status === 'scheduled' && typeof target.heldAt === 'string'
-        ? target.heldReason === 'channel_disconnected'
-          ? 'channel_disconnected'
+        ? target.heldReason === 'channel_disconnected' ||
+          target.heldReason === 'rate_limited'
+          ? target.heldReason
           : 'channel_paused'
         : undefined,
   };
