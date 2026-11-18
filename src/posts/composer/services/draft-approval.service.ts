@@ -43,6 +43,7 @@ import {
   type DraftApproval,
 } from '../../lib/draft-approval';
 import { readyPreview } from '../../services/post-drafts.service';
+import { ApprovalPolicyService } from './approval-policy.service';
 
 export interface ApprovalPerson {
   id: string;
@@ -132,6 +133,9 @@ export class DraftApprovalService {
     private readonly notify: NotifyService,
     private readonly recipients: RecipientsService,
     private readonly links: AppLinks,
+    // Not @Optional: the module must provide it. Optional in the type only so
+    // a unit test that never touches the policy can leave it out.
+    private readonly approvalPolicy?: ApprovalPolicyService,
   ) {}
 
   /** A draft not saved to the server yet reads as "not required". */
@@ -142,13 +146,16 @@ export class DraftApprovalService {
     role: CallerRole,
   ): Promise<DraftApprovalView> {
     const row = await this.findRow(workspaceId, postId);
-    return this.view(row, userId, role);
+    return this.view(workspaceId, row, userId, role);
   }
 
   /**
    * Switch the requirement on (any member who may draft) or off (approvers
    * only: otherwise the person waiting for approval could simply turn it off
-   * and schedule). Turning it on again after it was on is a no-op.
+   * and schedule). Turning it on again after it was on is a no-op, except for
+   * a request the workspace approval policy wrote, which tells the approvers
+   * the first time. A policy request cannot be switched off while the policy
+   * still covers its author.
    */
   async setRequired(
     workspaceId: string,
@@ -167,7 +174,27 @@ export class DraftApprovalService {
     const current = readApproval(row.metadata);
 
     if (required) {
-      if (current) return this.view(row, userId, role);
+      // A request the policy wrote silently on the first save: sending it
+      // for approval tells the approvers, once.
+      if (current?.byPolicy && !current.notifiedAt) {
+        const stamped = await this.stampNotified(workspaceId, postId, userId);
+        if (stamped) {
+          // Not awaited, like below. The author is the requester.
+          void this.notifyApprovers(
+            workspaceId,
+            row,
+            current.requestedById,
+            current.requestedAt,
+          );
+        }
+        return this.view(
+          workspaceId,
+          await this.findRow(workspaceId, postId),
+          userId,
+          role,
+        );
+      }
+      if (current) return this.view(workspaceId, row, userId, role);
       const request = newApprovalRequest(userId);
       const changed = await this.writeApproval(
         workspaceId,
@@ -187,8 +214,13 @@ export class DraftApprovalService {
         );
       }
     } else {
-      if (!current) return this.view(row, userId, role);
+      if (!current) return this.view(workspaceId, row, userId, role);
       assertRoleCan(role, APPROVE_CAPABILITY);
+      if (await this.policyHolds(workspaceId, current)) {
+        throw new ForbiddenException(
+          "The workspace approval policy covers this post's author, so its approval can't be switched off.",
+        );
+      }
       await this.writeApproval(
         workspaceId,
         postId,
@@ -197,7 +229,12 @@ export class DraftApprovalService {
         userId,
       );
     }
-    return this.view(await this.findRow(workspaceId, postId), userId, role);
+    return this.view(
+      workspaceId,
+      await this.findRow(workspaceId, postId),
+      userId,
+      role,
+    );
   }
 
   /**
@@ -223,7 +260,7 @@ export class DraftApprovalService {
     }
     const fingerprint = contentFingerprint(row);
     if (approvalState(current, fingerprint) === 'approved') {
-      return this.view(row, userId, role);
+      return this.view(workspaceId, row, userId, role);
     }
     if (!ALLOW_SELF_APPROVAL && current.requestedById === userId) {
       throw new ForbiddenException(
@@ -276,7 +313,12 @@ export class DraftApprovalService {
       current.requestedById,
       granted.approvedAt ?? '',
     );
-    return this.view(await this.findRow(workspaceId, postId), userId, role);
+    return this.view(
+      workspaceId,
+      await this.findRow(workspaceId, postId),
+      userId,
+      role,
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -346,13 +388,74 @@ export class DraftApprovalService {
     });
   }
 
+  /**
+   * A request the approval policy wrote stays on while the policy still
+   * covers its author: an approver could otherwise switch it off and the
+   * author schedule straight away.
+   */
+  private async policyHolds(
+    workspaceId: string,
+    approval: DraftApproval | null,
+  ): Promise<boolean> {
+    if (!approval?.byPolicy) return false;
+    return (
+      (await this.approvalPolicy?.coversAuthor(
+        workspaceId,
+        approval.requestedById,
+      )) ?? false
+    );
+  }
+
+  /**
+   * Stamps `notifiedAt` on a policy request that has none, and records the
+   * request in history. Conditional, so two clicks tell the approvers once.
+   * Like writeApproval, never touches `updated_at`.
+   */
+  private async stampNotified(
+    workspaceId: string,
+    postId: string,
+    userId: string,
+  ): Promise<boolean> {
+    const now = new Date().toISOString();
+    return this.db.transaction(async (tx) => {
+      const rows = await tx
+        .update(posts)
+        .set({
+          metadata: sql`jsonb_set(${posts.metadata}, '{approval,notifiedAt}', to_jsonb(${now}::text))`,
+        })
+        .where(
+          and(
+            eq(posts.id, postId),
+            eq(posts.workspaceId, workspaceId),
+            eq(posts.status, 'draft'),
+            sql`${posts.metadata} -> 'approval' ->> 'byPolicy' = 'true'`,
+            sql`NOT (${posts.metadata} -> 'approval' ? 'notifiedAt')`,
+          ),
+        )
+        .returning({ id: posts.id });
+      if (rows.length > 0) {
+        await tx.insert(postHistory).values({
+          postId,
+          action: 'approval_requested',
+          previousStatus: 'draft',
+          newStatus: 'draft',
+          performedById: userId,
+        });
+      }
+      return rows.length > 0;
+    });
+  }
+
   private async view(
+    workspaceId: string,
     row: ApprovalRow | null,
     userId: string,
     role: CallerRole,
   ): Promise<DraftApprovalView> {
     const approval = row ? readApproval(row.metadata) : null;
-    const canTurnOff = may(role, APPROVE_CAPABILITY);
+    const canTurnOff =
+      may(role, APPROVE_CAPABILITY) &&
+      !(await this.policyHolds(workspaceId, approval));
     if (!row || !approval) {
       return {
         required: false,

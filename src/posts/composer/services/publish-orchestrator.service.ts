@@ -20,9 +20,11 @@ import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { posts } from '../../../drizzle/schema/posts.schema';
 import {
   assertApprovedFor,
+  assertPolicyAllowsDirectSend,
   carryApproval,
   type ApprovableContent,
 } from '../../lib/draft-approval';
+import { ApprovalPolicyService } from './approval-policy.service';
 import { socialMediaChannels } from '../../../drizzle/schema/channels.schema';
 import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.schema';
 import type {
@@ -91,6 +93,8 @@ export class PublishOrchestratorService {
     // Not @Optional: the module must provide it. Optional in the type only so
     // a unit test that never touches labels can leave it out.
     private readonly postLabels?: PostLabelsService,
+    // Not @Optional either; optional in the type for the same reason.
+    private readonly approvalPolicy?: ApprovalPolicyService,
   ) {}
 
   async publishInline(
@@ -437,7 +441,9 @@ export class PublishOrchestratorService {
 
   /**
    * Throws unless the stored draft needs no approval or has one for exactly
-   * this content; returns the `approval` key to keep on the row.
+   * this content; returns the `approval` key to keep on the row. A post by
+   * someone the workspace approval policy covers (`draft.createdById` is the
+   * caller) must carry an approval request at all.
    */
   private async approvalFor(
     workspaceId: string,
@@ -454,6 +460,13 @@ export class PublishOrchestratorService {
       platformContent: draft.perPlatform,
       targets: draft.channels,
     };
+    assertPolicyAllowsDirectSend(
+      (await this.approvalPolicy?.coversAuthor(
+        workspaceId,
+        draft.createdById,
+      )) ?? false,
+      existing?.metadata,
+    );
     assertApprovedFor(existing?.metadata, outgoing);
     return carryApproval(existing?.metadata, outgoing);
   }

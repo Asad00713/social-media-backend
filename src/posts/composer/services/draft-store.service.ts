@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { isViewer, type CallerRole } from '../../guest-rules';
 import { carryFirstWeekMeta } from '../../../first-week/lib/first-week-metadata';
-import { carryApproval } from '../../lib/draft-approval';
+import { carryApproval, newApprovalRequest } from '../../lib/draft-approval';
 import { carryScheduleGroup } from '../lib/per-channel-schedule';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { readOrganise, resolveOrganise } from '../lib/draft-organise';
@@ -17,6 +17,7 @@ import { PostLabelsService } from '../../../labels/post-labels.service';
 import { posts } from '../../../drizzle/schema/posts.schema';
 import type { SaveDraftDto } from '../dto/save-draft.dto';
 import { snapshotOf } from '../lib/draft-versions';
+import { ApprovalPolicyService } from './approval-policy.service';
 import { DraftVersionsService } from './draft-versions.service';
 import type {
   BaseContent,
@@ -42,6 +43,8 @@ export class DraftStoreService {
     // so a unit test that never touches labels can leave them out.
     private readonly postLabels?: PostLabelsService,
     private readonly labelCatalogue?: LabelsService,
+    // Not @Optional either; optional in the type for the same reason.
+    private readonly approvalPolicy?: ApprovalPolicyService,
   ) {}
 
   async upsert(
@@ -90,6 +93,15 @@ export class DraftStoreService {
     };
 
     if (existing.length === 0) {
+      // The workspace approval policy: a covered author's new draft starts
+      // out needing approval. Written silently; the approvers are told when
+      // the author sends it for approval. A draft that already exists keeps
+      // whatever it had when the policy changed.
+      if (await this.approvalPolicy?.coversAuthor(workspaceId, userId)) {
+        Object.assign(metadata, {
+          approval: newApprovalRequest(userId, new Date(), { byPolicy: true }),
+        });
+      }
       const [inserted] = await this.db
         .insert(posts)
         .values({

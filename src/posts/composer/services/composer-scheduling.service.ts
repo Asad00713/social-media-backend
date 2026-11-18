@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto';
 import {
   approvalForPart,
   assertApprovedFor,
+  assertPolicyAllowsDirectSend,
   carryApproval,
   type ApprovableContent,
 } from '../../lib/draft-approval';
@@ -34,6 +35,7 @@ import { resolveOrganise } from '../lib/draft-organise';
 import { PostLabelsService } from '../../../labels/post-labels.service';
 import { assertNoOpenBlanks } from '../lib/template-blanks';
 import { snapshotOf } from '../lib/draft-versions';
+import { ApprovalPolicyService } from './approval-policy.service';
 import { DraftVersionsService } from './draft-versions.service';
 import { CalendarPushSyncService } from '../../../calendar-sync/services/calendar-push-sync.service';
 import { PostQueueService } from '../../../billing/services/post-queue.service';
@@ -117,7 +119,19 @@ export class ComposerSchedulingService {
     // Not @Optional: the module must provide it. Optional in the type only so
     // a unit test that never touches labels can leave it out.
     private readonly postLabels?: PostLabelsService,
+    // Not @Optional either; optional in the type for the same reason.
+    private readonly approvalPolicy?: ApprovalPolicyService,
   ) {}
+
+  /** Whether the workspace approval policy covers the person sending. */
+  private async policyCovers(
+    workspaceId: string,
+    userId: string,
+  ): Promise<boolean> {
+    return (
+      (await this.approvalPolicy?.coversAuthor(workspaceId, userId)) ?? false
+    );
+  }
 
   /**
    * Labels on a post that is already scheduled or published. Best-effort: the
@@ -282,6 +296,10 @@ export class ComposerSchedulingService {
       platformContent: dto.perPlatform ?? {},
       targets: dto.channels,
     };
+    assertPolicyAllowsDirectSend(
+      await this.policyCovers(workspaceId, userId),
+      existing[0]?.metadata,
+    );
     assertApprovedFor(existing[0]?.metadata, outgoing);
     Object.assign(metadata, carryApproval(existing[0]?.metadata, outgoing));
 
@@ -438,6 +456,12 @@ export class ComposerSchedulingService {
       platformContent: dto.perPlatform ?? {},
       targets: dto.channels,
     };
+    // The policy, once for the whole; approvalForPart then runs
+    // assertApprovedFor for the whole and for each part.
+    assertPolicyAllowsDirectSend(
+      await this.policyCovers(workspaceId, userId),
+      stored?.metadata,
+    );
 
     const siblings = groups.map((group, i) => {
       const perPlatform = overridesFor(dto.perPlatform, group.channels);

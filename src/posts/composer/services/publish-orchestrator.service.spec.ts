@@ -12,6 +12,7 @@ import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import type { Draft } from '../types/draft.types';
 import { PostReminderService } from '../../services/post-reminder.service';
 import { PostLabelsService } from '../../../labels/post-labels.service';
+import { ApprovalPolicyService } from './approval-policy.service';
 
 const baseInput = (): InlinePublishInput => ({
   draftId: 'd1',
@@ -97,6 +98,10 @@ describe('PublishOrchestratorService.publishInline', () => {
         { provide: DRIZZLE, useValue: makeDb() },
         { provide: PostReminderService, useValue: reminders },
         { provide: PostLabelsService, useValue: { setForPost: jest.fn() } },
+        {
+          provide: ApprovalPolicyService,
+          useValue: { coversAuthor: jest.fn(async () => false) },
+        },
       ],
     }).compile();
 

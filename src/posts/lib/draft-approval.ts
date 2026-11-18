@@ -33,6 +33,18 @@ export interface DraftApproval {
   approvedAt: string | null;
   /** Fingerprint of the content the grant covers; null until approved. */
   approvedFingerprint: string | null;
+  /**
+   * Added by the workspace approval policy when the draft was created, not
+   * asked for by the author. An approver cannot switch it off while the
+   * policy still covers the author.
+   */
+  byPolicy?: true;
+  /**
+   * When the approvers were told about a policy request. A policy request is
+   * written silently on the first save; the author's "Send for approval"
+   * tells the approvers once and stamps this.
+   */
+  notifiedAt?: string;
 }
 
 /** The row-shaped content an approval covers. */
@@ -63,12 +75,15 @@ export function readApproval(metadata: unknown): DraftApproval | null {
     approvedAt: typeof a.approvedAt === 'string' ? a.approvedAt : null,
     approvedFingerprint:
       typeof a.approvedFingerprint === 'string' ? a.approvedFingerprint : null,
+    ...(a.byPolicy === true ? { byPolicy: true as const } : {}),
+    ...(typeof a.notifiedAt === 'string' ? { notifiedAt: a.notifiedAt } : {}),
   };
 }
 
 export function newApprovalRequest(
   userId: string,
   now: Date = new Date(),
+  opts: { byPolicy?: boolean } = {},
 ): DraftApproval {
   return {
     required: true,
@@ -77,7 +92,27 @@ export function newApprovalRequest(
     approvedById: null,
     approvedAt: null,
     approvedFingerprint: null,
+    ...(opts.byPolicy ? { byPolicy: true as const } : {}),
   };
+}
+
+/**
+ * The workspace approval policy at send time. A covered author's post must
+ * carry an approval request (and `assertApprovedFor` then demands the grant);
+ * a post with none at all (never saved, or saved before the policy changed)
+ * is refused the same way an ungranted request is. Call immediately before
+ * `assertApprovedFor`.
+ */
+export function assertPolicyAllowsDirectSend(
+  covers: boolean,
+  metadata: unknown,
+): void {
+  if (covers && readApproval(metadata) === null) {
+    throw refusal(
+      'This post needs approval before it can be scheduled or published.',
+      'APPROVAL_REQUIRED',
+    );
+  }
 }
 
 /**
