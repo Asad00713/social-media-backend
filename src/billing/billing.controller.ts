@@ -151,6 +151,7 @@ export class BillingController {
       workspaceId,
       user.userId,
       body.cancelAtPeriodEnd ?? true,
+      body.reason,
     );
   }
 

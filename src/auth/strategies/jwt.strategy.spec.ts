@@ -15,8 +15,11 @@ describe('JwtStrategy suspension', () => {
 
   it('throws a structured ACCOUNT_SUSPENDED 401 when the user is inactive', async () => {
     const strategy = make({
-      id: 'u1', email: 'a@b.com', role: 'USER',
-      isActive: false, suspendedReason: 'policy_violation',
+      id: 'u1',
+      email: 'a@b.com',
+      role: 'USER',
+      isActive: false,
+      suspendedReason: 'policy_violation',
     });
     await expect(
       strategy.validate({ sub: 'u1', email: 'a@b.com' }),
@@ -27,7 +30,11 @@ describe('JwtStrategy suspension', () => {
 
   it('passes an active user through', async () => {
     const strategy = make({
-      id: 'u1', email: 'a@b.com', role: 'USER', isActive: true, suspendedReason: null,
+      id: 'u1',
+      email: 'a@b.com',
+      role: 'USER',
+      isActive: true,
+      suspendedReason: null,
     });
     await expect(
       strategy.validate({ sub: 'u1', email: 'a@b.com' }),
@@ -168,5 +175,67 @@ describe('the email the strategies hand on comes from the row, not the claim', (
         'new@example.test',
       );
     }
+  });
+});
+
+describe('a deleted account', () => {
+  // Deleted at 1_700_000_000.500 s; the delete also revoked sessions then.
+  const DELETED_AT = new Date(1_700_000_000_500);
+  const deletedUsers = {
+    findOneWithSuspension: jest.fn().mockResolvedValue({
+      ...ACTIVE,
+      email: 'deleted+u1@deleted.invalid',
+      // A deleted row is also inactive: the delete code must still win.
+      isActive: false,
+      suspendedReason: null,
+      sessionsRevokedAt: DELETED_AT,
+      deletedAt: DELETED_AT,
+    }),
+  };
+  // Minted in the delete's own second: assertSessionLive alone would let it
+  // through (whole seconds), so this proves the deletedAt check.
+  const SAME_SECOND = {
+    sub: 'u1',
+    email: 'old@example.test',
+    iat: 1_700_000_000,
+  };
+
+  it('jwt strategy: ACCOUNT_DELETED, checked before suspension', async () => {
+    const strategy = new JwtStrategy(config as never, deletedUsers as never);
+    const result = strategy.validate(SAME_SECOND);
+    await expect(result).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(result).rejects.toMatchObject({
+      response: { statusCode: 401, code: 'ACCOUNT_DELETED' },
+    });
+  });
+
+  it('refresh strategy: an existing refresh token fails with ACCOUNT_DELETED', async () => {
+    const strategy = new JwtRefreshStrategy(
+      config as never,
+      deletedUsers as never,
+    );
+    const req = { cookies: { refreshToken: 'rt' } } as never;
+
+    // Older than the delete, and from the delete's own second: both refused.
+    for (const iat of [1_699_000_000, 1_700_000_000]) {
+      await expect(
+        strategy.validate(req, { ...SAME_SECOND, iat }),
+      ).rejects.toMatchObject({
+        response: { statusCode: 401, code: 'ACCOUNT_DELETED' },
+      });
+    }
+  });
+
+  it('a live account (deletedAt null) is unaffected', async () => {
+    const live = {
+      findOneWithSuspension: jest.fn().mockResolvedValue({
+        ...ACTIVE,
+        sessionsRevokedAt: null,
+        deletedAt: null,
+      }),
+    };
+    await expect(
+      new JwtStrategy(config as never, live as never).validate(SAME_SECOND),
+    ).resolves.toMatchObject({ userId: 'u1' });
   });
 });

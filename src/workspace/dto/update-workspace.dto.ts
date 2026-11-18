@@ -1,12 +1,17 @@
 import {
+  IsBoolean,
+  IsIn,
   IsNotEmpty,
   IsOptional,
   IsString,
+  IsUrl,
   MaxLength,
   MinLength,
-  IsUrl,
+  ValidateIf,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
+import { IsIanaTimeZone } from 'src/common/validators/is-iana-time-zone';
+import { APPROVAL_POLICIES, type ApprovalPolicy } from 'src/drizzle/schema';
 
 export class UpdateWorkspaceDto {
   @IsString()
@@ -22,12 +27,45 @@ export class UpdateWorkspaceDto {
   @MaxLength(500, { message: 'Description must not exceed 500 characters' })
   description?: string;
 
+  /**
+   * `null` clears the logo. A URL must be a file `workspace-logo` presign
+   * issued; the service refuses any other with `LOGO_NOT_UPLOADED`.
+   */
+  @ValidateIf(
+    (o: UpdateWorkspaceDto) => o.logo !== null && o.logo !== undefined,
+  )
   @IsString()
-  @IsOptional()
   @IsUrl({}, { message: 'Logo must be a valid URL' })
-  logo?: string;
+  logo?: string | null;
 
+  // Not IsOptional: it also skips null, and a null zone would reach a NOT NULL
+  // column as a 500. The same goes for the three publishing defaults below.
+  @ValidateIf((o: UpdateWorkspaceDto) => o.timezone !== undefined)
   @IsString()
-  @IsOptional()
+  @IsIanaTimeZone()
   timezone?: string;
+
+  /**
+   * Also move the workspace's channels to the new zone. Only meaningful with
+   * `timezone`; the service answers 400 `TIMEZONE_REQUIRED` without it.
+   */
+  @ValidateIf(
+    (o: UpdateWorkspaceDto) => o.applyTimezoneToChannels !== undefined,
+  )
+  @IsBoolean()
+  applyTimezoneToChannels?: boolean;
+
+  @ValidateIf((o: UpdateWorkspaceDto) => o.approvalPolicy !== undefined)
+  @IsIn(APPROVAL_POLICIES as unknown as string[], {
+    message: 'approvalPolicy must be one of: none, members, everyone',
+  })
+  approvalPolicy?: ApprovalPolicy;
+
+  @ValidateIf((o: UpdateWorkspaceDto) => o.shortenLinksDefault !== undefined)
+  @IsBoolean()
+  shortenLinksDefault?: boolean;
+
+  @ValidateIf((o: UpdateWorkspaceDto) => o.utmDefault !== undefined)
+  @IsBoolean()
+  utmDefault?: boolean;
 }

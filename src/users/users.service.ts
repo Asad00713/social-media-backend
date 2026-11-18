@@ -171,6 +171,8 @@ export class UsersService {
       isActive: boolean;
       suspendedReason: string | null;
       sessionsRevokedAt: Date | null;
+      /** Set once the account is soft-deleted (AccountDeletionService). */
+      deletedAt: Date | null;
     }
   > {
     const user = await this.db.query.users.findFirst({
@@ -180,6 +182,7 @@ export class UsersService {
         isActive: true,
         suspendedReason: true,
         sessionsRevokedAt: true,
+        deletedAt: true,
       },
       extras: PUBLIC_USER_EXTRAS,
     });
@@ -424,16 +427,6 @@ export class UsersService {
         updatedAt: new Date(),
       })
       .where(eq(users.id, userId));
-  }
-
-  async remove(id: string): Promise<void> {
-    const user = await this.findOne(id);
-
-    if (!user) {
-      throw new NotFoundException(`User with ID ${id} not found`);
-    }
-
-    await this.db.delete(users).where(eq(users.id, id));
   }
 
   /**

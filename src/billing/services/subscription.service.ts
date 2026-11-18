@@ -25,10 +25,37 @@ import {
   workspaceUsage,
   plans,
   workspace,
+  subscriptionChanges,
+  Subscription,
   NewSubscription,
   NewSubscriptionItem,
   NewWorkspaceUsage,
 } from '../../drizzle/schema';
+import type { CancelReason } from '../dto/billing.dto';
+
+/**
+ * Whether cancelling this subscription (at period end or now) would do
+ * anything. The one rule for "is there a plan to cancel": cancelForAccount
+ * acts on it, and the workspace deletion preview warns from it, so the
+ * warning and the action cannot disagree.
+ *
+ * Nothing to cancel: no subscription, the FREE plan (by code, never by
+ * name), already canceled, or already set to end at the period end when
+ * that is what is asked again.
+ */
+export function isCancellable(
+  subscription:
+    | Pick<Subscription, 'planCode' | 'status' | 'cancelAtPeriodEnd'>
+    | null
+    | undefined,
+  atPeriodEnd: boolean,
+): boolean {
+  if (!subscription) return false;
+  if (subscription.planCode === 'FREE') return false;
+  if (subscription.status === 'canceled') return false;
+  if (atPeriodEnd && subscription.cancelAtPeriodEnd) return false;
+  return true;
+}
 
 export interface CreateSubscriptionDto {
   workspaceId: string;
@@ -717,6 +744,7 @@ export class SubscriptionService {
     workspaceId: string,
     userId: string,
     cancelAtPeriodEnd: boolean = true,
+    reason?: CancelReason,
   ): Promise<{ message: string }> {
     // Verify ownership
     const ws = await db
@@ -731,14 +759,10 @@ export class SubscriptionService {
       );
     }
 
-    // Get subscription — subscriptions are per-account, so look it up by the
-    // (already-verified) owner rather than the workspace.
-    const subscription = await db
-      .select()
-      .from(subscriptions)
-      .where(eq(subscriptions.userId, userId))
-      .limit(1)
-      .then((rows) => rows[0]);
+    // Read here as well as in cancelForAccount: the route keeps its own
+    // answers (404 without a subscription, 400 on FREE, the period end in
+    // the message), which 'none' alone cannot tell apart.
+    const subscription = await this.accountSubscription(userId);
 
     if (!subscription) {
       throw new NotFoundException('Subscription not found for this workspace');
@@ -749,38 +773,82 @@ export class SubscriptionService {
       throw new BadRequestException('Cannot cancel free plan');
     }
 
-    // Cancel at whichever provider bills this account.
+    const outcome = await this.cancelForAccount(userId, cancelAtPeriodEnd, {
+      reason,
+      changedByUserId: userId,
+    });
+    if (outcome === 'none') {
+      throw new BadRequestException(
+        cancelAtPeriodEnd && subscription.cancelAtPeriodEnd
+          ? 'Subscription is already set to cancel at the end of the billing period'
+          : 'Subscription is already canceled',
+      );
+    }
+
+    return cancelAtPeriodEnd
+      ? {
+          message: `Subscription will be canceled at the end of the billing period (${subscription.currentPeriodEnd})`,
+        }
+      : { message: 'Subscription canceled immediately' };
+  }
+
+  /**
+   * Cancels the account's subscription at whichever provider bills it, with
+   * no workspace in the picture: the route above, deleting the last owned
+   * workspace, and deleting the account all come here. 'none' when there is
+   * nothing to cancel (isCancellable: no subscription, FREE, already
+   * canceled, or already ending at the period end when that is asked again);
+   * the provider is never called and nothing is logged then.
+   *
+   * Every cancel is logged in `subscription_changes` with the reason, so a
+   * churn report can read why.
+   */
+  async cancelForAccount(
+    userId: string,
+    atPeriodEnd: boolean,
+    opts: { reason?: CancelReason; changedByUserId?: string | null } = {},
+  ): Promise<'cancelled' | 'none'> {
+    const subscription = await this.accountSubscription(userId);
+    if (!subscription || !isCancellable(subscription, atPeriodEnd)) {
+      return 'none';
+    }
+
     const adapter = await this.providers.adapterForSubscription(
       subscription.id,
     );
-    await adapter.cancel(subscription.id, cancelAtPeriodEnd);
+    await adapter.cancel(subscription.id, atPeriodEnd);
 
-    // Update database
-    if (cancelAtPeriodEnd) {
-      await db
-        .update(subscriptions)
-        .set({
-          cancelAtPeriodEnd: true,
-          updatedAt: new Date(),
-        })
-        .where(eq(subscriptions.id, subscription.id));
+    await db
+      .update(subscriptions)
+      .set(
+        atPeriodEnd
+          ? { cancelAtPeriodEnd: true, updatedAt: new Date() }
+          : {
+              status: 'canceled',
+              canceledAt: new Date(),
+              updatedAt: new Date(),
+            },
+      )
+      .where(eq(subscriptions.id, subscription.id));
 
-      return {
-        message: `Subscription will be canceled at the end of the billing period (${subscription.currentPeriodEnd})`,
-      };
-    } else {
-      await db
-        .update(subscriptions)
-        .set({
-          status: 'canceled',
-          canceledAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(subscriptions.id, subscription.id));
+    await db.insert(subscriptionChanges).values({
+      subscriptionId: subscription.id,
+      changeType: 'SUBSCRIPTION_CANCELLED',
+      newValue: { atPeriodEnd },
+      changedByUserId: opts.changedByUserId ?? null,
+      reason: opts.reason ?? null,
+    });
 
-      return {
-        message: 'Subscription canceled immediately',
-      };
-    }
+    return 'cancelled';
+  }
+
+  /** Subscriptions are per account: one row per user. */
+  private async accountSubscription(userId: string) {
+    return db
+      .select()
+      .from(subscriptions)
+      .where(eq(subscriptions.userId, userId))
+      .limit(1)
+      .then((rows) => rows[0]);
   }
 }

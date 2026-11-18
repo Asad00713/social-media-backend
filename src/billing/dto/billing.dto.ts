@@ -62,10 +62,24 @@ export class CreateCheckoutSessionBodyDto {
   planCode: string;
 }
 
+/** Why the owner cancelled: one of the four choices the cancel dialog offers. */
+export const CANCEL_REASONS = [
+  'too_expensive',
+  'missing_feature',
+  'switching_tool',
+  'taking_break',
+] as const;
+
+export type CancelReason = (typeof CANCEL_REASONS)[number];
+
 export class CancelSubscriptionBodyDto {
   @IsBoolean()
   @IsOptional()
   cancelAtPeriodEnd?: boolean;
+
+  @IsIn(CANCEL_REASONS)
+  @IsOptional()
+  reason?: CancelReason;
 }
 
 export class PurchaseAddonBodyDto {

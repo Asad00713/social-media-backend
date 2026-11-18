@@ -1,4 +1,5 @@
 import type { CampaignScheduleJson } from '../drizzle/schema/campaigns.schema';
+import { wallClockToUtc } from '../common/utils/wall-clock';
 
 export interface SlotSchedule {
   date: string; // yyyy-MM-dd
@@ -9,57 +10,6 @@ export interface SlotSchedule {
 export interface SlotKey {
   date: string;
   time: string;
-}
-
-const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
-const TIME_RE = /^(\d{2}):(\d{2})$/;
-
-/** Offset (minutes) of `timeZone` from UTC at the given UTC instant.
- *  Positive means east of UTC (e.g. Asia/Karachi → +300). */
-function zoneOffsetMinutes(timeZone: string, at: Date): number {
-  // Format the same instant as wall-clock in the target zone, read it back as
-  // if it were UTC, and diff — a standard, DST-correct offset trick.
-  const dtf = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    hourCycle: 'h23',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
-  const parts = dtf.formatToParts(at);
-  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value);
-  const asUtc = Date.UTC(
-    get('year'),
-    get('month') - 1,
-    get('day'),
-    get('hour'),
-    get('minute'),
-    get('second'),
-  );
-  return Math.round((asUtc - at.getTime()) / 60000);
-}
-
-/** Convert wall-clock `date` + `HH:mm` in `timeZone` to a UTC Date. Falls back
- *  to treating the wall-clock as UTC if the zone is invalid. */
-function wallClockToUtc(date: string, time: string, timeZone: string): Date | null {
-  const d = DATE_RE.exec(date);
-  const t = TIME_RE.exec(time);
-  if (!d || !t) return null;
-  const [, y, mo, da] = d;
-  const [, hh, mm] = t;
-  // First approximation: treat the wall-clock as UTC.
-  const naiveUtcMs = Date.UTC(+y, +mo - 1, +da, +hh, +mm, 0, 0);
-  let offsetMin = 0;
-  try {
-    offsetMin = zoneOffsetMinutes(timeZone, new Date(naiveUtcMs));
-  } catch {
-    offsetMin = 0; // invalid zone → UTC fallback
-  }
-  // Real UTC instant = wall-clock minus the zone's offset.
-  return new Date(naiveUtcMs - offsetMin * 60000);
 }
 
 function isWeekend(date: string): boolean {

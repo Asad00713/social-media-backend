@@ -46,6 +46,7 @@ import { DiscordPublisher } from './publishers/discord.publisher';
 import { PostPublishProcessor } from './processors/post-publish.processor';
 import { RepeatPostsService } from './services/repeat-posts.service';
 import { PostReminderService } from './services/post-reminder.service';
+import { PostRescheduleService } from './services/post-reschedule.service';
 import { PublishFailureNotifier } from './services/publish-failure-notifier.service';
 // workspace.approval_policy. Provided here (not in ComposerModule) so
 // PostService can use it too; ComposerModule and the campaign modules import
@@ -90,6 +91,7 @@ import { ApprovalPolicyService } from './composer/services/approval-policy.servi
     PostPublishProcessor,
     RepeatPostsService,
     PostReminderService,
+    PostRescheduleService,
     PublishFailureNotifier,
     CampaignStatusSyncListener,
     ApprovalPolicyService,
@@ -101,6 +103,8 @@ import { ApprovalPolicyService } from './composer/services/approval-policy.servi
     PublisherFactory,
     PostReminderService,
     ApprovalPolicyService,
+    // The workspace time-zone move re-times scheduled posts with it.
+    PostRescheduleService,
   ],
 })
 export class PostsModule {}

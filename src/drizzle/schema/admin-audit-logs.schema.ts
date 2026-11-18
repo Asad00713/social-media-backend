@@ -16,6 +16,11 @@ export const AUDIT_ACTIONS = [
   'channel.disconnect',
   'member.remove',
   'invitation.cancel',
+  // Account soft delete (AccountDeletionService): by the person themselves,
+  // or by a super admin through DELETE /users/:id. actor_id is the person
+  // for a self delete; no PII is stored beyond the ids.
+  'user.self_delete',
+  'user.admin_delete',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
