@@ -7,6 +7,7 @@ import {
 import type { DbType } from '../drizzle/db';
 import type { SubscriptionService } from '../billing/services/subscription.service';
 import type { UsageService } from '../billing/services/usage.service';
+import type { CloudflareR2Service } from '../media/cloudflare-r2.service';
 import { AccountDeletionService } from './account-deletion.service';
 
 /**
@@ -19,6 +20,9 @@ function setup(opts: {
   owned?: { id: string; name: string }[];
   cancel?: () => Promise<unknown>;
   leftWorkspaces?: string[] | null;
+  avatarUrl?: string | null;
+  ownAvatar?: boolean;
+  deleteObject?: () => Promise<void>;
 }) {
   const queue: unknown[][] = [
     opts.user === null
@@ -40,11 +44,14 @@ function setup(opts: {
   };
   const db = {
     select: jest.fn(chain),
-    transaction: jest
-      .fn()
-      .mockResolvedValue(
-        opts.leftWorkspaces === undefined ? [] : opts.leftWorkspaces,
-      ),
+    transaction: jest.fn().mockResolvedValue(
+      opts.leftWorkspaces === null
+        ? null
+        : {
+            seatWorkspaces: opts.leftWorkspaces ?? [],
+            avatarUrl: opts.avatarUrl ?? null,
+          },
+    ),
   };
   const subscriptions = {
     cancelForAccount: jest.fn(opts.cancel ?? (() => Promise.resolve('none'))),
@@ -52,12 +59,21 @@ function setup(opts: {
   const usage = {
     decrementMemberCount: jest.fn().mockResolvedValue(undefined),
   };
+  // Never the real R2 client: only these three calls exist.
+  const r2 = {
+    isOwnPublicUrl: jest.fn(() => opts.ownAvatar ?? true),
+    keyFromPublicUrl: jest.fn((url: string) =>
+      url.slice('https://cdn.test/'.length),
+    ),
+    deleteObject: jest.fn(opts.deleteObject ?? (() => Promise.resolve())),
+  };
   const service = new AccountDeletionService(
     db as unknown as DbType,
     subscriptions as unknown as SubscriptionService,
     usage as unknown as UsageService,
+    r2 as unknown as CloudflareR2Service,
   );
-  return { service, db, subscriptions, usage };
+  return { service, db, subscriptions, usage, r2 };
 }
 
 const SELF = (confirmEmail?: string) => ({
@@ -177,5 +193,52 @@ describe('AccountDeletionService.deleteAccount', () => {
     const { service, usage } = setup({ leftWorkspaces: null });
     await service.deleteAccount('u1', SELF('old@example.com'));
     expect(usage.decrementMemberCount).not.toHaveBeenCalled();
+  });
+
+  describe('avatar removal after commit', () => {
+    const URL =
+      'https://cdn.test/avatars/abc/1700000000000-0123456789abcdef01234567.png';
+
+    it('deletes exactly the object the avatar URL names, as an avatar key', async () => {
+      const { service, r2 } = setup({ avatarUrl: URL });
+      await service.deleteAccount('u1', SELF('old@example.com'));
+      expect(r2.isOwnPublicUrl).toHaveBeenCalledWith(URL, 'avatar');
+      expect(r2.deleteObject).toHaveBeenCalledTimes(1);
+      expect(r2.deleteObject).toHaveBeenCalledWith(
+        'avatars/abc/1700000000000-0123456789abcdef01234567.png',
+      );
+    });
+
+    it('a storage failure is logged and never fails the delete', async () => {
+      const { service, r2 } = setup({
+        avatarUrl: URL,
+        deleteObject: () => Promise.reject(new Error('r2 down')),
+      });
+      await expect(
+        service.deleteAccount('u1', SELF('old@example.com')),
+      ).resolves.toBeUndefined();
+      expect(r2.deleteObject).toHaveBeenCalledTimes(1);
+    });
+
+    it('no avatar, or a URL that is not one of our avatar keys: nothing deleted', async () => {
+      const none = setup({ avatarUrl: null });
+      await none.service.deleteAccount('u1', SELF('old@example.com'));
+      expect(none.r2.deleteObject).not.toHaveBeenCalled();
+
+      const foreign = setup({
+        avatarUrl: 'https://elsewhere.test/me.png',
+        ownAvatar: false,
+      });
+      await foreign.service.deleteAccount('u1', SELF('old@example.com'));
+      expect(foreign.r2.deleteObject).not.toHaveBeenCalled();
+    });
+
+    it('a refused delete (email mismatch) never touches storage', async () => {
+      const { service, r2 } = setup({ avatarUrl: URL });
+      await expect(
+        service.deleteAccount('u1', SELF('other@x.com')),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(r2.deleteObject).not.toHaveBeenCalled();
+    });
   });
 });

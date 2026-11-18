@@ -534,6 +534,30 @@ describe('WorkspaceMembersService.restoreMember', () => {
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 
+  it('a removal whose person has since deleted their account is not restorable: 404, nothing written', async () => {
+    const { db, calls } = restoreDb(
+      removedRow({ user: { deletedAt: new Date() } }),
+    );
+    await expect(
+      makeService(db).restoreMember(WS, 'm1', ADMIN),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(calls).toHaveLength(0);
+    // The lookup asks for the user's deleted_at alongside the row.
+    expect(
+      db.query.workspaceInvitation.findFirst.mock.calls[0][0],
+    ).toMatchObject({ with: { user: { columns: { deletedAt: true } } } });
+  });
+
+  it('a live account (deletedAt null) is still restorable', async () => {
+    const { db, calls } = restoreDb(removedRow({ user: { deletedAt: null } }));
+    await makeService(db, { usage: usageWith(5, 1) }).restoreMember(
+      WS,
+      'm1',
+      ADMIN,
+    );
+    expect(calls).toHaveLength(1);
+  });
+
   it('404s a row that is not REMOVED in this workspace', async () => {
     const { db } = restoreDb(undefined);
     await expect(

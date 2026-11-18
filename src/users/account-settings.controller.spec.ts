@@ -13,6 +13,7 @@ import {
   ThrottlerStorageService,
 } from '@nestjs/throttler';
 import type { Response } from 'express';
+import { SKIP_LAUNCH_GATE } from '../auth/decorators/skip-launch-gate.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import {
   AccountSettingsController,
@@ -171,6 +172,21 @@ describe('DELETE /users/me', () => {
     expect(Reflect.getMetadata(GUARDS_METADATA, handler)).toContain(
       ThrottlerGuard,
     );
+  });
+
+  it('DELETE users/me and GET users/me/workspaces skip the launch gate; preferences do not', () => {
+    const meta = (name: string): unknown =>
+      Reflect.getMetadata(
+        SKIP_LAUNCH_GATE,
+        Reflect.get(AccountSettingsController.prototype, name) as object,
+      );
+    expect(meta('deleteAccount')).toBe(true);
+    expect(meta('getWorkspaces')).toBe(true);
+    expect(meta('getPreferences')).toBeUndefined();
+    // Not on the class: every other users/me route stays gated.
+    expect(
+      Reflect.getMetadata(SKIP_LAUNCH_GATE, AccountSettingsController),
+    ).toBeUndefined();
   });
 
   it('throttles on the user id, prefixed delete:', () => {

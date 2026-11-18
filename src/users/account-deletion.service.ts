@@ -7,7 +7,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { and, eq, gt, isNull, or, sql } from 'drizzle-orm';
+import { and, eq, gt, isNull, ne, sql } from 'drizzle-orm';
 import type { DbType } from '../drizzle/db';
 import { DRIZZLE } from '../drizzle/drizzle.module';
 import {
@@ -27,6 +27,7 @@ import {
   notifications,
   oauthStates,
   plannerPreferences,
+  stripeCustomers,
   telegramChatBindings,
   users,
   workspace,
@@ -34,6 +35,7 @@ import {
 } from '../drizzle/schema';
 import { SubscriptionService } from '../billing/services/subscription.service';
 import { UsageService } from '../billing/services/usage.service';
+import { CloudflareR2Service } from '../media/cloudflare-r2.service';
 import { normalizeEmail } from './normalize-email';
 
 type Executor = DbType | Parameters<Parameters<DbType['transaction']>[0]>[0];
@@ -47,6 +49,30 @@ export interface DeleteAccountInput {
   actor: DeletionActor;
   /** Who is deleting: the person themselves, or the super admin. */
   actorId: string;
+}
+
+/**
+ * The address a deleted account is left with: unique per account, and on a
+ * reserved TLD that can never receive mail, so the old address is free to
+ * register again. Also written over the person's invitation rows.
+ */
+export function anonymisedEmail(userId: string): string {
+  return `deleted+${userId}@deleted.invalid`;
+}
+
+/** A membership the delete moved to REMOVED, as it was before. */
+interface RemovedMembership {
+  workspaceId: string;
+  role: 'ADMIN' | 'MEMBER' | 'GUEST';
+  status: 'ACCEPTED' | 'PENDING';
+}
+
+/** What the transaction hands to the after-commit cleanup. */
+interface DeletionOutcome {
+  /** Workspaces whose member count drops: ACCEPTED, non-GUEST rows only. */
+  seatWorkspaces: string[];
+  /** The avatar the row pointed at, deleted from R2 after commit. */
+  avatarUrl: string | null;
 }
 
 /** One row of the 409 OWNS_WORKSPACES blocker list. */
@@ -82,8 +108,9 @@ const PUSH_ONLY_TABLES = [
  *     nothing has been written.
  *  3. One transaction: memberships removed, personal rows deleted, the user
  *     row anonymised, an audit row written.
- *  4. After commit: each workspace the person left gets its member count
- *     decremented (best effort, like a normal member removal).
+ *  4. After commit, best effort: each workspace where the person held a
+ *     seat gets its member count decremented (as a normal member removal
+ *     does), and their current avatar object is deleted from R2.
  */
 @Injectable()
 export class AccountDeletionService {
@@ -93,6 +120,7 @@ export class AccountDeletionService {
     @Inject(DRIZZLE) private readonly db: DbType,
     private readonly subscriptions: SubscriptionService,
     private readonly usage: UsageService,
+    private readonly r2: CloudflareR2Service,
   ) {}
 
   async deleteAccount(
@@ -129,14 +157,14 @@ export class AccountDeletionService {
       throw billingCancelFailed();
     }
 
-    const leftWorkspaces = await this.db.transaction((tx) =>
+    const outcome = await this.db.transaction((tx) =>
       this.deleteInTransaction(tx, userId, input),
     );
-    if (!leftWorkspaces) return;
+    if (!outcome) return;
 
     // After commit, as a normal member removal does: a failed count update is
     // logged and never undoes the delete.
-    for (const workspaceId of leftWorkspaces) {
+    for (const workspaceId of outcome.seatWorkspaces) {
       try {
         await this.usage.decrementMemberCount(workspaceId, userId, userId);
       } catch (error) {
@@ -145,23 +173,50 @@ export class AccountDeletionService {
         );
       }
     }
+
+    await this.deleteAvatar(userId, outcome.avatarUrl);
   }
 
   /**
-   * Everything that changes rows. Returns the workspaces an ACCEPTED
-   * membership was removed from (their member counts drop after commit), or
-   * null when a concurrent delete got there first.
+   * Deletes the one object the avatar URL names, never a prefix: the
+   * `avatars/<12 chars>/` folder is not guaranteed unique per user. Only a URL
+   * that is really one of our avatar keys is touched. Older avatars the
+   * person replaced earlier are left to the orphan sweep. Never throws.
+   */
+  private async deleteAvatar(
+    userId: string,
+    avatarUrl: string | null,
+  ): Promise<void> {
+    if (!avatarUrl || !this.r2.isOwnPublicUrl(avatarUrl, 'avatar')) return;
+    const key = this.r2.keyFromPublicUrl(avatarUrl);
+    if (!key) return;
+    try {
+      await this.r2.deleteObject(key);
+    } catch (error) {
+      this.logger.warn(
+        `Account delete ${userId}: avatar object not deleted: ${(error as Error)?.message}`,
+      );
+    }
+  }
+
+  /**
+   * Everything that changes rows. Returns what the after-commit cleanup
+   * needs, or null when a concurrent delete got there first.
    */
   private async deleteInTransaction(
     tx: Tx,
     userId: string,
     input: DeleteAccountInput,
-  ): Promise<string[] | null> {
+  ): Promise<DeletionOutcome | null> {
     // FOR UPDATE serialises two deletes of the same account, and blocks a
     // workspace insert naming this owner (its FK check takes KEY SHARE on
     // this row) until we commit.
     const [locked] = await tx
-      .select({ email: users.email, deletedAt: users.deletedAt })
+      .select({
+        email: users.email,
+        deletedAt: users.deletedAt,
+        avatarUrl: users.avatarUrl,
+      })
       .from(users)
       .where(eq(users.id, userId))
       .for('update');
@@ -172,15 +227,20 @@ export class AccountDeletionService {
     if (ownedNow.length > 0) throw ownsWorkspaces(ownedNow);
 
     const now = new Date();
-    const left = await this.removeMemberships(tx, userId, locked.email, now);
+    const removed = await this.removeMemberships(tx, userId, locked.email, now);
     await this.deletePersonalRows(tx, userId, now);
+
+    // The address must not survive next to the user id anywhere: billing
+    // rows are kept for history, but not the email on them.
+    await tx
+      .update(stripeCustomers)
+      .set({ email: null })
+      .where(eq(stripeCustomers.userId, userId));
 
     await tx
       .update(users)
       .set({
-        // Unique per account, and on a reserved TLD that can never receive
-        // mail, so the old address is free to register again.
-        email: sql`'deleted+' || ${users.id}::text || '@deleted.invalid'`,
+        email: anonymisedEmail(userId),
         name: null,
         password: null,
         googleSub: null,
@@ -198,6 +258,8 @@ export class AccountDeletionService {
         lastLoginIp: null,
         country: null,
         countryCode: null,
+        // Admin free text that often names the person.
+        suspensionNote: null,
         isActive: false,
         deletedAt: now,
         // Every token minted before now is refused; the strategies also
@@ -217,56 +279,78 @@ export class AccountDeletionService {
       targetLabel: null,
     });
 
-    return left;
+    return {
+      // A guest holds no seat (members_count counts ADMIN and MEMBER), and a
+      // PENDING row never did. Guests are still REMOVED above.
+      seatWorkspaces: [
+        ...new Set(
+          removed
+            .filter((r) => r.status === 'ACCEPTED' && r.role !== 'GUEST')
+            .map((r) => r.workspaceId),
+        ),
+      ],
+      avatarUrl: locked.avatarUrl,
+    };
   }
 
   /**
-   * Every ACCEPTED or PENDING membership → REMOVED, by this person
-   * (`removed_by = user` means "left on their own", never restorable). A
-   * PENDING invitation also matches by email: one sent before the account
-   * existed has no user_id. The accept token is replaced, as a normal removal
-   * does, so an old link is dead twice over. Invitations the person SENT are
-   * untouched (their invited_by stays; it is SET NULL only on a hard delete).
+   * Every ACCEPTED or PENDING membership -> REMOVED, by this person
+   * (`removed_by = user` means "left on their own", never restorable), in ONE
+   * UPDATE. A PENDING invitation also matches by email: one sent before the
+   * account existed has no user_id. One statement, so an invite accepted
+   * concurrently cannot slip between an ACCEPTED pass and a PENDING pass: the
+   * row lock re-evaluates the newest version, and `old_status` is what the
+   * row was when this statement took it.
+   *
+   * Each matched row also gets the anonymised email and a fresh token (as a
+   * normal removal does). Afterwards every other invitation row of this user
+   * (earlier REMOVED, REJECTED, EXPIRED) is anonymised too, so the old
+   * address never survives next to the user id. Invitations the person SENT
+   * are untouched (invited_by stays; it is SET NULL only on a hard delete).
    */
   private async removeMemberships(
     tx: Tx,
     userId: string,
     email: string,
     now: Date,
-  ): Promise<string[]> {
-    const removed = {
-      status: 'REMOVED' as const,
-      removedAt: now,
-      removedBy: userId,
-      token: sql`replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '')`,
-      updatedAt: now,
-    };
-
-    const accepted = await tx
-      .update(workspaceInvitation)
-      .set(removed)
-      .where(
-        and(
-          eq(workspaceInvitation.userId, userId),
-          eq(workspaceInvitation.status, 'ACCEPTED'),
-        ),
-      )
-      .returning({ workspaceId: workspaceInvitation.workspaceId });
+  ): Promise<RemovedMembership[]> {
+    const anon = anonymisedEmail(userId);
+    const wi = workspaceInvitation;
+    const result = await tx.execute<{
+      workspace_id: string;
+      role: RemovedMembership['role'];
+      old_status: RemovedMembership['status'];
+    }>(sql`
+      UPDATE workspace_invitations AS wi
+         SET status = 'REMOVED',
+             removed_at = ${now},
+             removed_by = ${userId},
+             email = ${anon},
+             token = replace(gen_random_uuid()::text, '-', '')
+                     || replace(gen_random_uuid()::text, '-', ''),
+             updated_at = now()
+        FROM (
+          SELECT id, status AS old_status
+            FROM workspace_invitations
+           WHERE status IN ('ACCEPTED', 'PENDING')
+             AND (user_id = ${userId}
+                  OR (status = 'PENDING'
+                      AND lower(email) = ${normalizeEmail(email)}))
+             FOR UPDATE
+        ) AS old
+       WHERE wi.id = old.id
+      RETURNING wi.workspace_id, wi.role, old.old_status`);
 
     await tx
-      .update(workspaceInvitation)
-      .set(removed)
-      .where(
-        and(
-          eq(workspaceInvitation.status, 'PENDING'),
-          or(
-            eq(workspaceInvitation.userId, userId),
-            sql`lower(${workspaceInvitation.email}) = ${normalizeEmail(email)}`,
-          ),
-        ),
-      );
+      .update(wi)
+      .set({ email: anon, updatedAt: now })
+      .where(and(eq(wi.userId, userId), ne(wi.email, anon)));
 
-    return [...new Set(accepted.map((r) => r.workspaceId))];
+    return result.rows.map((r) => ({
+      workspaceId: r.workspace_id,
+      role: r.role,
+      status: r.old_status,
+    }));
   }
 
   /**

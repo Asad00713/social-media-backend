@@ -14,6 +14,7 @@ import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { SkipLaunchGate } from '../auth/decorators/skip-launch-gate.decorator';
 import { clearRefreshCookie } from '../auth/refresh-cookie';
 import { AccountDeletionService } from './account-deletion.service';
 import { DeleteAccountDto } from './dto/delete-account.dto';
@@ -67,8 +68,13 @@ export class AccountSettingsController {
     return this.preferences.update(caller.userId, dto);
   }
 
-  /** Every workspace the caller owns or has joined (Settings > Profile). */
+  /**
+   * Every workspace the caller owns or has joined (Settings > Profile).
+   * Exempt from the launch gate: it feeds the account-delete dialog's blocker
+   * list, which a not-yet-allowlisted sign-up must be able to reach.
+   */
   @Get('workspaces')
+  @SkipLaunchGate()
   getWorkspaces(
     @CurrentUser() caller: Caller,
   ): Promise<{ workspaces: MyWorkspace[] }> {
@@ -83,8 +89,13 @@ export class AccountSettingsController {
    *
    * 400 EMAIL_MISMATCH, 409 OWNS_WORKSPACES {workspaces: [{id, name}]},
    * 502 BILLING_CANCEL_FAILED.
+   *
+   * Exempt from the launch gate: a waitlisted sign-up holds a valid token and
+   * must be able to erase their own account. It still needs the JWT, and it
+   * can only act on the caller's own row.
    */
   @Delete()
+  @SkipLaunchGate()
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(ThrottlerGuard)
   @Throttle({

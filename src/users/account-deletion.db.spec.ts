@@ -6,6 +6,7 @@ import {
 } from '../planner/testing/rollback-db';
 import type { SubscriptionService } from '../billing/services/subscription.service';
 import type { UsageService } from '../billing/services/usage.service';
+import type { CloudflareR2Service } from '../media/cloudflare-r2.service';
 import { AccountDeletionService } from './account-deletion.service';
 
 // 0080: REMOVED memberships. 0088: users.deleted_at and preferences.
@@ -27,9 +28,11 @@ async function seedUser(
 ): Promise<{ id: string; email: string }> {
   const r = await client.query<{ id: string }>(
     `INSERT INTO users (email, name, password, google_sub, avatar_url,
-                        preferences, last_login_ip, country, country_code)
+                        preferences, last_login_ip, country, country_code,
+                        suspension_note)
      VALUES ($1, 'Old Name', 'hash', $2, 'https://x.test/a.png',
-             '{"theme":"dark"}', '1.2.3.4', 'Pakistan', 'PK')
+             '{"theme":"dark"}', '1.2.3.4', 'Pakistan', 'PK',
+             'Old Name was warned twice')
      RETURNING id`,
     [email, `g-${rand()}`],
   );
@@ -53,15 +56,16 @@ async function seedInvitation(
   workspaceId: string,
   email: string,
   userId: string | null,
-  status: 'ACCEPTED' | 'PENDING',
+  status: 'ACCEPTED' | 'PENDING' | 'REMOVED',
   invitedBy: string | null,
+  role: 'ADMIN' | 'MEMBER' | 'GUEST' = 'MEMBER',
 ): Promise<string> {
   const r = await client.query<{ id: string }>(
     `INSERT INTO workspace_invitations
        (workspace_id, email, user_id, role, status, invited_by, token, expires_at)
-     VALUES ($1, $2, $3, 'MEMBER', $4, $5, $6, now() + interval '7 days')
+     VALUES ($1, $2, $3, $6, $4, $5, $7, now() + interval '7 days')
      RETURNING id`,
-    [workspaceId, email, userId, status, invitedBy, rand() + rand()],
+    [workspaceId, email, userId, status, invitedBy, role, rand() + rand()],
   );
   return r.rows[0].id;
 }
@@ -74,12 +78,19 @@ function makeService(
   const usage = {
     decrementMemberCount: jest.fn().mockResolvedValue(undefined),
   };
+  // Never the real R2 client.
+  const r2 = {
+    isOwnPublicUrl: jest.fn<boolean, [string, string]>(() => false),
+    keyFromPublicUrl: jest.fn<string | null, [string]>(() => null),
+    deleteObject: jest.fn().mockResolvedValue(undefined),
+  };
   const service = new AccountDeletionService(
     db,
     subscriptions as unknown as SubscriptionService,
     usage as unknown as UsageService,
+    r2 as unknown as CloudflareR2Service,
   );
-  return { service, subscriptions, usage };
+  return { service, subscriptions, usage, r2 };
 }
 
 async function userRow(client: PoolClient, id: string) {
@@ -158,6 +169,22 @@ describeDb('AccountDeletionService (database)', () => {
         'PENDING',
         hina.id,
       );
+      // An admin removed me from w3 earlier: the row keeps its status, but
+      // not my address.
+      const earlierRemoved = await seedInvitation(
+        client,
+        w3,
+        me.email,
+        me.id,
+        'REMOVED',
+        hina.id,
+      );
+      // My Stripe customer row: kept for billing history, email nulled.
+      await client.query(
+        `INSERT INTO stripe_customers (user_id, stripe_customer_id, email)
+         VALUES ($1, $2, $3)`,
+        [me.id, `cus_${rand()}`, oldEmail],
+      );
       // An invitation I sent stays, still naming me.
       const sent = await seedInvitation(
         client,
@@ -212,7 +239,7 @@ describeDb('AccountDeletionService (database)', () => {
         [sub.rows[0].id, me.id],
       );
 
-      const { service, usage } = makeService(db);
+      const { service, usage, r2 } = makeService(db);
       await service.deleteAccount(me.id, {
         confirmEmail: ` ${oldEmail.replace('old', 'Old')} `,
         actor: 'self',
@@ -242,8 +269,42 @@ describeDb('AccountDeletionService (database)', () => {
           .sort(),
       ).toEqual([w1, w2].sort());
 
+      // The old address survives on no invitation row tied to me, whatever
+      // its status, nor on the email-matched one that had no user_id.
+      const anon = `deleted+${me.id}@deleted.invalid`;
+      const emails = await client.query<{ id: string; email: string }>(
+        `SELECT id, email FROM workspace_invitations
+          WHERE id = ANY($1::uuid[]) OR user_id = $2`,
+        [[m1, m2, pendingByEmail, earlierRemoved], me.id],
+      );
+      expect(emails.rows).toHaveLength(4);
+      for (const row of emails.rows) expect(row.email).toBe(anon);
+      expect(
+        await count(
+          client,
+          `SELECT count(*) AS n FROM workspace_invitations
+            WHERE lower(email) = lower($1)`,
+          [oldEmail],
+        ),
+      ).toBe(0);
+      expect(
+        await count(
+          client,
+          `SELECT count(*) AS n FROM workspace_invitations
+            WHERE id = $1 AND status = 'REMOVED' AND removed_by = $2`,
+          [earlierRemoved, hina.id],
+        ),
+      ).toBe(1);
+      const customer = await client.query<{ email: string | null }>(
+        `SELECT email FROM stripe_customers WHERE user_id = $1`,
+        [me.id],
+      );
+      expect(customer.rows).toEqual([{ email: null }]);
+      // The seeded avatar URL is not one of our R2 keys: nothing deleted.
+      expect(r2.deleteObject).not.toHaveBeenCalled();
+
       const u = await userRow(client, me.id);
-      expect(u.email).toBe(`deleted+${me.id}@deleted.invalid`);
+      expect(u.email).toBe(anon);
       for (const col of [
         'name',
         'password',
@@ -257,6 +318,7 @@ describeDb('AccountDeletionService (database)', () => {
         'last_login_ip',
         'country',
         'country_code',
+        'suspension_note',
       ]) {
         expect([col, u[col]]).toEqual([col, null]);
       }
@@ -416,6 +478,77 @@ describeDb('AccountDeletionService (database)', () => {
       expect(audit.rows).toEqual([
         { action: 'user.admin_delete', actor_id: admin.id },
       ]);
+    });
+  });
+
+  it('a guest holds no seat: GUEST in A and MEMBER in B, only B is decremented, both REMOVED', async () => {
+    await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const me = await seedUser(client);
+      const hina = await seedUser(client);
+      const wA = await seedWorkspace(client, hina.id, 'A');
+      const wB = await seedWorkspace(client, hina.id, 'B');
+      const asGuest = await seedInvitation(
+        client,
+        wA,
+        me.email,
+        me.id,
+        'ACCEPTED',
+        hina.id,
+        'GUEST',
+      );
+      const asMember = await seedInvitation(
+        client,
+        wB,
+        me.email,
+        me.id,
+        'ACCEPTED',
+        hina.id,
+        'MEMBER',
+      );
+      const { service, usage } = makeService(db);
+
+      await service.deleteAccount(me.id, {
+        confirmEmail: me.email,
+        actor: 'self',
+        actorId: me.id,
+      });
+
+      expect(usage.decrementMemberCount.mock.calls).toEqual([
+        [wB, me.id, me.id],
+      ]);
+      expect(
+        await count(
+          client,
+          `SELECT count(*) AS n FROM workspace_invitations
+            WHERE id = ANY($1::uuid[]) AND status = 'REMOVED'`,
+          [[asGuest, asMember]],
+        ),
+      ).toBe(2);
+    });
+  });
+
+  it('an own R2 avatar is deleted by its exact key, read under the lock', async () => {
+    await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const me = await seedUser(client);
+      const { service, r2 } = makeService(db);
+      r2.isOwnPublicUrl.mockReturnValue(true);
+      r2.keyFromPublicUrl.mockImplementation((url: string) =>
+        url.slice('https://x.test/'.length),
+      );
+
+      await service.deleteAccount(me.id, {
+        confirmEmail: me.email,
+        actor: 'self',
+        actorId: me.id,
+      });
+
+      // seedUser's avatar_url, as the row held it before anonymising.
+      expect(r2.isOwnPublicUrl).toHaveBeenCalledWith(
+        'https://x.test/a.png',
+        'avatar',
+      );
+      expect(r2.deleteObject.mock.calls).toEqual([['a.png']]);
+      expect((await userRow(client, me.id)).avatar_url).toBeNull();
     });
   });
 });

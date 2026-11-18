@@ -910,10 +910,18 @@ export class WorkspaceMembersService {
         eq(workspaceInvitation.id, memberId),
         eq(workspaceInvitation.status, 'REMOVED'),
       ),
+      // A deleted account (AccountDeletionService) is never restored.
+      with: { user: { columns: { deletedAt: true } } },
     });
 
-    // Leaving on your own (removed_by = the member) is not undoable.
-    if (!row || !row.userId || row.removedBy === row.userId) {
+    // Leaving on your own (removed_by = the member) is not undoable, and
+    // neither is a removal whose person has since deleted their account.
+    if (
+      !row ||
+      !row.userId ||
+      row.removedBy === row.userId ||
+      row.user?.deletedAt
+    ) {
       throw new NotFoundException('Removed member not found in this workspace');
     }
     const userId = row.userId;
