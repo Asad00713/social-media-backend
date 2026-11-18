@@ -194,14 +194,24 @@ describe('PostService.publishPost - failure cause and event routing', () => {
     expect(finalTarget().errorCode).toBe('permanent');
   });
 
-  it('our own rate limit fails the target as rate_limited', async () => {
+  /**
+   * This asserted the opposite until the rate-limit work: the target was
+   * marked `failed`, and the reopening time the limiter had just computed was
+   * thrown away, so a customer had to notice a dead post and resend it.
+   *
+   * It is now HELD, which is how this codebase already handles "could not
+   * send, not the customer's fault" for a paused channel — the post stays
+   * `scheduled` and a job waits for the window to reopen.
+   */
+  it('our own rate limit holds the target instead of failing it', async () => {
     const { svc, publisher } = make({ channelAllowed: false });
     currentRow = row();
     await svc.publishPost('p1', 'w1', 'author-1', { triggeredBy: 'scheduler' });
     expect(publisher.publish).not.toHaveBeenCalled();
     expect(finalTarget()).toMatchObject({
-      status: 'failed',
-      errorCode: 'rate_limited',
+      heldReason: 'rate_limited',
+      // The status fields are deliberately untouched by a hold.
+      status: 'scheduled',
     });
   });
 

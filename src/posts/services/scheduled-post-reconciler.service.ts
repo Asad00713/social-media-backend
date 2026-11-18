@@ -6,7 +6,11 @@ import { and, eq, lt, isNotNull } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import { posts } from '../../drizzle/schema';
 import { QUEUES } from '../../queue/queue.module';
-import { isJobPending, isHeld } from '../lib/held-targets';
+import {
+  isJobPending,
+  isHeld,
+  PUBLISH_LATE_GRACE_MS,
+} from '../lib/held-targets';
 import { livePosts } from '../soft-delete/soft-delete';
 
 /**
@@ -20,7 +24,8 @@ import { livePosts } from '../soft-delete/soft-delete';
  * seconds; a Redis *restore from backup* can be an hour or two. Six hours
  * covers that while still refusing to publish yesterday's post today.
  */
-const PUBLISH_LATE_GRACE_MS = 6 * 60 * 60 * 1000;
+// PUBLISH_LATE_GRACE_MS now lives in lib/held-targets.ts: the publish path
+// asks the same question when it decides whether to wait out a rate limit.
 
 /**
  * Only consider posts whose time has been settled for a moment.

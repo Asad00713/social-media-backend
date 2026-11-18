@@ -114,8 +114,14 @@ export interface PostTarget {
    * is next attempted. Kept in the existing `targets` jsonb, no migration.
    */
   heldAt?: string;
-  // Paused by the user, or disconnected (channel soft disconnect, 0081).
-  heldReason?: 'channel_paused' | 'channel_disconnected';
+  /**
+   * Why the target did not go: paused by the user, disconnected (channel soft
+   * disconnect, 0081), or the platform's per-account rate limit was full.
+   *
+   * The first two are released by a user action; `rate_limited` releases
+   * itself when the window reopens. See `posts/lib/held-targets.ts`.
+   */
+  heldReason?: 'channel_paused' | 'channel_disconnected' | 'rate_limited';
   contentOverride?: PlatformContent;
   /**
    * Sub-destination for chat/messaging platforms (Slack/Discord): which
