@@ -427,12 +427,16 @@ export class WorkspaceMembersService {
         throw new BadRequestException('This invitation is no longer pending');
       }
 
-      // Counted before the lock is released, so the next seat check sees it.
+      // Counted on `tx`, so it is inside the transaction that holds the seat
+      // lock: the next seat check really does see it, and a rollback takes the
+      // count with it. Passing the pool instead (which this did) put the
+      // increment on another connection, outside both.
       try {
         await this.usageService.incrementMemberCount(
           invitation.workspaceId,
           currentUserId,
           currentUserId,
+          tx,
         );
       } catch (error) {
         // Log but don't fail if usage tracking fails
@@ -811,7 +815,10 @@ export class WorkspaceMembersService {
       throw new NotFoundException('Member not found in this workspace');
     }
 
-    // Track usage - decrement member count
+    // No transaction here, so no `tx` to pass: the decrement is a single
+    // atomic statement against the counter, which is enough on its own. The
+    // seat lock matters for writes that must agree with a seat CHECK, and
+    // removing a member never contends for a free seat.
     try {
       await this.usageService.decrementMemberCount(
         workspaceId,
@@ -969,12 +976,13 @@ export class WorkspaceMembersService {
           role: workspaceInvitation.role,
         });
 
-      // Counted before the lock is released, so the next seat check sees it.
+      // On `tx`, inside the seat lock — same reasoning as accept above.
       try {
         await this.usageService.incrementMemberCount(
           workspaceId,
           currentUserId,
           userId,
+          tx,
         );
       } catch (error) {
         // Log but don't fail if usage tracking fails (as accept and remove do)
