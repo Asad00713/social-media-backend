@@ -30,6 +30,12 @@ import { getNextTokenResetDate } from 'src/billing/services/token-reset.util';
 import { LibrarySamplesService } from 'src/media-library/samples/library-samples.service';
 import { rescheduleWorkspaceReports } from '../insights/reports/lib/reschedule';
 import { CloudflareR2Service } from '../media/cloudflare-r2.service';
+import {
+  WorkspaceTimezoneMoveService,
+  type TimezoneMoveResult,
+} from './workspace-timezone-move.service';
+
+export type { TimezoneMoveResult };
 
 type GetAllREsponse = {
   // Omits the Maestro BYOK credential — it must never reach a client.
@@ -63,15 +69,6 @@ export interface PublishingDefaults {
   utmDefault: boolean;
 }
 
-/**
- * Outcome of moving a workspace's channels to a new time zone. Declared here
- * until the time-zone move lands, which owns and fills it; `update` answers
- * `null` for it today.
- */
-export interface TimezoneMoveResult {
-  channelsMoved: number;
-}
-
 /** A 400 with a machine-readable `code` the frontend reads. */
 function badRequest(code: string, message: string): BadRequestException {
   return new BadRequestException({
@@ -96,8 +93,9 @@ export class WorkspaceService {
     @Inject(forwardRef(() => AddonService))
     private addonService: AddonService,
     private librarySamples: LibrarySamplesService,
-    // Last: positional specs construct this service directly.
+    // Last two: positional specs construct this service directly.
     private r2: CloudflareR2Service,
+    private timezoneMove: WorkspaceTimezoneMoveService,
   ) {}
 
   async create(
@@ -497,6 +495,14 @@ export class WorkspaceService {
       }
     }
 
+    // "Also move existing": refused before any write while an earlier move
+    // is still on the queue.
+    const moveToZone =
+      applyTimezoneToChannels === true ? columns.timezone : undefined;
+    if (moveToZone !== undefined) {
+      await this.timezoneMove.assertNoMoveInProgress(workspaceId);
+    }
+
     const [updatedWorkspace] = await this.db
       .update(workspace)
       .set({
@@ -515,7 +521,19 @@ export class WorkspaceService {
       await this.rescheduleReports(workspaceId, columns.timezone);
     }
 
-    return { workspace: updatedWorkspace, timezoneMove: null };
+    // Channels and scheduled posts follow the new zone; a post keeps the local
+    // time it had in its channel's old zone. Run even when the workspace zone
+    // is unchanged: it pulls channels still in another zone onto it.
+    const timezoneMove =
+      moveToZone === undefined
+        ? null
+        : await this.timezoneMove.moveExisting(
+            workspaceId,
+            existingWorkspace.timezone,
+            moveToZone,
+          );
+
+    return { workspace: updatedWorkspace, timezoneMove };
   }
 
   /**

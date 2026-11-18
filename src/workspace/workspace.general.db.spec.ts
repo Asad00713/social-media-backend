@@ -35,6 +35,8 @@ function makeService(db: never): WorkspaceService {
     {} as never,
     {} as never,
     r2,
+    // The time-zone move has its own DB spec.
+    {} as never,
   );
 }
 

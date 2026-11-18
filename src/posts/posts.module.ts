@@ -43,6 +43,7 @@ import { DiscordPublisher } from './publishers/discord.publisher';
 import { PostPublishProcessor } from './processors/post-publish.processor';
 import { RepeatPostsService } from './services/repeat-posts.service';
 import { PostReminderService } from './services/post-reminder.service';
+import { PostRescheduleService } from './services/post-reschedule.service';
 import { PublishFailureNotifier } from './services/publish-failure-notifier.service';
 
 @Module({
@@ -82,6 +83,7 @@ import { PublishFailureNotifier } from './services/publish-failure-notifier.serv
     PostPublishProcessor,
     RepeatPostsService,
     PostReminderService,
+    PostRescheduleService,
     PublishFailureNotifier,
     CampaignStatusSyncListener,
   ],
@@ -91,6 +93,8 @@ import { PublishFailureNotifier } from './services/publish-failure-notifier.serv
     PostDraftsService,
     PublisherFactory,
     PostReminderService,
+    // The workspace time-zone move re-times scheduled posts with it.
+    PostRescheduleService,
   ],
 })
 export class PostsModule {}

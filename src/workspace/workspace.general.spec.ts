@@ -1,6 +1,11 @@
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+} from '@nestjs/common';
 import type { CloudflareR2Service } from '../media/cloudflare-r2.service';
 import { WorkspaceService } from './workspace.service';
+import type { WorkspaceTimezoneMoveService } from './workspace-timezone-move.service';
 
 // The General rules that need no database: what update refuses before it
 // writes, and what it never hands to the row. The DB twin of this file
@@ -13,6 +18,7 @@ const EXISTING = {
   timezone: 'UTC',
 };
 const OWN_LOGO = 'https://cdn.test/workspace-logos/ws-1/u/1-abc.png';
+const MOVED = { movedChannels: 2, rescheduledPosts: 1, queued: false };
 
 function makeService() {
   const returning = jest.fn();
@@ -34,6 +40,10 @@ function makeService() {
   const r2 = {
     isOwnPublicUrl: jest.fn((url: string) => url === OWN_LOGO),
   };
+  const timezoneMove = {
+    assertNoMoveInProgress: jest.fn().mockResolvedValue(undefined),
+    moveExisting: jest.fn().mockResolvedValue(MOVED),
+  };
   const service = new WorkspaceService(
     db as never,
     {} as never,
@@ -43,8 +53,9 @@ function makeService() {
     {} as never,
     {} as never,
     r2 as unknown as CloudflareR2Service,
+    timezoneMove as unknown as WorkspaceTimezoneMoveService,
   );
-  return { service, db, set, findFirst, r2 };
+  return { service, db, set, findFirst, r2, timezoneMove };
 }
 
 async function codeOf(p: Promise<unknown>): Promise<string | undefined> {
@@ -66,10 +77,52 @@ describe('WorkspaceService.update (General)', () => {
     ).resolves.toMatchObject({ workspace: { name: 'New' } });
   });
 
-  it('answers timezoneMove null until the move exists', async () => {
-    const { service } = makeService();
-    const res = await service.update('ws-1', { description: 'x' });
+  it('answers timezoneMove null and moves nothing without the flag', async () => {
+    for (const dto of [{ description: 'x' }, { timezone: 'Asia/Karachi' }]) {
+      const { service, timezoneMove } = makeService();
+      expect((await service.update('ws-1', dto)).timezoneMove).toBeNull();
+      expect(timezoneMove.moveExisting).not.toHaveBeenCalled();
+      expect(timezoneMove.assertNoMoveInProgress).not.toHaveBeenCalled();
+    }
+  });
+
+  it('answers timezoneMove null for applyTimezoneToChannels false', async () => {
+    const { service, timezoneMove } = makeService();
+    const res = await service.update('ws-1', {
+      timezone: 'Asia/Karachi',
+      applyTimezoneToChannels: false,
+    });
     expect(res.timezoneMove).toBeNull();
+    expect(timezoneMove.moveExisting).not.toHaveBeenCalled();
+  });
+
+  it('moves channels and posts from the old zone to the new one with the flag', async () => {
+    const { service, timezoneMove } = makeService();
+    const res = await service.update('ws-1', {
+      timezone: 'America/New_York',
+      applyTimezoneToChannels: true,
+    });
+    expect(timezoneMove.moveExisting).toHaveBeenCalledWith(
+      'ws-1',
+      'UTC',
+      'America/New_York',
+    );
+    expect(res.timezoneMove).toEqual(MOVED);
+  });
+
+  it('409 TIMEZONE_MOVE_IN_PROGRESS before any write while a move is queued', async () => {
+    const { service, db, timezoneMove } = makeService();
+    timezoneMove.assertNoMoveInProgress.mockRejectedValueOnce(
+      new ConflictException({ code: 'TIMEZONE_MOVE_IN_PROGRESS' }),
+    );
+    await expect(
+      service.update('ws-1', {
+        timezone: 'America/New_York',
+        applyTimezoneToChannels: true,
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(db.update).not.toHaveBeenCalled();
+    expect(timezoneMove.moveExisting).not.toHaveBeenCalled();
   });
 
   it('400 TIMEZONE_REQUIRED when applyTimezoneToChannels comes without a timezone, before any write', async () => {
