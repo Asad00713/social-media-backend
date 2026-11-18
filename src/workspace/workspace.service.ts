@@ -8,16 +8,23 @@ import {
   NotFoundException,
   forwardRef,
 } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import type { Queue } from 'bullmq';
 import type { DbType } from 'src/drizzle/db';
 import { DRIZZLE } from 'src/drizzle/drizzle.module';
 import { CreateWorkspaceDto } from './dto/create-workspace.dto';
 import {
+  plans,
+  posts,
+  socialMediaChannels,
+  subscriptions,
   workspace,
+  workspaceInvitation,
   workspaceUsage,
   Workspace,
   type ApprovalPolicy,
 } from 'src/drizzle/schema';
-import { and, count, eq, ne } from 'drizzle-orm';
+import { and, count, eq, inArray, ne } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
 import { UpdateWorkspaceDto } from './dto/update-workspace.dto';
 import { UsageService } from 'src/billing/services/usage.service';
@@ -34,6 +41,7 @@ import {
   WorkspaceTimezoneMoveService,
   type TimezoneMoveResult,
 } from './workspace-timezone-move.service';
+import { QUEUES } from '../queue/queue.module';
 
 export type { TimezoneMoveResult };
 
@@ -69,6 +77,23 @@ export interface PublishingDefaults {
   utmDefault: boolean;
 }
 
+/** What deleting a workspace takes with it, shown before the typed confirm. */
+export interface DeletionPreview {
+  /** Channels not disconnected. */
+  channels: number;
+  scheduledPosts: number;
+  /** ACCEPTED members other than guests (the owner is not a member row). */
+  members: number;
+  guests: number;
+  /** The owner owns no other workspace: deleting it cancels a paid plan. */
+  isLastOwnedWorkspace: boolean;
+  /** The owner's plan (as on "Your workspaces"); the free plan otherwise. */
+  planName: string;
+}
+
+/** Subscription states that mean the owner is on their plan (Task 10). */
+const LIVE_SUBSCRIPTION_STATUSES = ['active', 'trialing', 'past_due'];
+
 /** A 400 with a machine-readable `code` the frontend reads. */
 function badRequest(code: string, message: string): BadRequestException {
   return new BadRequestException({
@@ -93,9 +118,12 @@ export class WorkspaceService {
     @Inject(forwardRef(() => AddonService))
     private addonService: AddonService,
     private librarySamples: LibrarySamplesService,
-    // Last two: positional specs construct this service directly.
+    // Last three: positional specs construct this service directly.
     private r2: CloudflareR2Service,
     private timezoneMove: WorkspaceTimezoneMoveService,
+    // Deleting a workspace cancels its scheduled posts' publish jobs.
+    @InjectQueue(QUEUES.POST_PUBLISHING)
+    private publishingQueue: Queue,
   ) {}
 
   async create(
@@ -575,9 +603,85 @@ export class WorkspaceService {
     }
   }
 
+  /**
+   * Counts for the delete dialog. Behind `workspace:delete`, so only the
+   * owner (or a platform super admin) reads them.
+   */
+  async deletionPreview(workspaceId: string): Promise<DeletionPreview> {
+    const existing = await this.db.query.workspace.findFirst({
+      where: eq(workspace.id, workspaceId),
+      columns: { id: true, ownerId: true },
+    });
+    if (!existing) {
+      throw new NotFoundException(
+        `Workspace with id "${workspaceId}" not found`,
+      );
+    }
+
+    const [[channels], [scheduled], roles, ownedOthers, planName] =
+      await Promise.all([
+        this.db
+          .select({ n: count() })
+          .from(socialMediaChannels)
+          .where(
+            and(
+              eq(socialMediaChannels.workspaceId, workspaceId),
+              ne(socialMediaChannels.connectionStatus, 'disconnected'),
+            ),
+          ),
+        this.db
+          .select({ n: count() })
+          .from(posts)
+          .where(
+            and(
+              eq(posts.workspaceId, workspaceId),
+              eq(posts.status, 'scheduled'),
+            ),
+          ),
+        this.db
+          .select({ role: workspaceInvitation.role, n: count() })
+          .from(workspaceInvitation)
+          .where(
+            and(
+              eq(workspaceInvitation.workspaceId, workspaceId),
+              eq(workspaceInvitation.status, 'ACCEPTED'),
+            ),
+          )
+          .groupBy(workspaceInvitation.role),
+        this.countOwnedWorkspaces(existing.ownerId, workspaceId),
+        this.ownerPlanName(existing.ownerId),
+      ]);
+
+    let members = 0;
+    let guests = 0;
+    for (const r of roles) {
+      if (r.role === 'GUEST') guests += Number(r.n);
+      else members += Number(r.n);
+    }
+
+    return {
+      channels: Number(channels?.n ?? 0),
+      scheduledPosts: Number(scheduled?.n ?? 0),
+      members,
+      guests,
+      isLastOwnedWorkspace: ownedOthers === 0,
+      planName,
+    };
+  }
+
+  /**
+   * Permanently deletes a workspace. `workspace:delete` (OWNER, or a
+   * platform super admin through the guard) is the authorisation; the typed
+   * name is the confirmation. Everything after the DELETE is best effort and
+   * logged: the workspace is already gone, so nothing there may fail it.
+   *
+   * Billing is the OWNER's account, never the caller's: a super admin who
+   * deletes someone's workspace releases the owner's slot.
+   */
   async remove(
     workspaceId: string,
     userId: string,
+    confirmName: string,
   ): Promise<{ message: string }> {
     const existingWorkspace = await this.db.query.workspace.findFirst({
       where: eq(workspace.id, workspaceId),
@@ -589,11 +693,27 @@ export class WorkspaceService {
       );
     }
 
-    if (existingWorkspace.ownerId !== userId) {
-      throw new ForbiddenException(
-        'You do not have permission to delete this workspace',
+    // Exact and case-sensitive; only the typed side is trimmed (the frontend
+    // sends it trimmed too).
+    if (confirmName.trim() !== existingWorkspace.name) {
+      throw badRequest(
+        'CONFIRM_NAME_MISMATCH',
+        'Type the workspace name exactly to delete it.',
       );
     }
+
+    const ownerId = existingWorkspace.ownerId;
+
+    // Read before the DELETE: the cascade takes the rows, and with them the
+    // job ids recorded on them.
+    const scheduledPosts = await this.db
+      .select({ id: posts.id, jobId: posts.jobId })
+      .from(posts)
+      .where(
+        and(eq(posts.workspaceId, workspaceId), eq(posts.status, 'scheduled')),
+      );
+
+    const ownedAfter = await this.countOwnedWorkspaces(ownerId, workspaceId);
 
     // Give back the workspace slot BEFORE deleting, while this workspace still
     // exists for removeAddon to verify ownership against.
@@ -603,13 +723,12 @@ export class WorkspaceService {
     // reduce when the account is actually over its included allowance —
     // deleting a workspace that the plan already covers should cost nothing.
     try {
-      const ownedAfter = await this.countOwnedWorkspaces(userId, workspaceId);
-      const included = await this.includedWorkspaces(userId);
+      const included = await this.includedWorkspaces(ownerId);
 
       if (ownedAfter < included.purchasedFloor) {
         await this.addonService.removeAddon(
           workspaceId,
-          userId,
+          ownerId,
           'EXTRA_WORKSPACE',
           1,
         );
@@ -626,12 +745,21 @@ export class WorkspaceService {
 
     await this.db.delete(workspace).where(eq(workspace.id, workspaceId));
 
+    await this.cancelPublishJobs(workspaceId, scheduledPosts);
+    // A pending "Also move existing" would otherwise re-arm jobs for posts
+    // that no longer exist.
+    await this.timezoneMove.cancelPendingMove(workspaceId);
+
+    if (ownedAfter === 0) {
+      await this.cancelPaidPlan(ownerId, userId, workspaceId);
+    }
+
     // Remaining workspaces re-derive their limits: deleting the primary one
     // promotes the next-oldest, and nothing else recomputes the fan-out.
     // Channels are pooled, so freeing this workspace's channels may also let
     // previously locked channels come back.
     try {
-      const subscription = await this.lookup.findByUserId(userId);
+      const subscription = await this.lookup.findByUserId(ownerId);
       const planCode =
         subscription && subscription.status === 'active'
           ? subscription.planCode
@@ -647,7 +775,7 @@ export class WorkspaceService {
 
       // Also re-applies the account's channel locks: with this workspace's
       // channels gone, previously locked ones may fit again.
-      await this.lookup.applyLimitsToAllWorkspaces(userId, planCode, addons);
+      await this.lookup.applyLimitsToAllWorkspaces(ownerId, planCode, addons);
     } catch (error) {
       this.logger.error(
         `Failed to re-apply limits after deleting workspace ${workspaceId}: ${
@@ -659,6 +787,97 @@ export class WorkspaceService {
     return { message: 'Workspace permanently deleted' };
   }
 
+  /**
+   * Both job ids a scheduled post can have (PostService.cancelPublishJobs):
+   * the composer's `composer-publish-<id>` and whatever `posts.job_id`
+   * names. A job left behind finds its post gone and does nothing, so a
+   * failure is only logged.
+   */
+  private async cancelPublishJobs(
+    workspaceId: string,
+    scheduled: { id: string; jobId: string | null }[],
+  ): Promise<void> {
+    let failed = 0;
+    for (const post of scheduled) {
+      const ids = new Set([`composer-publish-${post.id}`]);
+      if (post.jobId) ids.add(post.jobId);
+      for (const jobId of ids) {
+        try {
+          const job = await this.publishingQueue.getJob(jobId);
+          if (job) await job.remove();
+        } catch (error) {
+          failed += 1;
+          this.logger.warn(
+            `Could not cancel job ${jobId} of deleted workspace ${workspaceId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+    }
+    if (failed > 0) {
+      this.logger.warn(
+        `Deleted workspace ${workspaceId}: ${failed} publish job(s) left in Redis`,
+      );
+    }
+  }
+
+  /**
+   * The owner's last workspace is gone: a paid plan would bill on for
+   * nothing, so it ends at the period end. FREE (or no live subscription)
+   * has nothing to cancel. Never throws: the workspace is already deleted.
+   */
+  private async cancelPaidPlan(
+    ownerId: string,
+    callerId: string,
+    workspaceId: string,
+  ): Promise<void> {
+    try {
+      const subscription = await this.lookup.findByUserId(ownerId);
+      if (
+        !subscription ||
+        subscription.planCode === 'FREE' ||
+        subscription.status === 'canceled'
+      ) {
+        return;
+      }
+      await this.subscriptionService.cancelForAccount(ownerId, true, {
+        changedByUserId: callerId,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to cancel the subscription of ${ownerId} after deleting their last workspace ${workspaceId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  /**
+   * `plans.name` of the owner's live subscription, else the free plan's
+   * name. Never null: a missing FREE row still reads 'Free'.
+   */
+  private async ownerPlanName(ownerId: string): Promise<string> {
+    const [live] = await this.db
+      .select({ name: plans.name })
+      .from(subscriptions)
+      .innerJoin(plans, eq(plans.code, subscriptions.planCode))
+      .where(
+        and(
+          eq(subscriptions.userId, ownerId),
+          inArray(subscriptions.status, LIVE_SUBSCRIPTION_STATUSES),
+        ),
+      )
+      .limit(1);
+    if (live) return live.name;
+    const [free] = await this.db
+      .select({ name: plans.name })
+      .from(plans)
+      .where(eq(plans.code, 'FREE'))
+      .limit(1);
+    return free?.name ?? 'Free';
+  }
+
   /** How many workspaces the account will own once `excludingId` is gone. */
   private async countOwnedWorkspaces(
     userId: string,
@@ -667,9 +886,7 @@ export class WorkspaceService {
     const [row] = await this.db
       .select({ n: count() })
       .from(workspace)
-      .where(
-        and(eq(workspace.ownerId, userId), ne(workspace.id, excludingId)),
-      );
+      .where(and(eq(workspace.ownerId, userId), ne(workspace.id, excludingId)));
     return Number(row?.n ?? 0);
   }
 

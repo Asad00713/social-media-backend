@@ -88,6 +88,7 @@ function makeServices(
     {} as never,
     r2,
     moves,
+    publishing.queue as never,
   );
   return { moves, workspaces, publishing, moveQueue };
 }

@@ -30,6 +30,7 @@ function makeService(samples: Pick<LibrarySamplesService, 'seedInBackground'>) {
     samples as LibrarySamplesService,
     {} as never,
     {} as never,
+    {} as never,
   );
   // Covered by workspace.usage-seed.spec.ts; not the unit here.
   jest

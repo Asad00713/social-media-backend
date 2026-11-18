@@ -73,6 +73,7 @@ function makeService() {
     {} as never,
     r2 as unknown as CloudflareR2Service,
     timezoneMove as unknown as WorkspaceTimezoneMoveService,
+    {} as never,
   );
   return { service, db, set, findFirst, r2, timezoneMove };
 }

@@ -23,6 +23,7 @@ import { RequireCapability } from 'src/workspace-members/require-capability.deco
 import { WorkspaceRoleGuard } from 'src/workspace-members/workspace-role.guard';
 import { CloudflareR2Service } from 'src/media/cloudflare-r2.service';
 import { PresignLogoDto } from './dto/presign-logo.dto';
+import { DeleteWorkspaceDto } from './dto/delete-workspace.dto';
 
 @Controller('workspace')
 export class WorkspaceController {
@@ -152,8 +153,16 @@ export class WorkspaceController {
     });
   }
 
-  // The service still checks the owner; the capability is OWNER-only too, so
-  // the guard alone already keeps everyone else out.
+  /** What a delete would take with it, for the typed-confirm dialog. */
+  @Get(':workspaceId/deletion-preview')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  @RequireCapability('workspace:delete')
+  deletionPreview(@Param('workspaceId') workspaceId: string) {
+    return this.workspaceService.deletionPreview(workspaceId);
+  }
+
+  // `workspace:delete` is OWNER-only (a platform super admin passes the
+  // guard too): the guard is the authorisation, the typed name the confirm.
   @Delete(':workspaceId/permanent')
   @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('workspace:delete')
@@ -161,8 +170,13 @@ export class WorkspaceController {
   async removePermanently(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
+    @Body() dto: DeleteWorkspaceDto,
   ) {
-    const result = await this.workspaceService.remove(workspaceId, user.userId);
+    const result = await this.workspaceService.remove(
+      workspaceId,
+      user.userId,
+      dto.confirmName,
+    );
 
     return {
       success: true,

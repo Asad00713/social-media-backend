@@ -18,6 +18,10 @@ const GUARDED: Record<string, { cap: Capability; path: string }> = {
     cap: 'posts:draft',
     path: ':workspaceId/publishing-defaults',
   },
+  deletionPreview: {
+    cap: 'workspace:delete',
+    path: ':workspaceId/deletion-preview',
+  },
   removePermanently: {
     cap: 'workspace:delete',
     path: ':workspaceId/permanent',
@@ -92,6 +96,10 @@ describe('WorkspaceController behaviour', () => {
         },
         timezoneMove: null,
       }),
+      deletionPreview: jest.fn().mockResolvedValue({ channels: 2 }),
+      remove: jest
+        .fn()
+        .mockResolvedValue({ message: 'Workspace permanently deleted' }),
     };
     const r2 = {
       createPresignedUpload: jest.fn().mockResolvedValue({ key: 'k' }),
@@ -151,5 +159,24 @@ describe('WorkspaceController behaviour', () => {
       sizeBytes: 1024,
       filename: 'l.png',
     });
+  });
+
+  it('deletionPreview answers the service counts as they are', async () => {
+    const { controller, service } = make();
+    await expect(controller.deletionPreview('ws-1')).resolves.toEqual({
+      channels: 2,
+    });
+    expect(service.deletionPreview).toHaveBeenCalledWith('ws-1');
+  });
+
+  it('removePermanently passes the typed name and the caller to the service', async () => {
+    const { controller, service } = make();
+    await expect(
+      controller.removePermanently('ws-1', user, { confirmName: 'Acme' }),
+    ).resolves.toEqual({
+      success: true,
+      message: 'Workspace permanently deleted',
+    });
+    expect(service.remove).toHaveBeenCalledWith('ws-1', 'user-1', 'Acme');
   });
 });

@@ -365,6 +365,23 @@ export class WorkspaceTimezoneMoveService {
   }
 
   /**
+   * Drops a queued move of a workspace being deleted. Best effort: a move
+   * already running cannot be removed, and finds no posts once the workspace
+   * is gone (processQueued then only logs them as left alone).
+   */
+  async cancelPendingMove(workspaceId: string): Promise<void> {
+    const id = moveJobId(workspaceId);
+    try {
+      const job = await this.moveQueue.getJob(id);
+      if (job) await job.remove();
+    } catch (error) {
+      this.logger.warn(
+        `Could not cancel the time-zone move ${id}: ${errorText(error)}`,
+      );
+    }
+  }
+
+  /**
    * Refuses a move while the last one is still queued (409), and frees the
    * fixed job id of a finished one: BullMQ silently ignores an `add` whose id
    * exists. `strict` (the queued path): a queue error refuses the move too,
