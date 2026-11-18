@@ -1,4 +1,8 @@
 import { ForbiddenException } from '@nestjs/common';
+import { GUARDS_METADATA } from '@nestjs/common/constants';
+import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
+import type { CloudflareR2Service } from '../media/cloudflare-r2.service';
+import type { AccountDeletionService } from './account-deletion.service';
 import { UsersController } from './users.controller';
 import type { UsersService } from './users.service';
 
@@ -15,11 +19,18 @@ function makeController() {
     findAll: jest.fn().mockResolvedValue([]),
     findOne: jest.fn().mockResolvedValue({ id: 'user-1' }),
     update: jest.fn().mockResolvedValue({ id: 'user-1' }),
-    remove: jest.fn().mockResolvedValue(undefined),
+  };
+  const accountDeletion = {
+    deleteAccount: jest.fn().mockResolvedValue(undefined),
   };
   return {
-    controller: new UsersController(service as unknown as UsersService),
+    controller: new UsersController(
+      service as unknown as UsersService,
+      {} as CloudflareR2Service,
+      accountDeletion as unknown as AccountDeletionService,
+    ),
     service,
+    accountDeletion,
   };
 }
 
@@ -43,15 +54,6 @@ describe('UsersController authorization', () => {
         controller.update(OTHER_ID, { name: 'Hacked' }, SELF),
       ).toThrow(ForbiddenException);
       expect(service.update).not.toHaveBeenCalled();
-    });
-
-    it('refuses to delete it', () => {
-      const { controller, service } = makeController();
-
-      expect(() => controller.remove(OTHER_ID, SELF)).toThrow(
-        ForbiddenException,
-      );
-      expect(service.remove).not.toHaveBeenCalled();
     });
 
     it('does not reveal whether the account exists', () => {
@@ -96,14 +98,6 @@ describe('UsersController authorization', () => {
         name: 'New',
       });
     });
-
-    it('deletes it', async () => {
-      const { controller, service } = makeController();
-
-      await controller.remove(SELF.userId, SELF);
-
-      expect(service.remove).toHaveBeenCalledWith(SELF.userId);
-    });
   });
 
   describe('super admin', () => {
@@ -115,6 +109,30 @@ describe('UsersController authorization', () => {
       await controller.findOne(OTHER_ID, admin);
 
       expect(service.findOne).toHaveBeenCalledWith(OTHER_ID);
+    });
+  });
+});
+
+describe('DELETE /users/:id (super admin only)', () => {
+  it('is behind SuperAdminGuard, so not even the account holder reaches it (they use DELETE /users/me)', () => {
+    const handler: object = Reflect.get(
+      UsersController.prototype,
+      'remove',
+    ) as object;
+    expect(Reflect.getMetadata(GUARDS_METADATA, handler)).toContain(
+      SuperAdminGuard,
+    );
+  });
+
+  it('soft-deletes through AccountDeletionService as super_admin, never a hard delete', async () => {
+    const { controller, accountDeletion } = makeController();
+    const admin = { userId: 'admin-1', role: 'SUPER_ADMIN' };
+
+    await controller.remove(OTHER_ID, admin);
+
+    expect(accountDeletion.deleteAccount).toHaveBeenCalledWith(OTHER_ID, {
+      actor: 'super_admin',
+      actorId: 'admin-1',
     });
   });
 });

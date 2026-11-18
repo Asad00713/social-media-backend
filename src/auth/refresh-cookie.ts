@@ -20,3 +20,13 @@ export function setRefreshCookie(response: Response, token: string): void {
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
 }
+
+/**
+ * Clears the refresh cookie, with the options it was set with (a browser only
+ * drops a cookie whose attributes match). Used by logout, and by the account
+ * delete, which cannot rely on a later /auth/logout: the access token is
+ * refused (ACCOUNT_DELETED) the moment the account is gone.
+ */
+export function clearRefreshCookie(response: Response): void {
+  response.clearCookie('refreshToken', CROSS_SITE_COOKIE);
+}

@@ -8,6 +8,7 @@ import {
   HttpCode,
   HttpStatus,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   UseGuards,
@@ -19,6 +20,7 @@ import { CloudflareR2Service } from '../media/cloudflare-r2.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { AccountDeletionService } from './account-deletion.service';
 
 /** The caller, as the JWT strategy attaches it. */
 interface Caller {
@@ -62,6 +64,7 @@ export class UsersController {
   constructor(
     private readonly usersService: UsersService,
     private readonly r2: CloudflareR2Service,
+    private readonly accountDeletion: AccountDeletionService,
   ) {}
 
   /** Every user on the platform — super admin only. */
@@ -87,11 +90,23 @@ export class UsersController {
     return this.usersService.update(id, updateUserDto);
   }
 
+  /**
+   * Super admin only (admin tooling). A person deletes their own account with
+   * DELETE /users/me, which checks the typed email; this path skips that
+   * check, so it is never open to the account holder. It goes through the
+   * same soft delete: no HTTP path hard-deletes a user any more.
+   */
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
-  remove(@Param('id') id: string, @CurrentUser() caller: Caller) {
-    assertSelfOrSuperAdmin(id, caller);
-    return this.usersService.remove(id);
+  @UseGuards(SuperAdminGuard)
+  remove(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() caller: Caller,
+  ): Promise<void> {
+    return this.accountDeletion.deleteAccount(id, {
+      actor: 'super_admin',
+      actorId: caller.userId,
+    });
   }
 
   /**

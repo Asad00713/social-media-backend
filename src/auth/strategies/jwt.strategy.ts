@@ -29,6 +29,26 @@ export function assertSessionLive(
   }
 }
 
+/**
+ * Refuses every token of a soft-deleted account (AccountDeletionService),
+ * with a code the frontend can tell apart from an expired session.
+ *
+ * Needed on top of `sessions_revoked_at`, which the delete also sets: a token
+ * minted in the same second as the delete passes assertSessionLive (whole
+ * seconds), and this check does not depend on that timing. Shared by both
+ * strategies, and checked BEFORE suspension, since a deleted row is also
+ * `is_active = false`.
+ */
+export function assertNotDeleted(deletedAt: Date | null | undefined): void {
+  if (!deletedAt) return;
+  throw new UnauthorizedException({
+    statusCode: 401,
+    error: 'Unauthorized',
+    code: 'ACCOUNT_DELETED',
+    message: 'This account has been deleted.',
+  });
+}
+
 export interface JwtUser {
   userId: string;
   email: string;
@@ -62,6 +82,10 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     if (!user) {
       throw new UnauthorizedException('User not found');
     }
+
+    // Before the suspension check: a deleted account is also inactive, and
+    // must say so as ACCOUNT_DELETED, not ACCOUNT_SUSPENDED.
+    assertNotDeleted(user.deletedAt);
 
     // Check if user is suspended
     if (!user.isActive) {

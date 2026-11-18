@@ -1,6 +1,22 @@
-import { Body, Controller, Get, Patch, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Patch,
+  Res,
+  UnauthorizedException,
+  UseGuards,
+} from '@nestjs/common';
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
+import type { Response } from 'express';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { clearRefreshCookie } from '../auth/refresh-cookie';
+import { AccountDeletionService } from './account-deletion.service';
+import { DeleteAccountDto } from './dto/delete-account.dto';
 import { MyWorkspacesService, type MyWorkspace } from './my-workspaces.service';
 import { UpdatePreferencesDto } from './preferences/dto/update-preferences.dto';
 import type { UserPreferences } from './preferences/user-preferences';
@@ -9,6 +25,17 @@ import { UserPreferencesService } from './preferences/user-preferences.service';
 /** The caller, as the JWT strategy attaches it. */
 interface Caller {
   userId: string;
+}
+
+/**
+ * Throttle key for the account delete: 3 an hour per user (spec §5.10). The
+ * class-level JwtAuthGuard runs before the method's ThrottlerGuard, so
+ * `req.user` is set; if it ever is not, that is a 401, never a 500.
+ */
+export function deleteAccountTracker(req: Record<string, unknown>): string {
+  const user = req.user as Partial<Caller> | undefined;
+  if (!user?.userId) throw new UnauthorizedException();
+  return 'delete:' + user.userId;
 }
 
 /**
@@ -24,6 +51,7 @@ export class AccountSettingsController {
   constructor(
     private readonly preferences: UserPreferencesService,
     private readonly myWorkspaces: MyWorkspacesService,
+    private readonly accountDeletion: AccountDeletionService,
   ) {}
 
   @Get('preferences')
@@ -45,5 +73,33 @@ export class AccountSettingsController {
     @CurrentUser() caller: Caller,
   ): Promise<{ workspaces: MyWorkspace[] }> {
     return this.myWorkspaces.list(caller.userId);
+  }
+
+  /**
+   * Deletes the caller's account (soft delete + anonymise; see
+   * AccountDeletionService). 204, and the refresh cookie is cleared in the
+   * same response: the frontend cannot call /auth/logout afterwards, since
+   * the access token is already refused with ACCOUNT_DELETED.
+   *
+   * 400 EMAIL_MISMATCH, 409 OWNS_WORKSPACES {workspaces: [{id, name}]},
+   * 502 BILLING_CANCEL_FAILED.
+   */
+  @Delete()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(ThrottlerGuard)
+  @Throttle({
+    default: { limit: 3, ttl: 3_600_000, getTracker: deleteAccountTracker },
+  })
+  async deleteAccount(
+    @CurrentUser() caller: Caller,
+    @Body() dto: DeleteAccountDto,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<void> {
+    await this.accountDeletion.deleteAccount(caller.userId, {
+      confirmEmail: dto.confirmEmail,
+      actor: 'self',
+      actorId: caller.userId,
+    });
+    clearRefreshCookie(response);
   }
 }
