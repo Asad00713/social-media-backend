@@ -4,7 +4,7 @@ import {
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, ne, sql } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import {
   workspaceUsage,
@@ -300,30 +300,36 @@ export class UsageService {
     let quantityBefore: number;
     let quantityAfter: number;
 
+    // The counter moves in ONE statement (`GREATEST(col + delta, 0)`), not as
+    // a value read above and written back: removals do not hold the seat
+    // lock, so two concurrent writers must each apply their own delta to the
+    // row's current value instead of one overwriting the other. The read above
+    // only feeds the audit event, where a concurrent move can make "before"
+    // approximate.
     if (resourceType === 'CHANNEL') {
       quantityBefore = usage.channelsCount;
-      quantityAfter = Math.max(0, usage.channelsCount + delta);
-
-      await db
+      const [row] = await db
         .update(workspaceUsage)
         .set({
-          channelsCount: quantityAfter,
+          channelsCount: sql`GREATEST(${workspaceUsage.channelsCount} + ${delta}, 0)`,
           lastCalculatedAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(workspaceUsage.id, usage.id));
+        .where(eq(workspaceUsage.id, usage.id))
+        .returning({ count: workspaceUsage.channelsCount });
+      quantityAfter = row?.count ?? Math.max(0, usage.channelsCount + delta);
     } else if (resourceType === 'MEMBER') {
       quantityBefore = usage.membersCount;
-      quantityAfter = Math.max(0, usage.membersCount + delta);
-
-      await db
+      const [row] = await db
         .update(workspaceUsage)
         .set({
-          membersCount: quantityAfter,
+          membersCount: sql`GREATEST(${workspaceUsage.membersCount} + ${delta}, 0)`,
           lastCalculatedAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(workspaceUsage.id, usage.id));
+        .where(eq(workspaceUsage.id, usage.id))
+        .returning({ count: workspaceUsage.membersCount });
+      quantityAfter = row?.count ?? Math.max(0, usage.membersCount + delta);
     } else {
       return;
     }
@@ -367,7 +373,9 @@ export class UsageService {
 
   // Recalculate workspace usage from actual data
   async recalculateWorkspaceUsage(workspaceId: string): Promise<void> {
-    // Count actual members (ACCEPTED invitations)
+    // Count actual members (ACCEPTED invitations). Guests are free and use no
+    // seat, so they are not counted: this must agree with the increments and
+    // decrements in WorkspaceMembersService.
     const [memberResult] = await db
       .select({ count: sql<number>`count(*)` })
       .from(workspaceInvitation)
@@ -375,6 +383,7 @@ export class UsageService {
         and(
           eq(workspaceInvitation.workspaceId, workspaceId),
           eq(workspaceInvitation.status, 'ACCEPTED'),
+          ne(workspaceInvitation.role, 'GUEST'),
         ),
       );
 

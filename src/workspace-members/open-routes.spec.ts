@@ -1,6 +1,7 @@
 import 'reflect-metadata';
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { GUARDS_METADATA } from '@nestjs/common/constants';
+import { ThrottlerGuard } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
 import { ChatbotController } from '../chatbot/chatbot.controller';
@@ -10,6 +11,10 @@ import { LibraryUploadController } from '../media-library/library-upload.control
 import { PostsController } from '../posts/posts.controller';
 import { MaestroController } from '../maestro/maestro.controller';
 import { CanvaController } from '../canva/canva.controller';
+import {
+  JoinLinkController,
+  ParseInviteCodePipe,
+} from './join-link.controller';
 
 jest.mock('../drizzle/db', () => ({
   db: { insert: jest.fn(() => ({ values: jest.fn() })) },
@@ -288,5 +293,61 @@ describe('CanvaController.initiateOAuth', () => {
     });
     await c.initiateOAuth(user, { workspaceId: 'w' });
     expect(access.assertCan).toHaveBeenCalledWith('w', 'u1', 'channels:manage');
+  });
+});
+
+describe('JoinLinkController (invite link)', () => {
+  const isThrottler = (g: unknown) =>
+    g === ThrottlerGuard ||
+    (typeof g === 'function' && g.prototype instanceof ThrottlerGuard);
+  const proto = JoinLinkController.prototype;
+
+  it('preview is public and throttled', () => {
+    const guards = guardsOf(proto, 'preview');
+    expect(guards.some(isThrottler)).toBe(true);
+    expect(guards).not.toContain(JwtAuthGuard);
+  });
+
+  it('join requires a signed-in user and is throttled', () => {
+    const guards = guardsOf(proto, 'join');
+    expect(guards).toContain(JwtAuthGuard);
+    expect(guards.some(isThrottler)).toBe(true);
+  });
+
+  it('both routes are 30 per 15 minutes', () => {
+    for (const method of ['preview', 'join'] as const) {
+      expect(Reflect.getMetadata('THROTTLER:LIMITdefault', proto[method])).toBe(
+        30,
+      );
+      expect(Reflect.getMetadata('THROTTLER:TTLdefault', proto[method])).toBe(
+        900_000,
+      );
+    }
+  });
+
+  it('preview and join are both exempt from the launch gate', () => {
+    expect(Reflect.getMetadata('skipLaunchGate', proto.preview)).toBe(true);
+    expect(Reflect.getMetadata('skipLaunchGate', proto.join)).toBe(true);
+  });
+
+  it('hands the caller own id to join, never one from the URL', async () => {
+    const join = jest.fn().mockResolvedValue({ workspaceId: 'w' });
+    const c = make(JoinLinkController, { inviteLinks: { join } });
+    await c.join('rw-0123456789', user);
+    expect(join).toHaveBeenCalledWith('rw-0123456789', 'u1');
+  });
+
+  describe('ParseInviteCodePipe', () => {
+    const pipe = new ParseInviteCodePipe();
+    const meta = { type: 'param' as const };
+    it('passes a well-formed code', () => {
+      expect(pipe.transform('rw-0123456789', meta)).toBe('rw-0123456789');
+    });
+    it.each(['x', 'RW-0123456789', 'rw-012345678u', "rw-0123456789'--"])(
+      'rejects %p with a 400',
+      (code) => {
+        expect(() => pipe.transform(code, meta)).toThrow(BadRequestException);
+      },
+    );
   });
 });

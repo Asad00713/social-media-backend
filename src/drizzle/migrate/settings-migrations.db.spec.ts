@@ -1080,3 +1080,126 @@ describeDb('migration 0091 user foreign keys', () => {
     expect(survivors).toEqual({ users: 1, workspaces: 1 });
   });
 });
+
+/**
+ * 0095 recounts workspace_usage.members_count as ACCEPTED non-guest members,
+ * so workspaces that counted their guests before guests became free are put
+ * right, and only rows that differ are written.
+ */
+const FILE_0095 = '0095_guest_seat_recount.sql';
+
+describeDb('0095 guest seat recount', () => {
+  async function seedUsage(
+    client: PoolClient,
+    workspaceId: string,
+    membersCount: number,
+  ): Promise<void> {
+    await client.query(
+      `INSERT INTO workspace_usage
+         (workspace_id, channels_limit, members_limit, members_count,
+          last_calculated_at, updated_at)
+       VALUES ($1, 3, 5, $2, '2020-01-01', '2020-01-01')`,
+      [workspaceId, membersCount],
+    );
+  }
+
+  async function seedRow(
+    client: PoolClient,
+    workspaceId: string,
+    role: 'ADMIN' | 'MEMBER' | 'GUEST',
+    status: 'ACCEPTED' | 'PENDING' | 'REMOVED',
+  ): Promise<void> {
+    await client.query(
+      `INSERT INTO workspace_invitations
+         (workspace_id, email, role, status, token, expires_at)
+       VALUES ($1, $2, $3, $4, $5, now() + interval '7 days')`,
+      [workspaceId, `${rand()}@example.test`, role, status, rand() + rand()],
+    );
+  }
+
+  const usageOf = async (client: PoolClient, workspaceId: string) =>
+    (
+      await client.query<{ members_count: number; updated: boolean }>(
+        `SELECT members_count, updated_at > '2020-01-02' AS updated
+           FROM workspace_usage WHERE workspace_id = $1`,
+        [workspaceId],
+      )
+    ).rows[0];
+
+  it('counts ACCEPTED non-guests only, and writes only workspaces whose count differed', async () => {
+    // 0080: REMOVED status. 0088/0089: columns the full-row inserts name.
+    // 0091: invited_by is NULLable, so a seeded row needs no inviter.
+    const result = await withRollbackDb(
+      ['0080_member_soft_removal.sql', FILE_0088, FILE_0089, FILE_0091],
+      async (_db, client) => {
+        const owner = await seedUser(client);
+        // 2 members + 1 admin + 2 guests accepted, plus a pending member, a
+        // pending guest and a removed member: 3 seats, counted as 5 before.
+        const drifted = await seedWorkspace(client, owner);
+        await seedUsage(client, drifted, 5);
+        await seedRow(client, drifted, 'MEMBER', 'ACCEPTED');
+        await seedRow(client, drifted, 'MEMBER', 'ACCEPTED');
+        await seedRow(client, drifted, 'ADMIN', 'ACCEPTED');
+        await seedRow(client, drifted, 'GUEST', 'ACCEPTED');
+        await seedRow(client, drifted, 'GUEST', 'ACCEPTED');
+        await seedRow(client, drifted, 'MEMBER', 'PENDING');
+        await seedRow(client, drifted, 'GUEST', 'PENDING');
+        await seedRow(client, drifted, 'MEMBER', 'REMOVED');
+
+        // Already right: must not be touched (updated_at stays put).
+        const correct = await seedWorkspace(client, owner);
+        await seedUsage(client, correct, 1);
+        await seedRow(client, correct, 'MEMBER', 'ACCEPTED');
+        await seedRow(client, correct, 'GUEST', 'ACCEPTED');
+
+        // Only guests: counted 2, should be 0. An under-count heals up too.
+        const guestsOnly = await seedWorkspace(client, owner);
+        await seedUsage(client, guestsOnly, 2);
+        await seedRow(client, guestsOnly, 'GUEST', 'ACCEPTED');
+        await seedRow(client, guestsOnly, 'GUEST', 'ACCEPTED');
+
+        const undercounted = await seedWorkspace(client, owner);
+        await seedUsage(client, undercounted, 0);
+        await seedRow(client, undercounted, 'ADMIN', 'ACCEPTED');
+
+        await client.query(
+          readFileSync(join(MIGRATIONS_DIR, FILE_0095), 'utf8'),
+        );
+        const firstRun = {
+          drifted: await usageOf(client, drifted),
+          correct: await usageOf(client, correct),
+          guestsOnly: await usageOf(client, guestsOnly),
+          undercounted: await usageOf(client, undercounted),
+        };
+
+        // A second run changes nothing: put a marker on a row and see it kept.
+        await client.query(
+          `UPDATE workspace_usage SET updated_at = '2020-01-01' WHERE workspace_id = $1`,
+          [drifted],
+        );
+        await client.query(
+          readFileSync(join(MIGRATIONS_DIR, FILE_0095), 'utf8'),
+        );
+        return { firstRun, secondRun: await usageOf(client, drifted) };
+      },
+    );
+
+    expect(result.firstRun.drifted).toEqual({
+      members_count: 3,
+      updated: true,
+    });
+    expect(result.firstRun.correct).toEqual({
+      members_count: 1,
+      updated: false,
+    });
+    expect(result.firstRun.guestsOnly).toEqual({
+      members_count: 0,
+      updated: true,
+    });
+    expect(result.firstRun.undercounted).toEqual({
+      members_count: 1,
+      updated: true,
+    });
+    expect(result.secondRun).toEqual({ members_count: 3, updated: false });
+  });
+});

@@ -10,7 +10,7 @@ import {
 } from '@nestjs/common';
 import type { DbType } from 'src/drizzle/db';
 import { DRIZZLE } from 'src/drizzle/drizzle.module';
-import { and, eq, gt, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, eq, gt, inArray, ne, or, sql, type SQL } from 'drizzle-orm';
 import * as crypto from 'crypto';
 import { InviteMemberDto } from './dto/invite-member.dto';
 import {
@@ -51,6 +51,12 @@ export const MEMBER_RESTORE_WINDOW_MS = 15 * 60 * 1000;
  */
 export const MEMBER_REMOVED_EMAIL_DELAY_MS = MEMBER_RESTORE_WINDOW_MS + 30_000;
 
+/** An invitation lives 7 days from sending, and again from each resend. */
+const INVITATION_TTL_DAYS = 7;
+
+/** How long a lapsed invitation stays on the Team page, for Resend. */
+const EXPIRED_INVITATION_VISIBLE_DAYS = 30;
+
 const RESTORE_WINDOW_MESSAGE =
   'A removal can only be undone within 15 minutes. Invite them again instead.';
 
@@ -76,6 +82,27 @@ function withoutToken<T extends { token?: unknown }>(row: T): Omit<T, 'token'> {
   return rest as Omit<T, 'token'>;
 }
 
+/**
+ * An invitation as the Team page lists it: no token, a computed status
+ * (a PENDING row past its expiry reads EXPIRED, whatever the stored status
+ * says) and the inviter's name flattened out.
+ */
+function invitationView<
+  T extends {
+    token?: unknown;
+    status: string;
+    expiresAt: Date;
+    inviter?: { name: string | null } | null;
+  },
+>(row: T, now: number) {
+  const lapsed = row.status === 'EXPIRED' || row.expiresAt.getTime() <= now;
+  return {
+    ...withoutToken(row),
+    status: (lapsed ? 'EXPIRED' : 'PENDING') as 'PENDING' | 'EXPIRED',
+    invitedByName: row.inviter?.name ?? null,
+  };
+}
+
 /** The db, or a transaction on it: the readers below run in either. */
 type Tx = Parameters<Parameters<DbType['transaction']>[0]>[0];
 type Queryable = DbType | Tx;
@@ -84,12 +111,12 @@ type MemberRoleName = 'ADMIN' | 'MEMBER' | 'GUEST';
 
 /**
  * Serialises every write that takes a seat in one workspace (invite, batch
- * invite, accept, restore) for the rest of the caller's transaction. The seat
+ * invite, accept, restore, join by link) for the rest of the caller's transaction. The seat
  * check reads `workspace_usage` and the PENDING rows; without this two
  * concurrent writers both see the last free seat. Released when the
  * transaction ends, so callers MUST be inside one.
  */
-async function lockWorkspaceSeats(
+export async function lockWorkspaceSeats(
   tx: { execute: (query: SQL) => Promise<unknown> },
   workspaceId: string,
 ): Promise<void> {
@@ -98,13 +125,33 @@ async function lockWorkspaceSeats(
   );
 }
 
+export const SEAT_LIMIT_EXCEEDED = 'SEAT_LIMIT_EXCEEDED' as const;
+
+/**
+ * Guests are free: they never take a seat. Only an ADMIN or a MEMBER does,
+ * whether as an accepted member or as a pending invitation. A role left out
+ * of an invite defaults to MEMBER, so it takes a seat.
+ */
+export function usesSeat(role: string | null | undefined): boolean {
+  return role !== 'GUEST';
+}
+
+/**
+ * The 403 for "no seat left". The body keeps the text the message always had
+ * (older clients parse `SEAT_LIMIT_EXCEEDED:` out of it) and adds a
+ * machine-readable `code`, as CHANNEL_LIMIT_REACHED does. An object response
+ * is sent as-is, so the standard fields are spelled out.
+ */
 function seatLimitExceeded(
   free: number,
   requested: number,
 ): ForbiddenException {
-  return new ForbiddenException(
-    `SEAT_LIMIT_EXCEEDED: ${Math.max(0, free)} seat(s) left, ${requested} requested`,
-  );
+  return new ForbiddenException({
+    statusCode: 403,
+    error: 'Forbidden',
+    code: SEAT_LIMIT_EXCEEDED,
+    message: `SEAT_LIMIT_EXCEEDED: ${Math.max(0, free)} seat(s) left, ${requested} requested`,
+  });
 }
 
 @Injectable()
@@ -151,11 +198,14 @@ export class WorkspaceMembersService {
 
     // Seat gate and insert under the workspace's seat lock, so two invites
     // racing for the last seat cannot both get it. Same gate as batch invite:
-    // accepted members + pending invitations against the limit.
+    // accepted members + pending invitations against the limit. A guest is
+    // free and is never refused for seats.
     const invitation = await this.db.transaction(async (tx) => {
       await lockWorkspaceSeats(tx, workspaceId);
-      const free = await this.freeSeats(workspaceId, undefined, tx);
-      if (free < 1) throw seatLimitExceeded(free, 1);
+      if (usesSeat(inviteMemberDto.role)) {
+        const free = await this.freeSeats(workspaceId, undefined, tx);
+        if (free < 1) throw seatLimitExceeded(free, 1);
+      }
       return this.createInvitation(tx, workspaceData.ownerId, workspaceId, {
         email: inviteMemberDto.email,
         role: inviteMemberDto.role as MemberRoleName | undefined,
@@ -191,7 +241,12 @@ export class WorkspaceMembersService {
     tx: Queryable,
     ownerId: string,
     workspaceId: string,
-    input: { email: string; role?: MemberRoleName; invitedBy: string },
+    input: {
+      email: string;
+      role?: MemberRoleName;
+      invitedBy: string;
+      message?: string;
+    },
   ) {
     // Accounts are stored lowercased now but older rows keep their typed case,
     // so every comparison below is case-insensitive on both sides.
@@ -237,7 +292,7 @@ export class WorkspaceMembersService {
     }
 
     const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 7);
+    expiresAt.setDate(expiresAt.getDate() + INVITATION_TTL_DAYS);
 
     const [invitation] = await tx
       .insert(workspaceInvitation)
@@ -247,6 +302,7 @@ export class WorkspaceMembersService {
         userId: userToInvite?.id || null,
         role: input.role || (MemberRole.MEMBER as MemberRoleName),
         invitedBy: input.invitedBy,
+        message: input.message ?? null,
         token: crypto.randomBytes(32).toString('hex'),
         expiresAt,
       })
@@ -259,6 +315,8 @@ export class WorkspaceMembersService {
     workspaceId: string,
     invites: { email: string; role?: 'ADMIN' | 'MEMBER' | 'GUEST' }[],
     currentUserId: string,
+    /** The inviter's personal note, stored on every row and put in each email. */
+    message?: string,
   ) {
     // permission: owner or admin (same check as inviteMember)
     const workspaceData = await this.db.query.workspace.findFirst({
@@ -278,9 +336,14 @@ export class WorkspaceMembersService {
     // only that address). Emails go out after the commit.
     const outcomes = await this.db.transaction(async (tx) => {
       await lockWorkspaceSeats(tx, workspaceId);
-      const free = await this.freeSeats(workspaceId, undefined, tx);
-      if (invites.length > free) {
-        throw seatLimitExceeded(free, invites.length);
+      // Only the invites that take a seat are counted: guests are free, so a
+      // full workspace still takes a batch of guests.
+      const seatsNeeded = invites.filter((i) => usesSeat(i.role)).length;
+      if (seatsNeeded > 0) {
+        const free = await this.freeSeats(workspaceId, undefined, tx);
+        if (seatsNeeded > free) {
+          throw seatLimitExceeded(free, seatsNeeded);
+        }
       }
 
       const out: {
@@ -297,6 +360,7 @@ export class WorkspaceMembersService {
               email: item.email,
               role: item.role,
               invitedBy: currentUserId,
+              message,
             }),
           );
           out.push({ email: item.email, invitation });
@@ -427,15 +491,18 @@ export class WorkspaceMembersService {
       }
 
       // Counted before the lock is released, so the next seat check sees it.
-      try {
-        await this.usageService.incrementMemberCount(
-          invitation.workspaceId,
-          currentUserId,
-          currentUserId,
-        );
-      } catch (error) {
-        // Log but don't fail if usage tracking fails
-        console.error('Failed to track member usage:', error);
+      // A guest holds no seat, so the seat counter is left alone.
+      if (usesSeat(accepted.role)) {
+        try {
+          await this.usageService.incrementMemberCount(
+            invitation.workspaceId,
+            currentUserId,
+            currentUserId,
+          );
+        } catch (error) {
+          // Log but don't fail if usage tracking fails
+          console.error('Failed to track member usage:', error);
+        }
       }
       return accepted;
     });
@@ -527,10 +594,55 @@ export class WorkspaceMembersService {
       );
     }
 
+    // Every stored-PENDING row stays listed, however long ago it lapsed (it
+    // still holds a seat, so it must stay resendable and cancellable); one
+    // past its expiry reads EXPIRED. Stored-EXPIRED rows are listed for 30
+    // days after they lapsed, and not at all once the address has been
+    // re-invited (a live PENDING row) or has joined (a member or the owner),
+    // as Resend would only refuse them. The cutoff is a JS Date: expires_at
+    // is a timestamp without zone, and the driver writes a Date and compares
+    // it the same way; the raw-SQL bound goes in as a UTC ISO string for the
+    // same reason.
+    const now = Date.now();
+    const nowIso = new Date(now).toISOString();
+    const outerEmail = sql`lower(btrim(${workspaceInvitation.email}))`;
+    const supersededByAnother = sql`(
+      EXISTS (
+        SELECT 1 FROM workspace_invitations live
+        WHERE live.workspace_id = ${workspaceInvitation.workspaceId}
+          AND live.id <> ${workspaceInvitation.id}
+          AND live.status = 'PENDING'
+          AND live.expires_at > ${nowIso}::timestamp
+          AND lower(btrim(live.email)) = ${outerEmail}
+      )
+      OR EXISTS (
+        SELECT 1 FROM workspace_invitations joined
+        JOIN users joined_user ON joined_user.id = joined.user_id
+        WHERE joined.workspace_id = ${workspaceInvitation.workspaceId}
+          AND joined.status = 'ACCEPTED'
+          AND lower(btrim(joined_user.email)) = ${outerEmail}
+      )
+      OR EXISTS (
+        SELECT 1 FROM workspace owned
+        JOIN users owner_user ON owner_user.id = owned.owner_id
+        WHERE owned.id = ${workspaceInvitation.workspaceId}
+          AND lower(btrim(owner_user.email)) = ${outerEmail}
+      )
+    )`;
     const invitations = await this.db.query.workspaceInvitation.findMany({
       where: and(
         eq(workspaceInvitation.workspaceId, workspaceId),
-        eq(workspaceInvitation.status, 'PENDING'),
+        or(
+          eq(workspaceInvitation.status, 'PENDING'),
+          and(
+            eq(workspaceInvitation.status, 'EXPIRED'),
+            gt(
+              workspaceInvitation.expiresAt,
+              new Date(now - EXPIRED_INVITATION_VISIBLE_DAYS * DAY_MS),
+            ),
+            sql`NOT ${supersededByAnother}`,
+          ),
+        ),
       ),
       // The token is the accept link's secret: Copy invite link reads it
       // through getInvitationLink, never from this list.
@@ -549,7 +661,128 @@ export class WorkspaceMembersService {
       ],
     });
 
-    return invitations;
+    return invitations.map((row) => invitationView(row, now));
+  }
+
+  /**
+   * Resend: a fresh 7 days on the same link, and the email again. An EXPIRED
+   * invitation (or a PENDING one past its expiry) reserves a seat again, so
+   * it is seat-checked under the workspace's seat lock like any new invite;
+   * a live PENDING one already holds its seat. Accepted, removed and rejected
+   * rows are not invitations any more.
+   */
+  async resendInvitation(
+    workspaceId: string,
+    invitationId: string,
+    currentUserId: string,
+  ) {
+    const workspaceData = await this.db.query.workspace.findFirst({
+      where: eq(workspace.id, workspaceId),
+    });
+    if (!workspaceData) {
+      throw new NotFoundException('Workspace not found');
+    }
+
+    const resent = await this.db.transaction(async (tx) => {
+      await lockWorkspaceSeats(tx, workspaceId);
+      const row = await tx.query.workspaceInvitation.findFirst({
+        where: and(
+          eq(workspaceInvitation.id, invitationId),
+          eq(workspaceInvitation.workspaceId, workspaceId),
+        ),
+      });
+      if (!row) {
+        throw new NotFoundException('Invitation not found');
+      }
+      if (row.status !== 'PENDING' && row.status !== 'EXPIRED') {
+        throw memberConflict(
+          'INVITATION_NOT_RESENDABLE',
+          'Only an invitation that has not been answered can be resent.',
+        );
+      }
+
+      const lapsed =
+        row.status === 'EXPIRED' || row.expiresAt.getTime() <= Date.now();
+      if (lapsed) {
+        const email = normalizeEmail(row.email);
+        // createInvitation's guards, which a re-invite goes through: the
+        // owner and an existing member have no invitation to get back.
+        const owner = await tx.query.users.findFirst({
+          where: eq(users.id, workspaceData.ownerId),
+        });
+        if (owner && normalizeEmail(owner.email) === email) {
+          throw new ConflictException('User is already the workspace owner');
+        }
+        const invitee = await tx.query.users.findFirst({
+          where: sql`lower(${users.email}) = ${email}`,
+        });
+        if (invitee) {
+          const membership = await tx.query.workspaceInvitation.findFirst({
+            where: and(
+              eq(workspaceInvitation.workspaceId, workspaceId),
+              eq(workspaceInvitation.userId, invitee.id),
+              eq(workspaceInvitation.status, 'ACCEPTED'),
+            ),
+            columns: { id: true },
+          });
+          if (membership) {
+            throw new ConflictException(
+              'User is already a member of this workspace',
+            );
+          }
+        }
+        // Never two live invitations to one address (createInvitation's rule).
+        const sibling = await tx.query.workspaceInvitation.findFirst({
+          where: and(
+            eq(workspaceInvitation.workspaceId, workspaceId),
+            sql`lower(${workspaceInvitation.email}) = ${email}`,
+            eq(workspaceInvitation.status, 'PENDING'),
+            ne(workspaceInvitation.id, row.id),
+          ),
+          columns: { id: true },
+        });
+        if (sibling) {
+          throw memberConflict(
+            'INVITATION_ALREADY_PENDING',
+            'An invitation has already been sent to this email',
+          );
+        }
+        // A lapsed PENDING row is counted by freeSeats already; leaving this
+        // address out makes both kinds of lapsed row ask for the seat anew.
+        // A guest invitation holds no seat, so it is never refused for one.
+        if (usesSeat(row.role)) {
+          const free = await this.freeSeats(workspaceId, email, tx);
+          if (free < 1) throw seatLimitExceeded(free, 1);
+        }
+      }
+
+      const [updated] = await tx
+        .update(workspaceInvitation)
+        .set({
+          status: 'PENDING',
+          expiresAt: new Date(Date.now() + INVITATION_TTL_DAYS * DAY_MS),
+          updatedAt: new Date(),
+        })
+        .where(eq(workspaceInvitation.id, row.id))
+        .returning();
+      return updated;
+    });
+
+    // Best-effort, like the first send: the new expiry is saved either way.
+    // The note and the name on it stay the original inviter's.
+    await this.sendInvitationEmail(
+      resent,
+      workspaceData,
+      resent.invitedBy ?? currentUserId,
+      resent.userId ?? null,
+    );
+
+    const view = await this.db.query.workspaceInvitation.findFirst({
+      where: eq(workspaceInvitation.id, resent.id),
+      columns: { token: false },
+      with: { inviter: { columns: { id: true, name: true, email: true } } },
+    });
+    return invitationView(view ?? { ...resent, inviter: null }, Date.now());
   }
 
   // Get user's pending invitations (invitations sent to them)
@@ -689,9 +922,15 @@ export class WorkspaceMembersService {
       ],
     });
 
+    // lastActiveAt is the last sign-in, as an ISO string for the Team page.
     return {
-      owner,
-      members,
+      owner: owner
+        ? { ...owner, lastActiveAt: owner.lastLoginAt?.toISOString() ?? null }
+        : owner,
+      members: members.map((m) => ({
+        ...m,
+        lastActiveAt: m.user?.lastLoginAt?.toISOString() ?? null,
+      })),
       totalMembers: members.length + 1, // +1 for owner
     };
   }
@@ -733,16 +972,90 @@ export class WorkspaceMembersService {
       throw new NotFoundException('Member not found in this workspace');
     }
 
-    const [updatedMember] = await this.db
-      .update(workspaceInvitation)
-      .set({
-        role: updateMemberDto.role as 'ADMIN' | 'MEMBER' | 'GUEST',
-        updatedAt: new Date(),
-      })
-      .where(eq(workspaceInvitation.id, memberId))
-      .returning();
+    const newRole = updateMemberDto.role as MemberRoleName;
 
-    return withoutToken(updatedMember);
+    // Under the workspace's seat lock: moving between GUEST and a seat role
+    // changes the seats in use, so it is checked and counted like an accept.
+    // The row is read again inside the lock, so the move is judged against
+    // the role it really has by then.
+    const updated = await this.db.transaction(async (tx) => {
+      await lockWorkspaceSeats(tx, workspaceId);
+
+      const current = await tx.query.workspaceInvitation.findFirst({
+        where: and(
+          eq(workspaceInvitation.workspaceId, workspaceId),
+          eq(workspaceInvitation.id, memberId),
+          eq(workspaceInvitation.status, 'ACCEPTED'),
+        ),
+      });
+      if (!current) {
+        throw new NotFoundException('Member not found in this workspace');
+      }
+
+      // +1 promoting a guest, -1 demoting to guest, 0 otherwise.
+      const seatDelta =
+        usesSeat(newRole) === usesSeat(current.role)
+          ? 0
+          : usesSeat(newRole)
+            ? 1
+            : -1;
+      if (seatDelta === 1) {
+        const free = await this.freeSeats(workspaceId, undefined, tx);
+        if (free < 1) throw seatLimitExceeded(free, 1);
+      }
+
+      // Conditional on the row still being ACCEPTED with the role judged
+      // above. Removal and leave do not take the seat lock, so one can commit
+      // between the read and this write; the UPDATE then waits on that row
+      // lock, re-checks the condition, and matches nothing. The counter is
+      // moved only for a row this statement really changed, so a removed
+      // member is never promoted or counted twice.
+      const [row] = await tx
+        .update(workspaceInvitation)
+        .set({ role: newRole, updatedAt: new Date() })
+        .where(
+          and(
+            eq(workspaceInvitation.id, memberId),
+            eq(workspaceInvitation.workspaceId, workspaceId),
+            eq(workspaceInvitation.status, 'ACCEPTED'),
+            eq(workspaceInvitation.role, current.role),
+          ),
+        )
+        .returning();
+      if (!row) {
+        throw memberConflict(
+          'MEMBER_CHANGED',
+          'This member was changed or removed just now. Refresh and try again.',
+        );
+      }
+
+      // Counted before the lock is released, so the next seat check sees it.
+      if (seatDelta === 1) {
+        // The seat is the point of a promotion: if it cannot be counted the
+        // error propagates and the role change rolls back, rather than
+        // committing a seat-holder nobody counted.
+        await this.usageService.incrementMemberCount(
+          workspaceId,
+          currentUserId,
+          current.userId || undefined,
+        );
+      } else if (seatDelta === -1) {
+        try {
+          await this.usageService.decrementMemberCount(
+            workspaceId,
+            currentUserId,
+            current.userId || undefined,
+          );
+        } catch (error) {
+          // A demotion that fails to free the seat errs high (conservative):
+          // log it and keep the change, as accept and remove do.
+          console.error('Failed to track member role change:', error);
+        }
+      }
+      return row;
+    });
+
+    return withoutToken(updated);
   }
 
   // Remove member (only ACCEPTED members)
@@ -804,22 +1117,30 @@ export class WorkspaceMembersService {
           eq(workspaceInvitation.status, 'ACCEPTED'),
         ),
       )
-      .returning({ id: workspaceInvitation.id });
+      .returning({
+        id: workspaceInvitation.id,
+        role: workspaceInvitation.role,
+      });
 
     if (!removed) {
       throw new NotFoundException('Member not found in this workspace');
     }
 
-    // Track usage - decrement member count
-    try {
-      await this.usageService.decrementMemberCount(
-        workspaceId,
-        currentUserId,
-        member.userId || undefined,
-      );
-    } catch (error) {
-      // Log but don't fail if usage tracking fails
-      console.error('Failed to track member removal:', error);
+    // Track usage - decrement member count. A guest never took a seat. The
+    // role is the one the UPDATE just removed, not the one read earlier: a
+    // role change that committed in between has already moved the counter, and
+    // deciding on the stale role would move it twice (or not at all).
+    if (usesSeat(removed.role)) {
+      try {
+        await this.usageService.decrementMemberCount(
+          workspaceId,
+          currentUserId,
+          member.userId || undefined,
+        );
+      } catch (error) {
+        // Log but don't fail if usage tracking fails
+        console.error('Failed to track member removal:', error);
+      }
     }
 
     if (member.userId && member.userId !== currentUserId) {
@@ -961,12 +1282,15 @@ export class WorkspaceMembersService {
       }
 
       // The re-invitation deleted below does not hold a seat against this.
-      const free = await this.freeSeats(workspaceId, email, tx);
-      if (free < 1) {
-        throw memberConflict(
-          'SEAT_LIMIT_EXCEEDED',
-          'SEAT_LIMIT_EXCEEDED: 0 seat(s) left, 1 requested',
-        );
+      // A removed guest took no seat, so restoring one needs none.
+      if (usesSeat(row.role)) {
+        const free = await this.freeSeats(workspaceId, email, tx);
+        if (free < 1) {
+          throw memberConflict(
+            'SEAT_LIMIT_EXCEEDED',
+            'SEAT_LIMIT_EXCEEDED: 0 seat(s) left, 1 requested',
+          );
+        }
       }
 
       // Conditional on: still REMOVED, inside the window, and nobody with
@@ -1018,15 +1342,17 @@ export class WorkspaceMembersService {
         });
 
       // Counted before the lock is released, so the next seat check sees it.
-      try {
-        await this.usageService.incrementMemberCount(
-          workspaceId,
-          currentUserId,
-          userId,
-        );
-      } catch (error) {
-        // Log but don't fail if usage tracking fails (as accept and remove do)
-        console.error('Failed to track member restore:', error);
+      if (usesSeat(restoredRow.role)) {
+        try {
+          await this.usageService.incrementMemberCount(
+            workspaceId,
+            currentUserId,
+            userId,
+          );
+        } catch (error) {
+          // Log but don't fail if usage tracking fails (as accept and remove do)
+          console.error('Failed to track member restore:', error);
+        }
       }
 
       return { restored: restoredRow, dropped: droppedRows };
@@ -1067,11 +1393,13 @@ export class WorkspaceMembersService {
 
   /**
    * Seats left: the member limit (with purchased extras) minus accepted
-   * members and pending invitations, which reserve a seat each.
+   * members and pending invitations, which reserve a seat each. Guests use
+   * no seat: `membersCount` leaves them out (accept, restore, remove and role
+   * changes keep it so) and a pending GUEST invitation reserves nothing.
    * `exceptPendingTo` leaves out pending invitations to that normalized
    * address. No usage record reads as no seats, conservatively for a gate.
    */
-  private async freeSeats(
+  async freeSeats(
     workspaceId: string,
     exceptPendingTo?: string,
     q: Queryable = this.db,
@@ -1093,12 +1421,13 @@ export class WorkspaceMembersService {
         eq(workspaceInvitation.workspaceId, workspaceId),
         eq(workspaceInvitation.status, 'PENDING'),
       ),
-      columns: { email: true },
+      columns: { email: true, role: true },
     });
+    const seatHolders = pending.filter((p) => usesSeat(p.role));
     const reservedByPending = exceptPendingTo
-      ? pending.filter((p) => normalizeEmail(p.email) !== exceptPendingTo)
+      ? seatHolders.filter((p) => normalizeEmail(p.email) !== exceptPendingTo)
           .length
-      : pending.length;
+      : seatHolders.length;
     return membersLimit - (membersCount + reservedByPending);
   }
 
@@ -1164,6 +1493,7 @@ export class WorkspaceMembersService {
             1,
             Math.round((invitation.expiresAt.getTime() - Date.now()) / DAY_MS),
           ),
+          message: invitation.message ?? null,
         },
         to: { email: invitation.email, userId: inviteeUserId },
         workspaceId: workspaceData.id,
@@ -1182,8 +1512,11 @@ export class WorkspaceMembersService {
     }
   }
 
-  /** B2 and its bell, to whoever invited the member. Never throws. */
-  private async notifyInviterOfAcceptance(
+  /**
+   * B2 and its bell, to whoever invited the member. Never throws. Also used by
+   * the invite link, which names the workspace owner as the inviter.
+   */
+  async notifyInviterOfAcceptance(
     invitation: {
       id: string;
       workspaceId: string;
