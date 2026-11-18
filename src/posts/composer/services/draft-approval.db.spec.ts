@@ -449,9 +449,18 @@ describeDb('Draft approvals (database)', () => {
         expect((await h.approvals.get(ws, id, admin, 'ADMIN')).canTurnOff).toBe(
           false,
         );
-        await expect(
-          h.approvals.setRequired(ws, id, admin, 'ADMIN', false),
-        ).rejects.toBeInstanceOf(ForbiddenException);
+        const refused = await h.approvals
+          .setRequired(ws, id, admin, 'ADMIN', false)
+          .then(
+            () => null,
+            (e: unknown) => e,
+          );
+        expect(refused).toBeInstanceOf(ForbiddenException);
+        expect((refused as ForbiddenException).getResponse()).toMatchObject({
+          statusCode: 403,
+          error: 'Forbidden',
+          code: 'APPROVAL_REQUIRED_BY_POLICY',
+        });
         expect((await rowOf(db, id)).metadata?.approval?.required).toBe(true);
 
         await setPolicy(client, ws, 'none');
@@ -523,6 +532,127 @@ describeDb('Draft approvals (database)', () => {
         await h.approvals.setRequired(ws, id, member, 'MEMBER', true);
         await h.settle();
         expect(h.notifications.approvalRequested).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    it('a policy request approved before it was sent tells nobody when sent', async () => {
+      await withRollbackDb(MIGRATIONS, async (db, client) => {
+        const { workspaceId: ws } = await seedWorkspace(client);
+        const admin = await seedMember(client, ws, 'ADMIN');
+        const member = await seedMember(client, ws, 'MEMBER');
+        await setPolicy(client, ws, 'members');
+        const h = harness(db);
+        const id = randomUUID();
+        await h.store.upsert(ws, member, draftBody(id) as any, 'MEMBER');
+        await h.approvals.approve(ws, id, admin, 'ADMIN');
+        await h.settle();
+        h.notifications.approvalRequested.mockClear();
+
+        const view = await h.approvals.setRequired(
+          ws,
+          id,
+          member,
+          'MEMBER',
+          true,
+        );
+        await h.settle();
+        expect(view.state).toBe('approved');
+        expect(h.notifications.approvalRequested).not.toHaveBeenCalled();
+        expect(
+          (await rowOf(db, id)).metadata?.approval?.notifiedAt,
+        ).toBeUndefined();
+      });
+    });
+
+    it('everyone covers an ADMIN but never the OWNER', async () => {
+      await withRollbackDb(MIGRATIONS, async (db, client) => {
+        const { workspaceId: ws, ownerId } = await seedWorkspace(client);
+        const admin = await seedMember(client, ws, 'ADMIN');
+        await setPolicy(client, ws, 'everyone');
+        const h = harness(db);
+
+        const adminDraft = randomUUID();
+        await h.store.upsert(ws, admin, draftBody(adminDraft) as any, 'ADMIN');
+        expect((await rowOf(db, adminDraft)).metadata?.approval).toMatchObject({
+          required: true,
+          byPolicy: true,
+          requestedById: admin,
+        });
+        expect(
+          await codeOf(
+            h.scheduling.schedule(ws, admin, scheduleBody(adminDraft) as any),
+          ),
+        ).toBe('APPROVAL_REQUIRED');
+        // The ADMIN's own request is locked for the ADMIN too.
+        expect(
+          (await h.approvals.get(ws, adminDraft, admin, 'ADMIN')).canTurnOff,
+        ).toBe(false);
+
+        const ownerDraft = randomUUID();
+        await h.store.upsert(
+          ws,
+          ownerId,
+          draftBody(ownerDraft) as any,
+          'OWNER',
+        );
+        expect((await rowOf(db, ownerDraft)).metadata).not.toHaveProperty(
+          'approval',
+        );
+        const res = await h.scheduling.schedule(
+          ws,
+          ownerId,
+          scheduleBody(ownerDraft) as any,
+        );
+        expect(res.status).toBe('scheduled');
+        // The OWNER may still approve the ADMIN's draft and lift nothing else.
+        const approved = await h.approvals.approve(
+          ws,
+          adminDraft,
+          ownerId,
+          'OWNER',
+        );
+        await h.settle();
+        expect(approved.state).toBe('approved');
+        expect(
+          (
+            await h.scheduling.schedule(
+              ws,
+              admin,
+              scheduleBody(adminDraft) as any,
+            )
+          ).status,
+        ).toBe('scheduled');
+      });
+    });
+
+    it('a pure time move of a scheduled post is not gated in the composer', async () => {
+      await withRollbackDb(MIGRATIONS, async (db, client) => {
+        const { workspaceId: ws } = await seedWorkspace(client);
+        const member = await seedMember(client, ws, 'MEMBER');
+        const h = harness(db);
+        const id = randomUUID();
+        // Scheduled before the policy existed.
+        await h.store.upsert(ws, member, draftBody(id) as any, 'MEMBER');
+        await h.scheduling.schedule(ws, member, scheduleBody(id) as any);
+        await setPolicy(client, ws, 'members');
+
+        const moved = {
+          ...scheduleBody(id),
+          scheduledAt: new Date(Date.now() + 7_200_000).toISOString(),
+        };
+        expect(
+          (await h.scheduling.schedule(ws, member, moved as any)).status,
+        ).toBe('scheduled');
+        // A content change of the same scheduled post is gated.
+        expect(
+          await codeOf(
+            h.scheduling.schedule(
+              ws,
+              member,
+              scheduleBody(id, 'edited') as any,
+            ),
+          ),
+        ).toBe('APPROVAL_REQUIRED');
       });
     });
 

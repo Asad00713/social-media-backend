@@ -32,6 +32,7 @@ import {
   selectVariation,
 } from './evergreen-rotation.util';
 import { CampaignPublishingService } from './campaign-publishing.service';
+import { ApprovalPolicyService } from '../posts/composer/services/approval-policy.service';
 import { QUEUES } from '../queue/queue.module';
 import { GroqService, type Platform } from '../ai/groq.service';
 import { AiTokenService } from '../ai/services/ai-token.service';
@@ -136,7 +137,25 @@ export class EvergreenService {
     private readonly rotationQueue: Queue,
     private readonly groq: GroqService,
     private readonly aiTokens: AiTokenService,
+    // Not @Optional: PostsModule exports it. Optional in the type only so
+    // the unit specs that build the service positionally need not pass it.
+    private readonly approvalPolicy?: ApprovalPolicyService,
   ) {}
+
+  /**
+   * The workspace approval policy: a pool post added to or changed in an
+   * ACTIVE campaign goes out on the next rotation with no per-post approval,
+   * so a covered person may not write one. A draft or paused campaign is
+   * free to edit: its launch and resume are gated instead.
+   */
+  private async assertMayChangeLivePool(
+    workspaceId: string,
+    campaign: Campaign,
+    actorId: string | undefined,
+  ): Promise<void> {
+    if (!actorId || campaign.status !== 'active') return;
+    await this.approvalPolicy?.assertMayActivate(workspaceId, actorId);
+  }
 
   // ========================================================================
   // Assembly
@@ -489,9 +508,11 @@ export class EvergreenService {
     campaignId: string,
     categoryId: string,
     dto: CreateEvergreenPostDto,
+    actorId?: string,
   ): Promise<EvergreenCampaignDto> {
-    await this.loadOwnedCampaign(workspaceId, campaignId);
+    const campaign = await this.loadOwnedCampaign(workspaceId, campaignId);
     await this.loadOwnedCategory(campaignId, categoryId);
+    await this.assertMayChangeLivePool(workspaceId, campaign, actorId);
 
     const recyclePolicy: RecyclePolicyJson = dto.recyclePolicy ?? {
       mode: 'forever',
@@ -516,9 +537,13 @@ export class EvergreenService {
     categoryId: string,
     postId: string,
     dto: UpdateEvergreenPostDto,
+    actorId?: string,
   ): Promise<EvergreenCampaignDto> {
-    await this.loadOwnedCampaign(workspaceId, campaignId);
+    const campaign = await this.loadOwnedCampaign(workspaceId, campaignId);
     await this.loadOwnedCategory(campaignId, categoryId);
+    if (dto.content !== undefined) {
+      await this.assertMayChangeLivePool(workspaceId, campaign, actorId);
+    }
 
     const [existing] = await db
       .select({ id: evergreenPosts.id })
@@ -617,8 +642,10 @@ export class EvergreenService {
     postId: string,
     count = 3,
   ): Promise<EvergreenCampaignDto> {
-    await this.loadOwnedCampaign(workspaceId, campaignId);
+    const campaign = await this.loadOwnedCampaign(workspaceId, campaignId);
     await this.loadOwnedCategory(campaignId, categoryId);
+    // Before any AI tokens are spent.
+    await this.assertMayChangeLivePool(workspaceId, campaign, userId);
     const post = await this.loadOwnedPost(categoryId, postId);
 
     const platform = await this.resolvePlatform(categoryId, campaignId);
@@ -703,9 +730,11 @@ export class EvergreenService {
     categoryId: string,
     postId: string,
     dto: AddVariationDto,
+    actorId?: string,
   ): Promise<EvergreenCampaignDto> {
-    await this.loadOwnedCampaign(workspaceId, campaignId);
+    const campaign = await this.loadOwnedCampaign(workspaceId, campaignId);
     await this.loadOwnedCategory(campaignId, categoryId);
+    await this.assertMayChangeLivePool(workspaceId, campaign, actorId);
     const post = await this.loadOwnedPost(categoryId, postId);
 
     const newVariation = {

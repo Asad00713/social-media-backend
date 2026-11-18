@@ -99,8 +99,9 @@ export class EvergreenController {
     @Param('id') id: string,
     @Param('catId') catId: string,
     @Body() dto: CreateEvergreenPostDto,
+    @CurrentUser() user: { userId: string; email: string },
   ) {
-    return this.evergreen.addPost(workspaceId, id, catId, dto);
+    return this.evergreen.addPost(workspaceId, id, catId, dto, user.userId);
   }
 
   // NOTE: EvergreenService.updatePost/removePost require categoryId as a
@@ -115,8 +116,16 @@ export class EvergreenController {
     @Param('catId') catId: string,
     @Param('postId') postId: string,
     @Body() dto: UpdateEvergreenPostDto,
+    @CurrentUser() user: { userId: string; email: string },
   ) {
-    return this.evergreen.updatePost(workspaceId, id, catId, postId, dto);
+    return this.evergreen.updatePost(
+      workspaceId,
+      id,
+      catId,
+      postId,
+      dto,
+      user.userId,
+    );
   }
 
   @RequireCapability('posts:publish')
@@ -172,8 +181,16 @@ export class EvergreenController {
     @Param('catId') catId: string,
     @Param('postId') postId: string,
     @Body() dto: AddVariationDto,
+    @CurrentUser() user: { userId: string; email: string },
   ) {
-    return this.evergreen.addVariation(workspaceId, id, catId, postId, dto);
+    return this.evergreen.addVariation(
+      workspaceId,
+      id,
+      catId,
+      postId,
+      dto,
+      user.userId,
+    );
   }
 
   @RequireCapability('posts:publish')

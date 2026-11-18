@@ -13,7 +13,6 @@ import { DraftStoreService } from './services/draft-store.service';
 import { DraftVersionsService } from './services/draft-versions.service';
 import { ComposerSchedulingService } from './services/composer-scheduling.service';
 import { DraftApprovalService } from './services/draft-approval.service';
-import { ApprovalPolicyService } from './services/approval-policy.service';
 import { LinkPreviewService } from './services/link-preview.service';
 import { QueueModule } from '../../queue/queue.module';
 import { ChannelsModule } from '../../channels/channels.module';
@@ -55,9 +54,7 @@ import { LabelsModule } from '../../labels/labels.module';
     DraftVersionsService,
     ComposerSchedulingService,
     DraftApprovalService,
-    // workspace.approval_policy for drafts, the approval view and sends.
-    // WorkspaceRoleService comes from WorkspaceRoleModule.
-    ApprovalPolicyService,
+    // ApprovalPolicyService comes from PostsModule (imported above).
     LinkPreviewService,
     ChannelCredentialsAdapter,
     {

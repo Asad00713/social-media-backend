@@ -26,7 +26,10 @@ import { createPostTools } from './post.tools';
 const CTX = { userId: 'u1', workspaceId: 'ws1' };
 
 /** A real PostService (so the Guest rules are the real ones) over mocked IO. */
-function realPostService(existing: Record<string, unknown>) {
+function realPostService(
+  existing: Record<string, unknown>,
+  policyCovers = false,
+) {
   const noop = async () => undefined;
   const svc = new PostService(
     {} as any,
@@ -41,6 +44,7 @@ function realPostService(existing: Record<string, unknown>) {
     { enforceQueueLimit: noop } as any,
     { send: jest.fn() } as any, // PostReminderService
     { onPublishOutcome: jest.fn(async () => undefined) } as any, // PublishFailureNotifier
+    { coversAuthor: jest.fn(async () => policyCovers) } as any, // ApprovalPolicyService
   );
   jest.spyOn(svc, 'getPost').mockResolvedValue(existing as any);
   jest.spyOn(svc as any, 'validateChannels').mockResolvedValue([]);
@@ -60,8 +64,9 @@ function build(
     jobId: null,
     targets: [],
   },
+  policyCovers = false,
 ) {
-  const posts = realPostService(existing);
+  const posts = realPostService(existing, policyCovers);
   // The mocked db returns bare rows; give the result the shape the tool reads
   // AFTER the real service (and its Guest rules) has run.
   const realCreate = posts.createPost.bind(posts);
@@ -132,6 +137,24 @@ describe('chatbot create_post', () => {
     expect(res.success).toBe(false);
     expect(res.error).toContain('does not allow');
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('the workspace approval policy refuses a covered member scheduling through the tool', async () => {
+    const { posts, tool } = build('MEMBER', undefined, true);
+    const schedule = jest.spyOn(posts as any, 'schedulePublishJob');
+    const res = await tool('create_post').execute(
+      { content: 'hi', targetChannelIds: [], scheduledAt: FUTURE },
+      CTX,
+    );
+    expect(res.success).toBe(false);
+    expect(res.error).toContain('needs approval');
+    expect(schedule).not.toHaveBeenCalled();
+    // A draft (no time) is still fine.
+    const draft = await tool('create_post').execute(
+      { content: 'hi', targetChannelIds: [] },
+      CTX,
+    );
+    expect(draft.success).toBe(true);
   });
 });
 

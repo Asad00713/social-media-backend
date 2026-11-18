@@ -1,3 +1,4 @@
+import { ForbiddenException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { refusal } from './refusal';
 
@@ -94,6 +95,23 @@ export function newApprovalRequest(
     approvedFingerprint: null,
     ...(opts.byPolicy ? { byPolicy: true as const } : {}),
   };
+}
+
+/** 403 code: the workspace approval policy forbids this action. */
+export const APPROVAL_REQUIRED_BY_POLICY = 'APPROVAL_REQUIRED_BY_POLICY';
+
+/** Why a campaign, evergreen or drip activation is refused under the policy. */
+export const ACTIVATION_NEEDS_APPROVER_MESSAGE =
+  'Your workspace needs approval before posts go out. Ask an admin to launch this.';
+
+/** The policy's 403, in the `{ statusCode, error, code, message }` shape. */
+export function approvalRequiredByPolicy(message: string): ForbiddenException {
+  return new ForbiddenException({
+    statusCode: 403,
+    error: 'Forbidden',
+    code: APPROVAL_REQUIRED_BY_POLICY,
+    message,
+  });
 }
 
 /**

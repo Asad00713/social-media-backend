@@ -29,6 +29,7 @@ import { computeSlotSchedule } from './campaign-schedule.util';
 import { cadenceOf, computeSpan, type Cadence } from './lib/campaign-span';
 import { CampaignPublishingService } from './campaign-publishing.service';
 import { EvergreenService, type EvergreenCampaignDto } from './evergreen.service';
+import { ApprovalPolicyService } from '../posts/composer/services/approval-policy.service';
 
 // ==========================================================================
 // Response DTO — mirrors the frontend `Campaign` shape byte-for-byte so the
@@ -202,7 +203,24 @@ export class CampaignsService {
   constructor(
     private readonly publishing: CampaignPublishingService,
     private readonly evergreen: EvergreenService,
+    // Not @Optional: PostsModule exports it. Optional in the type only so
+    // the unit specs that build the service positionally need not pass it.
+    private readonly approvalPolicy?: ApprovalPolicyService,
   ) {}
+
+  /**
+   * The workspace approval policy: campaign posts carry no per-post
+   * approval, so a covered person may not set any going out (launch, resume,
+   * or a content edit of a launched slot). `actorId` is the caller; the
+   * controller always passes it.
+   */
+  private async assertMayActivate(
+    workspaceId: string,
+    actorId: string | undefined,
+  ): Promise<void> {
+    if (!actorId) return;
+    await this.approvalPolicy?.assertMayActivate(workspaceId, actorId);
+  }
 
   // ==========================================================================
   // Pure helpers — no DB access. Exported as instance methods so they're
@@ -1055,8 +1073,11 @@ export class CampaignsService {
   async launch(
     workspaceId: string,
     id: string,
+    actorId?: string,
   ): Promise<CampaignDto | EvergreenCampaignDto> {
     const campaign = await this.getOne(workspaceId, id); // 404 if wrong workspace
+    // Every type, evergreen included, before anything is written.
+    await this.assertMayActivate(workspaceId, actorId);
 
     // Evergreen campaigns have a wholly different lifecycle model (category
     // rotation arming, not day/slot materialization) — delegate to
@@ -1249,8 +1270,11 @@ export class CampaignsService {
   async resume(
     workspaceId: string,
     id: string,
+    actorId?: string,
   ): Promise<CampaignDto | EvergreenCampaignDto> {
     const campaign = await this.getOne(workspaceId, id); // 404 if wrong workspace
+    // Resume re-materializes pending slots: an activation like launch.
+    await this.assertMayActivate(workspaceId, actorId);
 
     if (campaign.type === 'evergreen') {
       return this.evergreen.resume(workspaceId, id);
@@ -1520,6 +1544,7 @@ export class CampaignsService {
     workspaceId: string,
     id: string,
     dto: UpdateEventDto,
+    actorId?: string,
   ): Promise<CampaignDto> {
     const campaign = await this.getOne(workspaceId, id);
 
@@ -1547,6 +1572,17 @@ export class CampaignsService {
     const campaignStatus = camp?.status ?? 'draft';
 
     this.assertLaunchedSlotEditable(campaignStatus, slot.slotStatus);
+
+    // A content edit of a launched, still-scheduled slot re-enqueues new
+    // content below: gated by the approval policy. A pure time move (empty
+    // patch) is not, as with a post's own re-time.
+    if (
+      campaignStatus === 'active' &&
+      slot.slotStatus === 'scheduled' &&
+      Object.keys(dto.patch ?? {}).length > 0
+    ) {
+      await this.assertMayActivate(workspaceId, actorId);
+    }
 
     // Content-preserving time move. Allowed on draft AND launched campaigns —
     // on a launched, still-scheduled slot the re-materialize block below cancels

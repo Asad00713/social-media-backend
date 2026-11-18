@@ -12,6 +12,7 @@ import {
   assertApprovedFor,
   assertPolicyAllowsDirectSend,
   carryApproval,
+  contentFingerprint,
   type ApprovableContent,
 } from '../../lib/draft-approval';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -69,7 +70,21 @@ interface StoredPost {
   metadata: unknown;
   targets: unknown;
   jobId: string | null;
+  content: string | null;
+  mediaItems: unknown;
+  platformContent: unknown;
 }
+
+/** What the approval-policy check reads from a stored row. */
+type PolicyRow = Pick<
+  StoredPost,
+  | 'status'
+  | 'metadata'
+  | 'content'
+  | 'mediaItems'
+  | 'platformContent'
+  | 'targets'
+>;
 
 /**
  * The legacy posts.targets shape (PostTarget) — status='draft' per channel
@@ -123,13 +138,30 @@ export class ComposerSchedulingService {
     private readonly approvalPolicy?: ApprovalPolicyService,
   ) {}
 
-  /** Whether the workspace approval policy covers the person sending. */
-  private async policyCovers(
+  /**
+   * The workspace approval policy for one send. A pure time move of a post
+   * that is already scheduled (same content, media, per-channel content and
+   * channels) is not gated, as in PostService.updatePost: it may predate the
+   * policy, and moving it sends nothing new.
+   */
+  private async assertPolicyAllows(
     workspaceId: string,
     userId: string,
-  ): Promise<boolean> {
-    return (
-      (await this.approvalPolicy?.coversAuthor(workspaceId, userId)) ?? false
+    stored: PolicyRow | undefined,
+    outgoing: ApprovableContent,
+  ): Promise<void> {
+    if (
+      stored?.status === 'scheduled' &&
+      contentFingerprint({
+        ...stored,
+        targets: stored.targets as ApprovableContent['targets'],
+      }) === contentFingerprint(outgoing)
+    ) {
+      return;
+    }
+    assertPolicyAllowsDirectSend(
+      (await this.approvalPolicy?.coversAuthor(workspaceId, userId)) ?? false,
+      stored?.metadata,
     );
   }
 
@@ -296,10 +328,7 @@ export class ComposerSchedulingService {
       platformContent: dto.perPlatform ?? {},
       targets: dto.channels,
     };
-    assertPolicyAllowsDirectSend(
-      await this.policyCovers(workspaceId, userId),
-      existing[0]?.metadata,
-    );
+    await this.assertPolicyAllows(workspaceId, userId, existing[0], outgoing);
     assertApprovedFor(existing[0]?.metadata, outgoing);
     Object.assign(metadata, carryApproval(existing[0]?.metadata, outgoing));
 
@@ -458,10 +487,7 @@ export class ComposerSchedulingService {
     };
     // The policy, once for the whole; approvalForPart then runs
     // assertApprovedFor for the whole and for each part.
-    assertPolicyAllowsDirectSend(
-      await this.policyCovers(workspaceId, userId),
-      stored?.metadata,
-    );
+    await this.assertPolicyAllows(workspaceId, userId, stored, whole);
 
     const siblings = groups.map((group, i) => {
       const perPlatform = overridesFor(dto.perPlatform, group.channels);

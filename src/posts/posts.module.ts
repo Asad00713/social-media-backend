@@ -47,6 +47,10 @@ import { PostPublishProcessor } from './processors/post-publish.processor';
 import { RepeatPostsService } from './services/repeat-posts.service';
 import { PostReminderService } from './services/post-reminder.service';
 import { PublishFailureNotifier } from './services/publish-failure-notifier.service';
+// workspace.approval_policy. Provided here (not in ComposerModule) so
+// PostService can use it too; ComposerModule and the campaign modules import
+// PostsModule. Needs WorkspaceRoleModule, imported below.
+import { ApprovalPolicyService } from './composer/services/approval-policy.service';
 
 @Module({
   imports: [
@@ -88,6 +92,7 @@ import { PublishFailureNotifier } from './services/publish-failure-notifier.serv
     PostReminderService,
     PublishFailureNotifier,
     CampaignStatusSyncListener,
+    ApprovalPolicyService,
   ],
   exports: [
     PostService,
@@ -95,6 +100,7 @@ import { PublishFailureNotifier } from './services/publish-failure-notifier.serv
     PostDraftsService,
     PublisherFactory,
     PostReminderService,
+    ApprovalPolicyService,
   ],
 })
 export class PostsModule {}

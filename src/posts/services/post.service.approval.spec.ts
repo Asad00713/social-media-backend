@@ -38,7 +38,7 @@ import { buildDuplicate } from '../lib/duplicate-post';
 
 const WS = 'ws1';
 
-function makeService(existing: Record<string, unknown>) {
+function makeService(existing: Record<string, unknown>, policyCovers = false) {
   const noop = async () => undefined;
   const svc = new PostService(
     {} as any,
@@ -53,6 +53,7 @@ function makeService(existing: Record<string, unknown>) {
     { enforceQueueLimit: noop } as any,
     { send: jest.fn() } as any, // PostReminderService
     { onPublishOutcome: jest.fn(async () => undefined) } as any, // PublishFailureNotifier
+    { coversAuthor: jest.fn(async () => policyCovers) } as any, // ApprovalPolicyService
   );
   jest.spyOn(svc, 'getPost').mockResolvedValue(existing as any);
   jest.spyOn(svc as any, 'validateChannels').mockResolvedValue([]);
@@ -213,6 +214,116 @@ describe('PostService and "Needs approval"', () => {
     ).rejects.not.toMatchObject({
       response: { code: 'APPROVAL_REQUIRED' },
     });
+  });
+});
+
+/** The refusal code a call ends with, or null when it is not refused by code. */
+async function outcomeCode(p: Promise<unknown>): Promise<string | null> {
+  try {
+    await p;
+    return null;
+  } catch (e) {
+    const res = (e as { getResponse?: () => unknown }).getResponse?.();
+    return (res as { code?: string } | undefined)?.code ?? null;
+  }
+}
+
+describe('PostService and the workspace approval policy (covered author)', () => {
+  const plain = (status = 'draft') => ({
+    ...base,
+    status,
+    metadata: { title: 'T' },
+  });
+
+  it('refuses createPost with a time, before anything is written', async () => {
+    const svc = makeService({}, true);
+    expect(
+      await codeOf(
+        svc.createPost(
+          WS,
+          'u1',
+          { content: 'x', targetChannelIds: [], scheduledAt: later() } as any,
+          'MEMBER',
+        ),
+      ),
+    ).toBe('APPROVAL_REQUIRED');
+    expect(writes.inserts).toHaveLength(0);
+  });
+
+  it('still lets createPost save a draft', async () => {
+    const svc = makeService({}, true);
+    await svc.createPost(
+      WS,
+      'u1',
+      { content: 'x', targetChannelIds: [] } as any,
+      'MEMBER',
+    );
+    expect(writes.inserts).toHaveLength(1);
+  });
+
+  it('refuses updatePost turning a draft with no approval into a scheduled post', async () => {
+    const svc = makeService(plain('draft'), true);
+    expect(
+      await codeOf(
+        svc.updatePost(
+          'p1',
+          WS,
+          'u1',
+          { scheduledAt: later() } as any,
+          'MEMBER',
+        ),
+      ),
+    ).toBe('APPROVAL_REQUIRED');
+    expect(writes.sets).toHaveLength(0);
+  });
+
+  it('refuses a content change to a scheduled post with no approval', async () => {
+    const svc = makeService(plain('scheduled'), true);
+    expect(
+      await codeOf(
+        svc.updatePost('p1', WS, 'u1', { content: 'edited' } as any, 'MEMBER'),
+      ),
+    ).toBe('APPROVAL_REQUIRED');
+    expect(writes.sets).toHaveLength(0);
+  });
+
+  it('lets a pure time move of a scheduled post through (calendar pull-sync)', async () => {
+    const svc = makeService(plain('scheduled'), true);
+    await svc.updatePost(
+      'p1',
+      WS,
+      'u1',
+      { scheduledAt: later() } as any,
+      'MEMBER',
+    );
+    expect(writes.sets.length).toBeGreaterThan(0);
+  });
+
+  it("refuses a person's Publish now, but not a drip occurrence (trigger scheduled)", async () => {
+    const svc = makeService(plain('draft'), true);
+    expect(await codeOf(svc.publishPost('p1', WS, 'u1'))).toBe(
+      'APPROVAL_REQUIRED',
+    );
+    expect(
+      await outcomeCode(
+        svc.publishPost('p1', WS, 'u1', { trigger: 'scheduled' }),
+      ),
+    ).not.toBe('APPROVAL_REQUIRED');
+  });
+
+  it('never refuses an author the policy does not cover', async () => {
+    const svc = makeService(plain('draft'), false);
+    await svc.updatePost(
+      'p1',
+      WS,
+      'u1',
+      { scheduledAt: later() } as any,
+      'ADMIN',
+    );
+    expect(writes.sets.length).toBeGreaterThan(0);
+    expect(await outcomeCode(svc.publishPost('p1', WS, 'u1'))).not.toBe(
+      'APPROVAL_REQUIRED',
+    );
   });
 });
 

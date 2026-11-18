@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/require-await -- test doubles are loosely typed */
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import type { ApprovalPolicy } from '../../../drizzle/schema/workspace.schema';
 import type { WorkspaceRole } from '../../../workspace-members/role-capabilities';
 import {
@@ -14,7 +14,8 @@ const ROLES: WorkspaceRole[] = ['OWNER', 'ADMIN', 'MEMBER', 'GUEST'];
 describe('policyCovers', () => {
   it.each<[ApprovalPolicy, boolean[]]>([
     ['members', [false, false, true, true]],
-    ['everyone', [true, true, true, true]],
+    // The OWNER is never covered (controller ruling), even under everyone.
+    ['everyone', [false, true, true, true]],
     ['none', [false, false, false, false]],
   ])('%s covers OWNER, ADMIN, MEMBER, GUEST as %j', (policy, expected) => {
     expect(ROLES.map((r) => policyCovers(policy, r))).toEqual(expected);
@@ -65,6 +66,32 @@ describe('ApprovalPolicyService.coversAuthor', () => {
     await expect(
       build(null, 'MEMBER').svc.coversAuthor('ws-1', 'u-1'),
     ).resolves.toBe(false);
+  });
+
+  it('assertMayActivate refuses a covered person with the policy 403', async () => {
+    const err = await build('members', 'MEMBER')
+      .svc.assertMayActivate('ws-1', 'u-1')
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect(err).toBeInstanceOf(ForbiddenException);
+    expect((err as ForbiddenException).getResponse()).toEqual({
+      statusCode: 403,
+      error: 'Forbidden',
+      code: 'APPROVAL_REQUIRED_BY_POLICY',
+      message:
+        'Your workspace needs approval before posts go out. Ask an admin to launch this.',
+    });
+  });
+
+  it('assertMayActivate lets an uncovered person through', async () => {
+    await expect(
+      build('members', 'ADMIN').svc.assertMayActivate('ws-1', 'u-1'),
+    ).resolves.toBeUndefined();
+    await expect(
+      build('everyone', 'OWNER').svc.assertMayActivate('ws-1', 'u-1'),
+    ).resolves.toBeUndefined();
   });
 });
 

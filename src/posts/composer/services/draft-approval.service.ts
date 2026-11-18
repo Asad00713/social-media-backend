@@ -35,6 +35,7 @@ import type { CallerRole } from '../../guest-rules';
 import {
   ALLOW_SELF_APPROVAL,
   APPROVE_CAPABILITY,
+  approvalRequiredByPolicy,
   approvalState,
   contentFingerprint,
   newApprovalRequest,
@@ -175,8 +176,9 @@ export class DraftApprovalService {
 
     if (required) {
       // A request the policy wrote silently on the first save: sending it
-      // for approval tells the approvers, once.
-      if (current?.byPolicy && !current.notifiedAt) {
+      // for approval tells the approvers, once. Not once it is approved
+      // (an approver can approve before the author sends it).
+      if (current?.byPolicy && !current.notifiedAt && !current.approvedAt) {
         const stamped = await this.stampNotified(workspaceId, postId, userId);
         if (stamped) {
           // Not awaited, like below. The author is the requester.
@@ -217,7 +219,7 @@ export class DraftApprovalService {
       if (!current) return this.view(workspaceId, row, userId, role);
       assertRoleCan(role, APPROVE_CAPABILITY);
       if (await this.policyHolds(workspaceId, current)) {
-        throw new ForbiddenException(
+        throw approvalRequiredByPolicy(
           "The workspace approval policy covers this post's author, so its approval can't be switched off.",
         );
       }
@@ -407,8 +409,9 @@ export class DraftApprovalService {
   }
 
   /**
-   * Stamps `notifiedAt` on a policy request that has none, and records the
-   * request in history. Conditional, so two clicks tell the approvers once.
+   * Stamps `notifiedAt` on a policy request that has none and is not yet
+   * approved, and records the request in history. Conditional, so two clicks
+   * tell the approvers once.
    * Like writeApproval, never touches `updated_at`.
    */
   private async stampNotified(
@@ -430,6 +433,7 @@ export class DraftApprovalService {
             eq(posts.status, 'draft'),
             sql`${posts.metadata} -> 'approval' ->> 'byPolicy' = 'true'`,
             sql`NOT (${posts.metadata} -> 'approval' ? 'notifiedAt')`,
+            sql`${posts.metadata} -> 'approval' ->> 'approvedAt' IS NULL`,
           ),
         )
         .returning({ id: posts.id });

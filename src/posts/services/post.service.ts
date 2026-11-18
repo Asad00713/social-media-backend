@@ -30,11 +30,14 @@ import { derivePostStatus, publishedTargetState } from '../lib/post-status';
 import { assertNotInPast, refusal } from '../lib/refusal';
 import {
   assertApprovedFor,
+  assertPolicyAllowsDirectSend,
   carryApproval,
+  contentFingerprint,
   readApproval,
   withoutApproval,
   type ApprovableContent,
 } from '../lib/draft-approval';
+import { ApprovalPolicyService } from '../composer/services/approval-policy.service';
 import { calendarRangeWhere, occurredAtSql } from '../lib/post-status.sql';
 import {
   posts,
@@ -134,7 +137,20 @@ export class PostService {
     private readonly postQueue: PostQueueService,
     private readonly reminders: PostReminderService,
     private readonly failureNotifier: PublishFailureNotifier,
+    // Not @Optional: PostsModule provides it. Optional in the type only so the
+    // many unit specs that build PostService positionally need not pass it.
+    private readonly approvalPolicy?: ApprovalPolicyService,
   ) {}
+
+  /** Whether the workspace approval policy covers this person. */
+  private async policyCovers(
+    workspaceId: string,
+    userId: string,
+  ): Promise<boolean> {
+    return (
+      (await this.approvalPolicy?.coversAuthor(workspaceId, userId)) ?? false
+    );
+  }
 
   /**
    * Fire-and-forget app→calendar push for a post. Never blocks or fails the
@@ -251,6 +267,13 @@ export class PostService {
       // below only clamps a past delay to 0, so it would still publish a
       // past-dated post immediately, after the insert.
       assertNotInPast(dto.scheduledAt);
+      // The workspace approval policy: a new post never carries an approval
+      // (the insert strips any a client sends), so a covered author cannot
+      // create one already scheduled.
+      assertPolicyAllowsDirectSend(
+        await this.policyCovers(workspaceId, userId),
+        undefined,
+      );
       await this.postQueue.enforceQueueLimit(
         workspaceId,
         channelList.map((channel) => String(channel.id)),
@@ -418,21 +441,35 @@ export class PostService {
     // "Needs approval" (metadata.approval). A client's metadata never sets or
     // clears it, a content change withdraws a grant, and a post may only
     // become or stay scheduled under a grant that covers its content.
+    const nextContent: ApprovableContent = {
+      content:
+        updateData.content !== undefined
+          ? updateData.content
+          : existingPost.content,
+      mediaItems: updateData.mediaItems ?? existingPost.mediaItems,
+      platformContent:
+        updateData.platformContent ?? existingPost.platformContent,
+      targets: updateData.targets ?? existingPost.targets,
+    };
+    const willBeScheduled =
+      dto.scheduledAt !== undefined
+        ? dto.scheduledAt !== null
+        : existingPost.status === 'scheduled';
+    // The workspace approval policy: a covered author's post with no approval
+    // request may not become scheduled, nor have its content changed while
+    // scheduled. A pure time move of a post already scheduled is not gated:
+    // calendar pull-sync moves posts that may predate the policy.
+    if (
+      willBeScheduled &&
+      (existingPost.status !== 'scheduled' ||
+        contentFingerprint(nextContent) !== contentFingerprint(existingPost))
+    ) {
+      assertPolicyAllowsDirectSend(
+        await this.policyCovers(workspaceId, userId),
+        existingPost.metadata,
+      );
+    }
     if (readApproval(existingPost.metadata)) {
-      const nextContent: ApprovableContent = {
-        content:
-          updateData.content !== undefined
-            ? updateData.content
-            : existingPost.content,
-        mediaItems: updateData.mediaItems ?? existingPost.mediaItems,
-        platformContent:
-          updateData.platformContent ?? existingPost.platformContent,
-        targets: updateData.targets ?? existingPost.targets,
-      };
-      const willBeScheduled =
-        dto.scheduledAt !== undefined
-          ? dto.scheduledAt !== null
-          : existingPost.status === 'scheduled';
       if (willBeScheduled) {
         assertApprovedFor(existingPost.metadata, nextContent);
       }
@@ -675,6 +712,15 @@ export class PostService {
     // is already guarded, and a refusal at fire time would leave the post
     // stuck in 'scheduled'.
     if (triggeredBy === 'user') {
+      // The workspace approval policy, on a person's own "Publish now" only:
+      // a drip occurrence calls with the default triggeredBy and
+      // trigger 'scheduled', and its posts never carry an approval.
+      if (trigger === 'publish_now') {
+        assertPolicyAllowsDirectSend(
+          await this.policyCovers(workspaceId, userId),
+          post.metadata,
+        );
+      }
       assertApprovedFor(post.metadata, post);
     }
 

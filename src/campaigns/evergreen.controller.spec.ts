@@ -81,21 +81,28 @@ describe('EvergreenController', () => {
     expect(mockService.removeCategory).toHaveBeenCalledWith(workspaceId, campaignId, categoryId);
   });
 
-  it('addPost delegates to service.addPost(workspaceId, campaignId, categoryId, dto)', async () => {
+  it('addPost delegates to service.addPost(workspaceId, campaignId, categoryId, dto, userId)', async () => {
     const dto = { content: {} } as CreateEvergreenPostDto;
-    await controller.addPost(workspaceId, campaignId, categoryId, dto);
-    expect(mockService.addPost).toHaveBeenCalledWith(workspaceId, campaignId, categoryId, dto);
+    await controller.addPost(workspaceId, campaignId, categoryId, dto, user);
+    expect(mockService.addPost).toHaveBeenCalledWith(
+      workspaceId,
+      campaignId,
+      categoryId,
+      dto,
+      user.userId,
+    );
   });
 
-  it('updatePost delegates to service.updatePost(workspaceId, campaignId, categoryId, postId, dto)', async () => {
+  it('updatePost delegates to service.updatePost(workspaceId, campaignId, categoryId, postId, dto, userId)', async () => {
     const dto = { content: {} } as UpdateEvergreenPostDto;
-    await controller.updatePost(workspaceId, campaignId, categoryId, postId, dto);
+    await controller.updatePost(workspaceId, campaignId, categoryId, postId, dto, user);
     expect(mockService.updatePost).toHaveBeenCalledWith(
       workspaceId,
       campaignId,
       categoryId,
       postId,
       dto,
+      user.userId,
     );
   });
 

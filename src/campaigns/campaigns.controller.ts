@@ -148,8 +148,9 @@ export class CampaignsController {
   async launch(
     @Param('workspaceId') workspaceId: string,
     @Param('id') id: string,
+    @CurrentUser() user: { userId: string; email: string },
   ) {
-    return this.campaignsService.launch(workspaceId, id);
+    return this.campaignsService.launch(workspaceId, id, user.userId);
   }
 
   @RequireCapability('posts:publish')
@@ -168,8 +169,9 @@ export class CampaignsController {
   async resume(
     @Param('workspaceId') workspaceId: string,
     @Param('id') id: string,
+    @CurrentUser() user: { userId: string; email: string },
   ) {
-    return this.campaignsService.resume(workspaceId, id);
+    return this.campaignsService.resume(workspaceId, id, user.userId);
   }
 
   @RequireCapability('posts:publish')
@@ -241,8 +243,14 @@ export class CampaignsController {
     @Param('workspaceId') workspaceId: string,
     @Param('id') id: string,
     @Body() dto: UpdateEventDto,
+    @CurrentUser() user: { userId: string; email: string },
   ) {
-    return this.campaignsService.updateEvent(workspaceId, id, dto);
+    return this.campaignsService.updateEvent(
+      workspaceId,
+      id,
+      dto,
+      user.userId,
+    );
   }
 
   @RequireCapability('posts:publish')
