@@ -4,8 +4,9 @@ import { WorkspaceService } from './workspace.service';
 /*
  * The order and the failure rules of `remove`, without a database (the DB
  * spec, workspace.delete.db.spec.ts, covers the queries). `db.select()` hands
- * back the queued results in call order: first the scheduled posts, then the
- * owned-workspace count.
+ * back the queued results in call order: the unlocked owned count (slot
+ * release), then inside the transaction the owner's locked workspace rows,
+ * then the scheduled posts. The transaction runs on the same fake.
  */
 
 const WS = 'ws-1';
@@ -13,10 +14,17 @@ const OWNER = 'owner-1';
 
 /* The fakes stand in for drizzle's fluent builders; `any` is confined to them. */
 /* eslint-disable @typescript-eslint/no-unsafe-return */
+let locks: string[] = [];
+
 function selectChain(rows: unknown[]): any {
   const chain: any = {
     from: () => chain,
     where: () => chain,
+    orderBy: () => chain,
+    for: (mode: string) => {
+      locks.push(mode);
+      return chain;
+    },
     then: (resolve: (v: unknown) => unknown) =>
       Promise.resolve(rows).then(resolve),
   };
@@ -27,7 +35,15 @@ function make(
   opts: {
     name?: string;
     otherOwned?: number;
-    plan?: { planCode: string; status: string } | null;
+    /** Other owned workspaces once the lock is held (a parallel delete). */
+    otherOwnedLocked?: number;
+    /** The workspace was deleted by a parallel request before the lock. */
+    goneBeforeLock?: boolean;
+    plan?: {
+      planCode: string;
+      status: string;
+      cancelAtPeriodEnd?: boolean;
+    } | null;
     jobRemoveFails?: boolean;
     cancelFails?: boolean;
   } = {},
@@ -37,7 +53,13 @@ function make(
     { id: 'p1', jobId: 'post-legacy-1' },
     { id: 'p2', jobId: 'composer-publish-p2' },
   ];
-  const selects = [scheduled, [{ n: opts.otherOwned ?? 0 }]];
+  locks = [];
+  const lockedOthers = opts.otherOwnedLocked ?? opts.otherOwned ?? 0;
+  const ownedRows = [
+    ...(opts.goneBeforeLock ? [] : [{ id: WS }]),
+    ...Array.from({ length: lockedOthers }, (_, i) => ({ id: `ws-o${i}` })),
+  ];
+  const selects = [[{ n: opts.otherOwned ?? 0 }], ownedRows, scheduled];
   const db = {
     query: {
       workspace: {
@@ -56,6 +78,13 @@ function make(
       }),
     })),
   };
+  // The transaction runs on the same fake (added after, so `db` stays typed).
+  Object.assign(db, {
+    transaction: jest.fn((fn: (tx: unknown) => Promise<unknown>) => {
+      calls.push('lock');
+      return fn(db);
+    }),
+  });
   const publishingQueue = {
     getJob: jest.fn((id: string) =>
       Promise.resolve({
@@ -77,7 +106,9 @@ function make(
     }),
   };
   const plan =
-    opts.plan === undefined ? { planCode: 'PRO', status: 'active' } : opts.plan;
+    opts.plan === undefined
+      ? { planCode: 'PRO', status: 'active', cancelAtPeriodEnd: false }
+      : opts.plan;
   const lookup = {
     findByUserId: jest.fn().mockResolvedValue(plan ? { id: 7, ...plan } : null),
     getPlanLimits: jest.fn().mockResolvedValue({ maxWorkspaces: 1 }),
@@ -141,7 +172,7 @@ describe('WorkspaceService.remove', () => {
     jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
   });
 
-  it('runs release, delete, job removal, tz-move cancel, plan cancel, limits in that order', async () => {
+  it('runs release, locked delete, job removal, tz-move cancel, plan cancel, limits in that order', async () => {
     const { service, calls, subscriptionService } = make();
 
     await expect(service.remove(WS, OWNER, ' Acme ')).resolves.toEqual({
@@ -150,6 +181,7 @@ describe('WorkspaceService.remove', () => {
 
     expect(calls).toEqual([
       'release',
+      'lock',
       'delete',
       'remove:composer-publish-p1',
       'remove:post-legacy-1',
@@ -163,6 +195,8 @@ describe('WorkspaceService.remove', () => {
       true,
       { changedByUserId: OWNER },
     );
+    // The owner's rows are locked before the count the cancel decides on.
+    expect(locks).toEqual(['update']);
   });
 
   it.each(['acme', 'Acme Inc', '', 'ACME'])(
@@ -184,11 +218,46 @@ describe('WorkspaceService.remove', () => {
     },
   );
 
-  it('trims only the typed side: a workspace named with spaces needs them typed', async () => {
-    const { service, db } = make({ name: ' Acme' });
+  it.each(['Acme', ' Acme ', '  Acme'])(
+    'a stored name with surrounding spaces is deleted by typing %p',
+    async (typed) => {
+      const { service, db } = make({ name: '  Acme ' });
 
-    await failure(service.remove(WS, OWNER, ' Acme'));
+      await service.remove(WS, OWNER, typed);
+      expect(db.delete).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('a stored name with spaces is still compared case-sensitively', async () => {
+    const { service, db } = make({ name: ' Acme ' });
+
+    expect((await failure(service.remove(WS, OWNER, 'acme'))).status).toBe(400);
     expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it('two parallel deletes of the last two workspaces: the second, counting under the lock, cancels', async () => {
+    // Before the lock it saw the other workspace; once the lock is held the
+    // parallel delete has committed and nothing else is left.
+    const { service, subscriptionService } = make({
+      otherOwned: 1,
+      otherOwnedLocked: 0,
+    });
+
+    await service.remove(WS, OWNER, 'Acme');
+    expect(subscriptionService.cancelForAccount).toHaveBeenCalledWith(
+      OWNER,
+      true,
+      { changedByUserId: OWNER },
+    );
+  });
+
+  it('a workspace deleted by a parallel request answers 404 and removes no jobs', async () => {
+    const { service, calls, db } = make({ goneBeforeLock: true });
+
+    expect((await failure(service.remove(WS, OWNER, 'Acme'))).status).toBe(404);
+    expect(db.delete).not.toHaveBeenCalled();
+    expect(calls.some((c) => c.startsWith('remove:'))).toBe(false);
+    expect(calls).not.toContain('cancel');
   });
 
   it('keeps the plan when the owner still owns another workspace', async () => {
@@ -201,6 +270,10 @@ describe('WorkspaceService.remove', () => {
   it.each([
     ['FREE', { planCode: 'FREE', status: 'active' }],
     ['already canceled', { planCode: 'PRO', status: 'canceled' }],
+    [
+      'already ending at the period end',
+      { planCode: 'PRO', status: 'active', cancelAtPeriodEnd: true },
+    ],
     ['no subscription', null],
   ])('cancels nothing on %s', async (_label, plan) => {
     const { service, subscriptionService } = make({ plan });

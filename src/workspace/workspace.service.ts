@@ -29,7 +29,10 @@ import { sql } from 'drizzle-orm';
 import { UpdateWorkspaceDto } from './dto/update-workspace.dto';
 import { UsageService } from 'src/billing/services/usage.service';
 import { UsersService } from 'src/users/users.service';
-import { SubscriptionService } from 'src/billing/services/subscription.service';
+import {
+  SubscriptionService,
+  isCancellable,
+} from 'src/billing/services/subscription.service';
 import { SubscriptionLookupService } from 'src/billing/services/subscription-lookup.service';
 import { AddonService } from 'src/billing/services/addon.service';
 import { resolveWorkspaceLimits } from 'src/billing/services/limit-resolver.util';
@@ -85,9 +88,15 @@ export interface DeletionPreview {
   /** ACCEPTED members other than guests (the owner is not a member row). */
   members: number;
   guests: number;
-  /** The owner owns no other workspace: deleting it cancels a paid plan. */
+  /** The owner owns no other workspace. */
   isLastOwnedWorkspace: boolean;
-  /** The owner's plan (as on "Your workspaces"); the free plan otherwise. */
+  /**
+   * The delete would cancel the owner's plan at the period end: it is their
+   * last workspace and isCancellable says so (the rule remove() acts on).
+   * The dialog's "plan is cancelled" line reads this, never planName.
+   */
+  cancelsPlan: boolean;
+  /** The owner's plan (as on "Your workspaces"), for display only. */
   planName: string;
 }
 
@@ -618,7 +627,7 @@ export class WorkspaceService {
       );
     }
 
-    const [[channels], [scheduled], roles, ownedOthers, planName] =
+    const [[channels], [scheduled], roles, ownedOthers, planName, [sub]] =
       await Promise.all([
         this.db
           .select({ n: count() })
@@ -650,6 +659,16 @@ export class WorkspaceService {
           .groupBy(workspaceInvitation.role),
         this.countOwnedWorkspaces(existing.ownerId, workspaceId),
         this.ownerPlanName(existing.ownerId),
+        // The same row lookup.findByUserId reads for the cancel itself.
+        this.db
+          .select({
+            planCode: subscriptions.planCode,
+            status: subscriptions.status,
+            cancelAtPeriodEnd: subscriptions.cancelAtPeriodEnd,
+          })
+          .from(subscriptions)
+          .where(eq(subscriptions.userId, existing.ownerId))
+          .limit(1),
       ]);
 
     let members = 0;
@@ -665,6 +684,8 @@ export class WorkspaceService {
       members,
       guests,
       isLastOwnedWorkspace: ownedOthers === 0,
+      // remove() cancels at the period end: the same `true` here.
+      cancelsPlan: ownedOthers === 0 && isCancellable(sub, true),
       planName,
     };
   }
@@ -693,9 +714,10 @@ export class WorkspaceService {
       );
     }
 
-    // Exact and case-sensitive; only the typed side is trimmed (the frontend
-    // sends it trimmed too).
-    if (confirmName.trim() !== existingWorkspace.name) {
+    // Exact and case-sensitive. Both sides are trimmed: the frontend sends
+    // the typed name trimmed, and a legacy row may hold surrounding spaces
+    // nobody can see to type.
+    if (confirmName.trim() !== existingWorkspace.name.trim()) {
       throw badRequest(
         'CONFIRM_NAME_MISMATCH',
         'Type the workspace name exactly to delete it.',
@@ -704,16 +726,13 @@ export class WorkspaceService {
 
     const ownerId = existingWorkspace.ownerId;
 
-    // Read before the DELETE: the cascade takes the rows, and with them the
-    // job ids recorded on them.
-    const scheduledPosts = await this.db
-      .select({ id: posts.id, jobId: posts.jobId })
-      .from(posts)
-      .where(
-        and(eq(posts.workspaceId, workspaceId), eq(posts.status, 'scheduled')),
-      );
-
-    const ownedAfter = await this.countOwnedWorkspaces(ownerId, workspaceId);
+    // Only the slot release reads this unlocked count: it must run before the
+    // DELETE (below) and calls the provider, which no row lock should wait on.
+    // The cancel decision uses the locked count inside the delete.
+    const ownedAfterEstimate = await this.countOwnedWorkspaces(
+      ownerId,
+      workspaceId,
+    );
 
     // Give back the workspace slot BEFORE deleting, while this workspace still
     // exists for removeAddon to verify ownership against.
@@ -725,7 +744,7 @@ export class WorkspaceService {
     try {
       const included = await this.includedWorkspaces(ownerId);
 
-      if (ownedAfter < included.purchasedFloor) {
+      if (ownedAfterEstimate < included.purchasedFloor) {
         await this.addonService.removeAddon(
           workspaceId,
           ownerId,
@@ -743,7 +762,14 @@ export class WorkspaceService {
       );
     }
 
-    await this.db.delete(workspace).where(eq(workspace.id, workspaceId));
+    const deleted = await this.deleteLocked(workspaceId, ownerId);
+    if (!deleted) {
+      // Deleted by a parallel request while this one released the slot.
+      throw new NotFoundException(
+        `Workspace with id "${workspaceId}" not found`,
+      );
+    }
+    const { scheduledPosts, ownedAfter } = deleted;
 
     await this.cancelPublishJobs(workspaceId, scheduledPosts);
     // A pending "Also move existing" would otherwise re-arm jobs for posts
@@ -788,6 +814,48 @@ export class WorkspaceService {
   }
 
   /**
+   * The DELETE, with the owner's workspace rows locked (FOR UPDATE, in id
+   * order so two deletes never deadlock) while it counts what is left. Two
+   * parallel deletes of an owner's last two workspaces then run one after
+   * the other, and the second sees zero left and cancels the plan; unlocked,
+   * each counted the other and neither cancelled. The lock is held for this
+   * one short transaction only: no provider or Redis call runs inside it.
+   *
+   * The scheduled posts are read here too, before the cascade takes them
+   * and the job ids recorded on them. null: the workspace is already gone.
+   */
+  private async deleteLocked(
+    workspaceId: string,
+    ownerId: string,
+  ): Promise<{
+    scheduledPosts: { id: string; jobId: string | null }[];
+    ownedAfter: number;
+  } | null> {
+    return this.db.transaction(async (tx) => {
+      const owned = await tx
+        .select({ id: workspace.id })
+        .from(workspace)
+        .where(eq(workspace.ownerId, ownerId))
+        .orderBy(workspace.id)
+        .for('update');
+      if (!owned.some((w) => w.id === workspaceId)) return null;
+
+      const scheduledPosts = await tx
+        .select({ id: posts.id, jobId: posts.jobId })
+        .from(posts)
+        .where(
+          and(
+            eq(posts.workspaceId, workspaceId),
+            eq(posts.status, 'scheduled'),
+          ),
+        );
+
+      await tx.delete(workspace).where(eq(workspace.id, workspaceId));
+      return { scheduledPosts, ownedAfter: owned.length - 1 };
+    });
+  }
+
+  /**
    * Both job ids a scheduled post can have (PostService.cancelPublishJobs):
    * the composer's `composer-publish-<id>` and whatever `posts.job_id`
    * names. A job left behind finds its post gone and does nothing, so a
@@ -824,8 +892,9 @@ export class WorkspaceService {
 
   /**
    * The owner's last workspace is gone: a paid plan would bill on for
-   * nothing, so it ends at the period end. FREE (or no live subscription)
-   * has nothing to cancel. Never throws: the workspace is already deleted.
+   * nothing, so it ends at the period end. isCancellable decides, the same
+   * rule the deletion preview's `cancelsPlan` warns from. Never throws: the
+   * workspace is already deleted.
    */
   private async cancelPaidPlan(
     ownerId: string,
@@ -834,13 +903,7 @@ export class WorkspaceService {
   ): Promise<void> {
     try {
       const subscription = await this.lookup.findByUserId(ownerId);
-      if (
-        !subscription ||
-        subscription.planCode === 'FREE' ||
-        subscription.status === 'canceled'
-      ) {
-        return;
-      }
+      if (!isCancellable(subscription, true)) return;
       await this.subscriptionService.cancelForAccount(ownerId, true, {
         changedByUserId: callerId,
       });

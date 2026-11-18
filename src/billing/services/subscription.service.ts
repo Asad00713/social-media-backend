@@ -26,11 +26,36 @@ import {
   plans,
   workspace,
   subscriptionChanges,
+  Subscription,
   NewSubscription,
   NewSubscriptionItem,
   NewWorkspaceUsage,
 } from '../../drizzle/schema';
 import type { CancelReason } from '../dto/billing.dto';
+
+/**
+ * Whether cancelling this subscription (at period end or now) would do
+ * anything. The one rule for "is there a plan to cancel": cancelForAccount
+ * acts on it, and the workspace deletion preview warns from it, so the
+ * warning and the action cannot disagree.
+ *
+ * Nothing to cancel: no subscription, the FREE plan (by code, never by
+ * name), already canceled, or already set to end at the period end when
+ * that is what is asked again.
+ */
+export function isCancellable(
+  subscription:
+    | Pick<Subscription, 'planCode' | 'status' | 'cancelAtPeriodEnd'>
+    | null
+    | undefined,
+  atPeriodEnd: boolean,
+): boolean {
+  if (!subscription) return false;
+  if (subscription.planCode === 'FREE') return false;
+  if (subscription.status === 'canceled') return false;
+  if (atPeriodEnd && subscription.cancelAtPeriodEnd) return false;
+  return true;
+}
 
 export interface CreateSubscriptionDto {
   workspaceId: string;
@@ -753,7 +778,11 @@ export class SubscriptionService {
       changedByUserId: userId,
     });
     if (outcome === 'none') {
-      throw new BadRequestException('Subscription is already canceled');
+      throw new BadRequestException(
+        cancelAtPeriodEnd && subscription.cancelAtPeriodEnd
+          ? 'Subscription is already set to cancel at the end of the billing period'
+          : 'Subscription is already canceled',
+      );
     }
 
     return cancelAtPeriodEnd
@@ -767,8 +796,9 @@ export class SubscriptionService {
    * Cancels the account's subscription at whichever provider bills it, with
    * no workspace in the picture: the route above, deleting the last owned
    * workspace, and deleting the account all come here. 'none' when there is
-   * nothing to cancel (no subscription, FREE, or already canceled); the
-   * provider is never called then.
+   * nothing to cancel (isCancellable: no subscription, FREE, already
+   * canceled, or already ending at the period end when that is asked again);
+   * the provider is never called and nothing is logged then.
    *
    * Every cancel is logged in `subscription_changes` with the reason, so a
    * churn report can read why.
@@ -779,11 +809,7 @@ export class SubscriptionService {
     opts: { reason?: CancelReason; changedByUserId?: string | null } = {},
   ): Promise<'cancelled' | 'none'> {
     const subscription = await this.accountSubscription(userId);
-    if (
-      !subscription ||
-      subscription.planCode === 'FREE' ||
-      subscription.status === 'canceled'
-    ) {
+    if (!subscription || !isCancellable(subscription, atPeriodEnd)) {
       return 'none';
     }
 

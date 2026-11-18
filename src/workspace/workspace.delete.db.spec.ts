@@ -74,17 +74,39 @@ function makeService(db: never, billing: Billing | null) {
   return { service, removed, subscriptionService, timezoneMove };
 }
 
-async function seedPlan(
+/**
+ * Makes sure the plan row exists WITHOUT renaming an existing one: the real
+ * names are 'Free Plan', 'Pro Plan' (plans.seed.ts), and the preview must be
+ * tested against those, never against a friendlier name the spec wrote.
+ * Answers the row's actual name.
+ */
+async function ensurePlan(
   client: PoolClient,
-  code: string,
-  name: string,
-): Promise<void> {
+  code: 'FREE' | 'PRO',
+): Promise<string> {
   await client.query(
     `INSERT INTO plans (code, name, base_price_cents, channels_per_workspace,
                         members_per_workspace, max_workspaces)
      VALUES ($1, $2, 0, 5, 5, 3)
-     ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name`,
-    [code, name],
+     ON CONFLICT (code) DO NOTHING`,
+    [code, code === 'FREE' ? 'Free Plan' : 'Pro Plan'],
+  );
+  const r = await client.query<{ name: string }>(
+    `SELECT name FROM plans WHERE code = $1`,
+    [code],
+  );
+  return r.rows[0].name;
+}
+
+async function seedSubscription(
+  client: PoolClient,
+  userId: string,
+  planCode: 'FREE' | 'PRO',
+  status: string,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO subscriptions (user_id, plan_code, status) VALUES ($1, $2, $3)`,
+    [userId, planCode, status],
   );
 }
 
@@ -174,9 +196,9 @@ async function codeOf(p: Promise<unknown>) {
 // NOT RUN in the lane worktree (no .env): the controller runs it after
 // merge-back with PLANNER_DB_TESTS=1.
 describeDb('WorkspaceService delete (database)', () => {
-  it('previews what a delete takes: live channels, scheduled posts, members and guests', async () => {
+  it('previews what a delete takes: live channels, scheduled posts, members and guests; no plan to cancel without a subscription', async () => {
     await withRollbackDb(MIGRATIONS, async (db, client) => {
-      await seedPlan(client, 'FREE', 'Free');
+      const freeName = await ensurePlan(client, 'FREE');
       const { ws } = await seedAcme(client);
       const { service } = makeService(db as never, null);
 
@@ -186,25 +208,76 @@ describeDb('WorkspaceService delete (database)', () => {
         members: 3,
         guests: 1,
         isLastOwnedWorkspace: true,
-        planName: 'Free',
+        cancelsPlan: false,
+        planName: freeName,
       });
     });
   });
 
-  it('previews isLastOwnedWorkspace false with a second owned workspace, and the paid plan name', async () => {
+  it('FREE subscription, last workspace: cancelsPlan false (by plan code, whatever the name)', async () => {
     await withRollbackDb(MIGRATIONS, async (db, client) => {
-      await seedPlan(client, 'PRO', 'Pro');
+      const freeName = await ensurePlan(client, 'FREE');
+      const { ws, ownerId } = await seedAcme(client);
+      await seedSubscription(client, ownerId, 'FREE', 'active');
+      const { service } = makeService(db as never, null);
+
+      const preview = await service.deletionPreview(ws);
+      expect(preview.isLastOwnedWorkspace).toBe(true);
+      expect(preview.cancelsPlan).toBe(false);
+      expect(preview.planName).toBe(freeName);
+    });
+  });
+
+  it('active PRO, last workspace: cancelsPlan true and the paid plan name', async () => {
+    await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const proName = await ensurePlan(client, 'PRO');
+      const { ws, ownerId } = await seedAcme(client);
+      await seedSubscription(client, ownerId, 'PRO', 'active');
+      const { service } = makeService(db as never, null);
+
+      const preview = await service.deletionPreview(ws);
+      expect(preview.cancelsPlan).toBe(true);
+      expect(preview.planName).toBe(proName);
+    });
+  });
+
+  it('paused PRO, last workspace: cancelsPlan true, as remove() cancels a paused plan too', async () => {
+    await withRollbackDb(MIGRATIONS, async (db, client) => {
+      await ensurePlan(client, 'FREE');
+      await ensurePlan(client, 'PRO');
+      const { ws, ownerId } = await seedAcme(client);
+      await seedSubscription(client, ownerId, 'PRO', 'paused');
+      const { service } = makeService(db as never, null);
+
+      expect((await service.deletionPreview(ws)).cancelsPlan).toBe(true);
+    });
+  });
+
+  it('active PRO with a second owned workspace: not last, cancelsPlan false', async () => {
+    await withRollbackDb(MIGRATIONS, async (db, client) => {
+      await ensurePlan(client, 'PRO');
       const { ws, ownerId } = await seedAcme(client);
       await seedSecondOwned(client, ownerId);
-      await client.query(
-        `INSERT INTO subscriptions (user_id, plan_code, status) VALUES ($1, 'PRO', 'active')`,
-        [ownerId],
-      );
+      await seedSubscription(client, ownerId, 'PRO', 'active');
       const { service } = makeService(db as never, null);
 
       const preview = await service.deletionPreview(ws);
       expect(preview.isLastOwnedWorkspace).toBe(false);
-      expect(preview.planName).toBe('Pro');
+      expect(preview.cancelsPlan).toBe(false);
+    });
+  });
+
+  it('a stored name with surrounding spaces is deleted by typing it trimmed', async () => {
+    await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const { ws, ownerId } = await seedAcme(client);
+      await client.query(
+        `UPDATE workspace SET name = '  Acme ' WHERE id = $1`,
+        [ws],
+      );
+      const { service } = makeService(db as never, null);
+
+      await service.remove(ws, ownerId, 'Acme');
+      expect(await workspaceExists(client, ws)).toBe(false);
     });
   });
 

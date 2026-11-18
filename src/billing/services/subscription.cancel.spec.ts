@@ -14,7 +14,7 @@ const mockDb = {
 jest.mock('../../drizzle/db', () => ({ db: mockDb }));
 
 import { BillingController } from '../billing.controller';
-import { SubscriptionService } from './subscription.service';
+import { SubscriptionService, isCancellable } from './subscription.service';
 
 /* The fakes stand in for drizzle's fluent builders; `any` is confined to them. */
 /* eslint-disable @typescript-eslint/no-unsafe-return */
@@ -41,6 +41,7 @@ const PRO = {
   planCode: 'PRO',
   status: 'active',
   currentPeriodEnd: new Date('2027-02-01T00:00:00Z'),
+  cancelAtPeriodEnd: false,
 };
 
 function make() {
@@ -140,6 +141,65 @@ describe('SubscriptionService.cancelForAccount', () => {
     expect(adapter.cancel).not.toHaveBeenCalled();
     expect(updated).toEqual([]);
     expect(inserted).toEqual([]);
+  });
+});
+
+describe('cancel twice', () => {
+  it('already set to end at the period end: none, no provider call, no second SUBSCRIPTION_CANCELLED row', async () => {
+    const { service, adapter, providers } = make();
+    selectResults = [[{ ...PRO, cancelAtPeriodEnd: true }]];
+
+    await expect(
+      service.cancelForAccount('owner-1', true, { reason: 'too_expensive' }),
+    ).resolves.toBe('none');
+    expect(providers.adapterForSubscription).not.toHaveBeenCalled();
+    expect(adapter.cancel).not.toHaveBeenCalled();
+    expect(updated).toEqual([]);
+    expect(inserted).toEqual([]);
+  });
+
+  it('already ending at the period end, an immediate cancel still goes through', async () => {
+    const { service, adapter } = make();
+    selectResults = [[{ ...PRO, cancelAtPeriodEnd: true }]];
+
+    await expect(service.cancelForAccount('owner-1', false)).resolves.toBe(
+      'cancelled',
+    );
+    expect(adapter.cancel).toHaveBeenCalledWith(11, false);
+  });
+
+  it('the route answers 400 when the plan is already ending', async () => {
+    const { service, adapter } = make();
+    const ending = { ...PRO, cancelAtPeriodEnd: true };
+    selectResults = [[{ id: 'ws-1' }], [ending], [ending]];
+
+    await expect(
+      service.cancelSubscription('ws-1', 'owner-1', true),
+    ).rejects.toMatchObject({
+      status: 400,
+      message:
+        'Subscription is already set to cancel at the end of the billing period',
+    });
+    expect(adapter.cancel).not.toHaveBeenCalled();
+  });
+});
+
+describe('isCancellable', () => {
+  it.each([
+    ['no subscription', null, true, false],
+    ['FREE by code', { ...PRO, planCode: 'FREE' }, true, false],
+    ['canceled', { ...PRO, status: 'canceled' }, true, false],
+    ['active PRO', PRO, true, true],
+    ['paused PRO', { ...PRO, status: 'paused' }, true, true],
+    [
+      'ending, asked at period end',
+      { ...PRO, cancelAtPeriodEnd: true },
+      true,
+      false,
+    ],
+    ['ending, asked now', { ...PRO, cancelAtPeriodEnd: true }, false, true],
+  ])('%s', (_label, sub, atPeriodEnd, expected) => {
+    expect(isCancellable(sub, atPeriodEnd)).toBe(expected);
   });
 });
 
