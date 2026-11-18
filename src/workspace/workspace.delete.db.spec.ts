@@ -241,15 +241,17 @@ describeDb('WorkspaceService delete (database)', () => {
     });
   });
 
-  it('paused PRO, last workspace: cancelsPlan true, as remove() cancels a paused plan too', async () => {
+  it('paused PRO, last workspace: cancelsPlan true (remove() cancels a paused plan too) and the PRO name', async () => {
     await withRollbackDb(MIGRATIONS, async (db, client) => {
       await ensurePlan(client, 'FREE');
-      await ensurePlan(client, 'PRO');
+      const proName = await ensurePlan(client, 'PRO');
       const { ws, ownerId } = await seedAcme(client);
       await seedSubscription(client, ownerId, 'PRO', 'paused');
       const { service } = makeService(db as never, null);
 
-      expect((await service.deletionPreview(ws)).cancelsPlan).toBe(true);
+      const preview = await service.deletionPreview(ws);
+      expect(preview.cancelsPlan).toBe(true);
+      expect(preview.planName).toBe(proName);
     });
   });
 

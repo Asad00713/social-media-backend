@@ -659,17 +659,23 @@ export class WorkspaceService {
           .groupBy(workspaceInvitation.role),
         this.countOwnedWorkspaces(existing.ownerId, workspaceId),
         this.ownerPlanName(existing.ownerId),
-        // The same row lookup.findByUserId reads for the cancel itself.
+        // The same row lookup.findByUserId reads for the cancel itself, with
+        // its own plan's name (left join: a missing plan row keeps the row).
         this.db
           .select({
             planCode: subscriptions.planCode,
             status: subscriptions.status,
             cancelAtPeriodEnd: subscriptions.cancelAtPeriodEnd,
+            planName: plans.name,
           })
           .from(subscriptions)
+          .leftJoin(plans, eq(plans.code, subscriptions.planCode))
           .where(eq(subscriptions.userId, existing.ownerId))
           .limit(1),
       ]);
+
+    // remove() cancels at the period end: the same `true` here.
+    const cancelsPlan = ownedOthers === 0 && isCancellable(sub, true);
 
     let members = 0;
     let guests = 0;
@@ -684,9 +690,11 @@ export class WorkspaceService {
       members,
       guests,
       isLastOwnedWorkspace: ownedOthers === 0,
-      // remove() cancels at the period end: the same `true` here.
-      cancelsPlan: ownedOthers === 0 && isCancellable(sub, true),
-      planName,
+      cancelsPlan,
+      // The plan being cancelled names itself: a paused, unpaid or incomplete
+      // PRO is not "live" for ownerPlanName, which would read the free plan
+      // and make the dialog say "The Free Plan plan is cancelled".
+      planName: cancelsPlan && sub?.planName ? sub.planName : planName,
     };
   }
 
