@@ -323,7 +323,33 @@ describeDb('WorkspaceTimezoneMoveService (database)', () => {
     });
   });
 
-  it('never moves a campaign post: a slot post or one carrying metadata.campaignId', async () => {
+  it('a composer post filed under a campaign (campaignId only, no slot) moves like any other', async () => {
+    await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const { ws, channel } = await karachiWorkspace(client);
+      // draft-organise.ts: a composer link carries the campaign id only.
+      const filed = await seedPost(client, ws, {
+        status: 'scheduled',
+        channelId: channel,
+        scheduledAt: KARACHI_9AM,
+        metadata: { campaignId: '00000000-0000-4000-8000-000000000001' },
+      });
+      const { moves, publishing } = makeServices(db as never);
+
+      const result = await moves.moveExisting(
+        ws,
+        'Asia/Karachi',
+        'America/New_York',
+      );
+
+      expect(result).toMatchObject({ rescheduledPosts: 1, unmovedPosts: 0 });
+      expect((await postRow(client, filed)).scheduled_at).toEqual(NEW_YORK_9AM);
+      expect(publishing.added.map((c) => c.opts.jobId)).toEqual([
+        `composer-publish-${filed}`,
+      ]);
+    });
+  });
+
+  it('never moves a campaign post: a slot post or one carrying metadata.campaignSlot', async () => {
     await withRollbackDb(MIGRATIONS, async (db, client) => {
       const { ws, channel } = await karachiWorkspace(client);
       const slotPost = await seedPost(client, ws, {
@@ -333,12 +359,20 @@ describeDb('WorkspaceTimezoneMoveService (database)', () => {
         jobId: 'campaign-job-1',
       });
       await seedCampaignSlot(client, ws, channel, slotPost);
-      // How an evergreen occurrence materialises: no slot row, the mark only.
+      // How an evergreen occurrence materialises (campaign-publishing
+      // .service.ts materializeAndEnqueue): no slot row, both marks.
       const evergreenPost = await seedPost(client, ws, {
         status: 'scheduled',
         channelId: channel,
         scheduledAt: KARACHI_9AM,
-        metadata: { campaignId: '00000000-0000-4000-8000-000000000001' },
+        metadata: {
+          campaignId: '00000000-0000-4000-8000-000000000001',
+          campaignSlot: {
+            date: '2027-01-15',
+            channelId: String(channel),
+            time: '09:00',
+          },
+        },
       });
       const { moves, publishing } = makeServices(db as never);
 

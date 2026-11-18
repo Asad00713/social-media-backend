@@ -26,8 +26,10 @@ const READ_BATCH = 500;
 /**
  * What "Also move existing" did. `queued` is true when the posts are being
  * moved on the queue; the counts are then the ones it will process.
- * `unmovedPosts` counts posts left at their old time because their publish
- * job could not be moved (logged; row and job still agree).
+ * `unmovedPosts`: posts left on their previous time. That is a post someone
+ * re-timed, published or cancelled while the move ran (theirs to keep), or
+ * one whose publish job could not be moved (logged; its row and its live job
+ * still agree). Inline only: a queued move answers 0 and logs its own.
  */
 export interface TimezoneMoveResult {
   movedChannels: number;
@@ -205,11 +207,21 @@ export class WorkspaceTimezoneMoveService {
           // claimMoveJobId frees the id for the next move.
           removeOnFail: { age: 7 * 24 * 3600 },
         });
-        return { movedChannels, queuedCount: plan.length, written: [] };
+        return {
+          movedChannels,
+          queuedCount: plan.length,
+          written: [],
+          notWritten: 0,
+        };
       }
 
       const written = await this.writePlan(tx, workspaceId, plan);
-      return { movedChannels, queuedCount: 0, written };
+      return {
+        movedChannels,
+        queuedCount: 0,
+        written,
+        notWritten: plan.length - written.length,
+      };
     });
 
     if (outcome.queuedCount > 0) {
@@ -221,12 +233,17 @@ export class WorkspaceTimezoneMoveService {
       };
     }
 
-    const { moved, unmoved } = await this.armAll(workspaceId, outcome.written);
+    const { moved, failed, skipped } = await this.armAll(
+      workspaceId,
+      outcome.written,
+    );
     return {
       movedChannels: outcome.movedChannels,
       rescheduledPosts: moved,
       queued: false,
-      unmovedPosts: unmoved,
+      // Planned but changed before the write, changed before the job moved,
+      // or whose job could not move.
+      unmovedPosts: outcome.notWritten + skipped + failed,
     };
   }
 
@@ -255,24 +272,39 @@ export class WorkspaceTimezoneMoveService {
     }
 
     const toArm: PlannedMove[] = [];
+    let leftAlone = 0;
     for (const p of data.posts) {
       const row = current.get(p.id);
-      if (!row?.scheduledAt || row.status !== 'scheduled') continue;
-      if ((row.targets ?? []).some(isHeld)) continue;
+      if (
+        !row?.scheduledAt ||
+        row.status !== 'scheduled' ||
+        (row.targets ?? []).some(isHeld)
+      ) {
+        leftAlone += 1;
+        continue;
+      }
       const move = { postId: p.id, from: new Date(p.from), at: new Date(p.to) };
       const at = new Date(row.scheduledAt).getTime();
       if (at === move.from.getTime()) {
         const [shifted] = await this.writePlan(this.db, workspaceId, [move]);
         if (shifted) toArm.push(shifted);
+        else leftAlone += 1;
       } else if (at === move.at.getTime()) {
         toArm.push(move);
+      } else {
+        leftAlone += 1;
       }
     }
 
-    const { moved, unmoved } = await this.armAll(workspaceId, toArm);
-    if (unmoved > 0) {
+    const { moved, failed, skipped } = await this.armAll(workspaceId, toArm);
+    if (leftAlone + skipped > 0) {
+      this.logger.warn(
+        `Time-zone move for workspace ${workspaceId}: ${leftAlone + skipped} posts left on their previous time (changed while the move ran)`,
+      );
+    }
+    if (failed > 0) {
       throw new Error(
-        `Time-zone move for workspace ${workspaceId}: ${unmoved} of ${toArm.length} jobs not moved`,
+        `Time-zone move for workspace ${workspaceId}: ${failed} of ${toArm.length} jobs not moved`,
       );
     }
     return moved;
@@ -285,27 +317,30 @@ export class WorkspaceTimezoneMoveService {
   private async armAll(
     workspaceId: string,
     moves: PlannedMove[],
-  ): Promise<{ moved: number; unmoved: number }> {
+  ): Promise<{ moved: number; failed: number; skipped: number }> {
     let moved = 0;
-    let unmoved = 0;
+    let failed = 0;
+    let skipped = 0;
     for (const move of moves) {
       try {
         const outcome = await this.reschedule.moveTo(
           workspaceId,
           move.postId,
           move.at,
-          { ifScheduledAt: move.at },
+          // The live job fires at `from` until this moves it.
+          { ifScheduledAt: move.at, previousAt: move.from },
         );
         if (outcome === 'moved') moved += 1;
+        else skipped += 1;
       } catch (error) {
-        unmoved += 1;
+        failed += 1;
         this.logger.error(
           `Time-zone move: post ${move.postId} left at its old time, its job could not be moved: ${errorText(error)}`,
         );
         await this.restore(workspaceId, move);
       }
     }
-    return { moved, unmoved };
+    return { moved, failed, skipped };
   }
 
   /** Puts a post whose job did not move back on the time its job has. */
@@ -358,7 +393,10 @@ export class WorkspaceTimezoneMoveService {
    * its own zone and its slot rows their own times. A bulk or drip slot links
    * its post through campaign_slot_content.post_id; every post a campaign
    * materialises (evergreen occurrences included) also carries
-   * metadata.campaignId.
+   * metadata.campaignSlot. A composer post the user merely filed under a
+   * campaign carries only metadata.campaignId (draft-organise.ts) and moves
+   * like any other post; campaignSlot is the codebase's own marker for a
+   * materialised one (workspace-posts.query.ts).
    */
   private async scheduledPosts(
     db: Executor,
@@ -377,7 +415,7 @@ export class WorkspaceTimezoneMoveService {
           eq(posts.status, 'scheduled'),
           isNotNull(posts.scheduledAt),
           sql`NOT EXISTS (SELECT 1 FROM campaign_slot_content c WHERE c.post_id = ${posts.id})`,
-          sql`(${posts.metadata} ->> 'campaignId') IS NULL`,
+          sql`(${posts.metadata} -> 'campaignSlot') IS NULL`,
         ),
       );
   }

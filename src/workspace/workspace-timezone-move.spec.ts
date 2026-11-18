@@ -1,4 +1,4 @@
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, Logger } from '@nestjs/common';
 import type { Job } from 'bullmq';
 import type { PostTarget } from '../drizzle/schema/posts.schema';
 import { PostRescheduleService } from '../posts/services/post-reschedule.service';
@@ -144,77 +144,136 @@ describe('planPostMoves', () => {
 });
 
 describe('PostRescheduleService.moveTo', () => {
-  function make(
-    row: { jobId: string | null } | undefined,
-    failRemoveOf?: string,
-  ) {
+  const OLD_AT = new Date(Date.now() + 30 * 60_000);
+
+  /**
+   * A db whose transaction records what happens in it, in order. `row` is
+   * what the locked read finds; `jobIdWriteFailures` makes the job id write
+   * fail that many times; `addFailures` makes `add` fail that many times.
+   */
+  function make(opts: {
+    row?: { jobId: string | null; scheduledAt: Date | null };
+    lockedJobs?: string[];
+    addFailures?: number;
+    jobIdWriteFailures?: number;
+  }) {
+    const calls: string[] = [];
     const sets: Record<string, unknown>[] = [];
-    const db = {
-      update: jest.fn(() => ({
-        set: jest.fn((values: Record<string, unknown>) => {
-          sets.push(values);
-          return {
-            where: jest.fn(() => ({
-              returning: jest.fn(() => Promise.resolve(row ? [row] : [])),
-              then: (resolve: (v: unknown) => void) => resolve(undefined),
-            })),
-          };
-        }),
+    let jobIdWriteFailures = opts.jobIdWriteFailures ?? 0;
+    let addFailures = opts.addFailures ?? 0;
+    let inTransaction = false;
+    const forUpdate = jest.fn(() => {
+      calls.push('lock-row');
+      return Promise.resolve(opts.row ? [opts.row] : []);
+    });
+    const setter = (values: Record<string, unknown>) => {
+      sets.push(values);
+      calls.push('jobId' in values ? 'write-jobId' : 'write-time');
+      return { where: () => Promise.resolve() };
+    };
+    const tx = {
+      select: jest.fn(() => ({
+        from: () => ({ where: () => ({ for: forUpdate }) }),
       })),
+      update: jest.fn(() => ({ set: setter })),
+      transaction: jest.fn(
+        (fn: (sp: { update: () => unknown }) => Promise<unknown>) => {
+          if (jobIdWriteFailures > 0) {
+            jobIdWriteFailures -= 1;
+            calls.push('write-jobId-failed');
+            return Promise.reject(new Error('connection reset'));
+          }
+          return fn({ update: () => ({ set: setter }) });
+        },
+      ),
+    };
+    const db = {
+      transaction: jest.fn(async (fn: (t: typeof tx) => Promise<unknown>) => {
+        inTransaction = true;
+        try {
+          return await fn(tx);
+        } finally {
+          inTransaction = false;
+        }
+      }),
     };
     const removed: string[] = [];
+    const added: { jobId: string; delay: number }[] = [];
     const queue = {
       getJob: jest.fn((id: string) =>
         Promise.resolve({
           remove: jest.fn(() => {
-            if (id === failRemoveOf) {
+            if (opts.lockedJobs?.includes(id)) {
               return Promise.reject(new Error('job is locked'));
             }
+            calls.push(`remove:${id}`);
             removed.push(id);
             return Promise.resolve();
           }),
         }),
       ),
-      add: jest.fn((_name: string, _data: unknown, opts: { jobId: string }) =>
-        Promise.resolve({ id: opts.jobId }),
+      add: jest.fn(
+        (
+          _name: string,
+          _data: unknown,
+          o: { jobId: string; delay: number; attempts: number },
+        ) => {
+          // Every job swap happens while the row lock is held.
+          expect(inTransaction).toBe(true);
+          if (addFailures > 0) {
+            addFailures -= 1;
+            calls.push('add-failed');
+            return Promise.reject(new Error('redis timeout'));
+          }
+          calls.push(`add:${o.jobId}`);
+          added.push({ jobId: o.jobId, delay: o.delay });
+          return Promise.resolve({ id: o.jobId });
+        },
       ),
     };
     const svc = new PostRescheduleService(db as never, queue as never);
-    return { svc, sets, removed, queue };
+    return { svc, calls, sets, removed, added, queue, forUpdate };
   }
 
-  it('moves the row, swaps both jobs for composer-publish-<id> and records it', async () => {
-    const { svc, sets, removed, queue } = make({ jobId: 'post-p1-old' });
+  it('locks the row, then swaps both jobs for composer-publish-<id> and records it, in one transaction', async () => {
+    const { svc, calls, sets, queue, forUpdate } = make({
+      row: { jobId: 'post-p1-old', scheduledAt: OLD_AT },
+    });
     const at = new Date(Date.now() + 60 * 60_000);
 
     await expect(svc.moveTo('ws-1', 'p1', at)).resolves.toBe('moved');
 
+    expect(forUpdate).toHaveBeenCalledWith('update');
+    expect(calls).toEqual([
+      'lock-row',
+      'write-time',
+      'remove:composer-publish-p1',
+      'remove:post-p1-old',
+      'add:composer-publish-p1',
+      'write-jobId',
+    ]);
     expect(sets[0]).toEqual({ scheduledAt: at });
-    expect(removed).toEqual(['composer-publish-p1', 'post-p1-old']);
-    expect(queue.add).toHaveBeenCalledTimes(1);
-    const [name, data, opts] = queue.add.mock.calls[0] as unknown as [
+    const [name, data, o] = queue.add.mock.calls[0] as unknown as [
       string,
       unknown,
       { jobId: string; delay: number; attempts: number },
     ];
     expect(name).toBe('publish');
     expect(data).toEqual({ postId: 'p1' });
-    expect(opts.jobId).toBe('composer-publish-p1');
-    expect(opts.jobId).not.toContain(':');
-    expect(opts.attempts).toBe(3);
-    expect(opts.delay).toBeGreaterThan(59 * 60_000);
+    expect(o.jobId).not.toContain(':');
+    expect(o.attempts).toBe(3);
+    expect(o.delay).toBeGreaterThan(59 * 60_000);
     expect(sets[1]).toEqual({ jobId: 'composer-publish-p1' });
   });
 
   it('a past instant gets delay 0', async () => {
-    const { svc, queue } = make({ jobId: null });
+    const { svc, added } = make({ row: { jobId: null, scheduledAt: OLD_AT } });
     await svc.moveTo('ws-1', 'p1', new Date(Date.now() - 1000));
-    const opts = queue.add.mock.calls[0][2] as unknown as { delay: number };
-    expect(opts.delay).toBe(0);
+    expect(added[0].delay).toBe(0);
   });
 
   it('touches no job of a post that is no longer movable', async () => {
-    const { svc, queue } = make(undefined);
+    const { svc, queue } = make({});
     await expect(
       svc.moveTo('ws-1', 'p1', new Date(), { ifScheduledAt: new Date() }),
     ).resolves.toBe('not-movable');
@@ -224,7 +283,10 @@ describe('PostRescheduleService.moveTo', () => {
 
   it('throws and adds nothing when the old composer job cannot be removed', async () => {
     // Adding the same id would hand back the OLD job at its OLD delay.
-    const { svc, queue } = make({ jobId: null }, 'composer-publish-p1');
+    const { svc, queue } = make({
+      row: { jobId: null, scheduledAt: OLD_AT },
+      lockedJobs: ['composer-publish-p1'],
+    });
     await expect(
       svc.moveTo('ws-1', 'p1', new Date(Date.now() + 60_000)),
     ).rejects.toThrow('composer-publish-p1');
@@ -232,11 +294,98 @@ describe('PostRescheduleService.moveTo', () => {
   });
 
   it('a recorded legacy job that cannot be removed is only logged', async () => {
-    const { svc, queue } = make({ jobId: 'post-p1-old' }, 'post-p1-old');
+    const { svc, added } = make({
+      row: { jobId: 'post-p1-old', scheduledAt: OLD_AT },
+      lockedJobs: ['post-p1-old'],
+    });
     await expect(
       svc.moveTo('ws-1', 'p1', new Date(Date.now() + 60_000)),
     ).resolves.toBe('moved');
-    expect(queue.add).toHaveBeenCalledTimes(1);
+    expect(added).toHaveLength(1);
+  });
+
+  it('add fails after the old job was removed: the old job goes back at previousAt, then it throws', async () => {
+    const { svc, calls, added } = make({
+      row: { jobId: null, scheduledAt: OLD_AT },
+      addFailures: 1,
+    });
+    const previousAt = new Date(Date.now() + 20 * 60_000);
+
+    await expect(
+      svc.moveTo('ws-1', 'p1', new Date(Date.now() + 90 * 60_000), {
+        previousAt,
+      }),
+    ).rejects.toThrow('redis timeout');
+
+    // Never jobless: the composer id is live again at the previous time.
+    expect(added).toHaveLength(1);
+    expect(added[0].jobId).toBe('composer-publish-p1');
+    expect(added[0].delay).toBeGreaterThan(19 * 60_000);
+    expect(added[0].delay).toBeLessThanOrEqual(20 * 60_000);
+    expect(calls).not.toContain('write-jobId');
+  });
+
+  it('without previousAt the old job goes back at the time the row had', async () => {
+    const { svc, added } = make({
+      row: { jobId: null, scheduledAt: OLD_AT },
+      addFailures: 1,
+    });
+    await expect(
+      svc.moveTo('ws-1', 'p1', new Date(Date.now() + 90 * 60_000)),
+    ).rejects.toThrow('redis timeout');
+    expect(added[0].delay).toBeGreaterThan(29 * 60_000);
+    expect(added[0].delay).toBeLessThanOrEqual(30 * 60_000);
+  });
+
+  it('when putting the old job back fails too, it logs an error and still throws', async () => {
+    const error = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+    const { svc, added } = make({
+      row: { jobId: null, scheduledAt: OLD_AT },
+      addFailures: 2,
+    });
+    await expect(
+      svc.moveTo('ws-1', 'p1', new Date(Date.now() + 90 * 60_000)),
+    ).rejects.toThrow('redis timeout');
+    expect(added).toHaveLength(0);
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('has NO publish job'),
+    );
+    error.mockRestore();
+  });
+
+  it('a failed job id write is retried once and keeps the new time', async () => {
+    const { svc, calls, sets } = make({
+      row: { jobId: null, scheduledAt: OLD_AT },
+      jobIdWriteFailures: 1,
+    });
+    const at = new Date(Date.now() + 60 * 60_000);
+    await expect(svc.moveTo('ws-1', 'p1', at)).resolves.toBe('moved');
+    expect(calls.slice(-2)).toEqual(['write-jobId-failed', 'write-jobId']);
+    // The time was written once, never rewound.
+    expect(sets.filter((v) => 'scheduledAt' in v)).toEqual([
+      { scheduledAt: at },
+    ]);
+  });
+
+  it('a job id write that fails twice is logged, not thrown: the live job is at the new time', async () => {
+    const error = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+    const { svc, sets } = make({
+      row: { jobId: null, scheduledAt: OLD_AT },
+      jobIdWriteFailures: 2,
+    });
+    const at = new Date(Date.now() + 60 * 60_000);
+    await expect(svc.moveTo('ws-1', 'p1', at)).resolves.toBe('moved');
+    expect(sets.filter((v) => 'scheduledAt' in v)).toEqual([
+      { scheduledAt: at },
+    ]);
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('could not be recorded'),
+    );
+    error.mockRestore();
   });
 });
 
@@ -362,6 +511,19 @@ describe('WorkspaceTimezoneMoveService.moveExisting: lock, check, then write', (
       }),
     ).resolves.toMatchObject({ queued: false });
     expect(writeFirst).toHaveBeenCalled();
+  });
+
+  it('a planned post re-timed before its write counts as unmoved', async () => {
+    // The fake write matches no row: the post no longer holds its `from`.
+    const { service } = make({ jobState: null, postCount: 2 });
+    await expect(
+      service.moveExisting('ws-1', 'Asia/Karachi', 'America/New_York'),
+    ).resolves.toEqual({
+      movedChannels: 0,
+      rescheduledPosts: 0,
+      queued: false,
+      unmovedPosts: 2,
+    });
   });
 
   it('queued: an unreachable queue refuses the move before any write', async () => {
