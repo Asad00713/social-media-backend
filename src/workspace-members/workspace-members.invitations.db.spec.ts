@@ -8,10 +8,14 @@ import {
 import type { AppLinks } from '../email/links/app-links';
 import { WorkspaceMembersService } from './workspace-members.service';
 
-// 0080: REMOVED status. 0088/0089: columns the full-row reads select, and
-// invitations.message. 0091: invited_by is NULLable, so a seeded row needs no
+// 0070/0071/0073: users columns every full users-row read selects (the
+// invite guards read one). 0080: REMOVED status. 0088/0089: columns the
+// full-row reads select, and invitations.message. 0091: invited_by is NULLable, so a seeded row needs no
 // real inviter.
 const MIGRATIONS = [
+  '0070_users_sessions_revoked_at.sql',
+  '0071_users_pending_email.sql',
+  '0073_users_email_changed_at.sql',
   '0080_member_soft_removal.sql',
   '0088_user_account_settings.sql',
   '0089_workspace_settings.sql',
@@ -321,8 +325,11 @@ describeDb('WorkspaceMembersService.getMembers lastActiveAt (database)', () => {
       const owner = await seedUser(client, 'Owner');
       const member = await seedUser(client, 'Member');
       const ws = await seedWorkspace(client, owner.id);
+      // last_login_at is `timestamp` (no zone) holding UTC wall-clock, as
+      // drizzle writes it. A ::timestamptz cast would store the harness's
+      // Karachi wall-clock instead, five hours off.
       await client.query(
-        `UPDATE users SET last_login_at = $2::timestamptz WHERE id = $1`,
+        `UPDATE users SET last_login_at = $2::timestamp WHERE id = $1`,
         [owner.id, '2026-11-16T08:30:00.000Z'],
       );
       await client.query(

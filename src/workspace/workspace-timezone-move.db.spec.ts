@@ -12,9 +12,12 @@ import {
 } from './workspace-timezone-move.service';
 import { WorkspaceService } from './workspace.service';
 
-// 0089 adds the workspace columns `update` writes and returns. The harness
-// applies each file twice, so it must stay idempotent.
-const MIGRATIONS = ['0089_workspace_settings.sql'];
+// 0089 adds the workspace columns `update` writes and returns. 0066 creates
+// insight_reports, which a zone change reschedules: without it that read
+// fails, and on the harness's single transaction the caught error aborts
+// every later query. The harness applies each file twice, so both must stay
+// idempotent.
+const MIGRATIONS = ['0066_insight_reports.sql', '0089_workspace_settings.sql'];
 
 // 09:00 in Karachi (UTC+5) and in New York (EST, UTC-5) on a January day.
 const KARACHI_9AM = new Date('2027-01-15T04:00:00Z');
