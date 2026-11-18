@@ -51,8 +51,21 @@ function zoneOffsetMinutes(timeZone: string, at: Date): number {
   return Math.round((asUtc - at.getTime()) / 60000);
 }
 
-/** Convert wall-clock `date` + `HH:mm[:ss]` in `timeZone` to a UTC Date.
- *  Falls back to treating the wall-clock as UTC if the zone is invalid. */
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Convert wall-clock `date` + `HH:mm[:ss]` in `timeZone` to a UTC Date.
+ * Falls back to treating the wall-clock as UTC if the zone is invalid.
+ *
+ * DST-correct. The offset is taken on both sides of any nearby transition
+ * (a day before and a day after the wall-clock read as UTC), and each
+ * candidate instant is kept only if it reads back as the same wall-clock:
+ * - one candidate fits: that instant;
+ * - both fit (a fall-back hour, the time happens twice): the FIRST
+ *   occurrence, the earlier instant;
+ * - none fits (a spring-forward gap, the time never happens): shifted
+ *   FORWARD by the gap, e.g. 02:30 on New York's spring day is 03:30 EDT.
+ */
 export function wallClockToUtc(
   date: string,
   time: string,
@@ -63,16 +76,27 @@ export function wallClockToUtc(
   if (!d || !t) return null;
   const [, y, mo, da] = d;
   const [, hh, mm, ss] = t;
-  // First approximation: treat the wall-clock as UTC.
+  // The wall-clock read as if it were UTC.
   const naiveUtcMs = Date.UTC(+y, +mo - 1, +da, +hh, +mm, ss ? +ss : 0, 0);
-  let offsetMin = 0;
+  let before: number;
+  let after: number;
   try {
-    offsetMin = zoneOffsetMinutes(timeZone, new Date(naiveUtcMs));
+    before = zoneOffsetMinutes(timeZone, new Date(naiveUtcMs - DAY_MS));
+    after = zoneOffsetMinutes(timeZone, new Date(naiveUtcMs + DAY_MS));
   } catch {
-    offsetMin = 0; // invalid zone → UTC fallback
+    return new Date(naiveUtcMs); // invalid zone → UTC fallback
   }
-  // Real UTC instant = wall-clock minus the zone's offset.
-  return new Date(naiveUtcMs - offsetMin * 60000);
+  // Real UTC instant = wall-clock minus the zone's offset at that instant.
+  const fits = (offsetMin: number): boolean => {
+    const at = new Date(naiveUtcMs - offsetMin * 60000);
+    return zoneOffsetMinutes(timeZone, at) === offsetMin;
+  };
+  const candidates = [...new Set([before, after])]
+    .filter(fits)
+    .map((offsetMin) => naiveUtcMs - offsetMin * 60000);
+  if (candidates.length > 0) return new Date(Math.min(...candidates));
+  // A gap: the pre-transition offset lands the same distance past it.
+  return new Date(naiveUtcMs - before * 60000);
 }
 
 /** The wall-clock date (`yyyy-MM-dd`) and time (`HH:mm:ss`) of `at` in

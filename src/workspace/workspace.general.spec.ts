@@ -7,6 +7,10 @@ import type { CloudflareR2Service } from '../media/cloudflare-r2.service';
 import { WorkspaceService } from './workspace.service';
 import type { WorkspaceTimezoneMoveService } from './workspace-timezone-move.service';
 
+// A time zone change also reschedules the Insights reports (own spec:
+// workspace.timezone-reports.spec.ts); not the unit here.
+jest.mock('../insights/reports/lib/reschedule');
+
 // The General rules that need no database: what update refuses before it
 // writes, and what it never hands to the row. The DB twin of this file
 // (workspace.general.db.spec.ts) proves the same against real rows.
@@ -18,7 +22,12 @@ const EXISTING = {
   timezone: 'UTC',
 };
 const OWN_LOGO = 'https://cdn.test/workspace-logos/ws-1/u/1-abc.png';
-const MOVED = { movedChannels: 2, rescheduledPosts: 1, queued: false };
+const MOVED = {
+  movedChannels: 2,
+  rescheduledPosts: 1,
+  queued: false,
+  unmovedPosts: 0,
+};
 
 function makeService() {
   const returning = jest.fn();

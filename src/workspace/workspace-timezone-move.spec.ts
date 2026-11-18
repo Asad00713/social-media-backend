@@ -45,8 +45,8 @@ describe('planPostMoves', () => {
         NOW,
       ),
     ).toEqual([
-      { postId: 'a', at: NEW_YORK_9AM },
-      { postId: 'b', at: NEW_YORK_9AM },
+      { postId: 'a', from: KARACHI_9AM, at: NEW_YORK_9AM },
+      { postId: 'b', from: PARIS_9AM, at: NEW_YORK_9AM },
     ]);
   });
 
@@ -123,7 +123,9 @@ describe('planPostMoves', () => {
         'Asia/Karachi',
         NOW,
       ),
-    ).toEqual([{ postId: 'a', at: NOW }]);
+    ).toEqual([
+      { postId: 'a', from: new Date('2026-11-17T14:00:00Z'), at: NOW },
+    ]);
   });
 
   it('keeps the milliseconds of the stored time', () => {
@@ -141,7 +143,10 @@ describe('planPostMoves', () => {
 });
 
 describe('PostRescheduleService.moveTo', () => {
-  function make(row: { jobId: string | null } | undefined) {
+  function make(
+    row: { jobId: string | null } | undefined,
+    failRemoveOf?: string,
+  ) {
     const sets: Record<string, unknown>[] = [];
     const db = {
       update: jest.fn(() => ({
@@ -161,6 +166,9 @@ describe('PostRescheduleService.moveTo', () => {
       getJob: jest.fn((id: string) =>
         Promise.resolve({
           remove: jest.fn(() => {
+            if (id === failRemoveOf) {
+              return Promise.reject(new Error('job is locked'));
+            }
             removed.push(id);
             return Promise.resolve();
           }),
@@ -178,7 +186,7 @@ describe('PostRescheduleService.moveTo', () => {
     const { svc, sets, removed, queue } = make({ jobId: 'post-p1-old' });
     const at = new Date(Date.now() + 60 * 60_000);
 
-    await svc.moveTo('ws-1', 'p1', at);
+    await expect(svc.moveTo('ws-1', 'p1', at)).resolves.toBe('moved');
 
     expect(sets[0]).toEqual({ scheduledAt: at });
     expect(removed).toEqual(['composer-publish-p1', 'post-p1-old']);
@@ -204,11 +212,30 @@ describe('PostRescheduleService.moveTo', () => {
     expect(opts.delay).toBe(0);
   });
 
-  it('re-arms nothing for a post that is no longer scheduled', async () => {
+  it('touches no job of a post that is no longer movable', async () => {
     const { svc, queue } = make(undefined);
-    await svc.moveTo('ws-1', 'p1', new Date());
+    await expect(
+      svc.moveTo('ws-1', 'p1', new Date(), { ifScheduledAt: new Date() }),
+    ).resolves.toBe('not-movable');
     expect(queue.getJob).not.toHaveBeenCalled();
     expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('throws and adds nothing when the old composer job cannot be removed', async () => {
+    // Adding the same id would hand back the OLD job at its OLD delay.
+    const { svc, queue } = make({ jobId: null }, 'composer-publish-p1');
+    await expect(
+      svc.moveTo('ws-1', 'p1', new Date(Date.now() + 60_000)),
+    ).rejects.toThrow('composer-publish-p1');
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('a recorded legacy job that cannot be removed is only logged', async () => {
+    const { svc, queue } = make({ jobId: 'post-p1-old' }, 'post-p1-old');
+    await expect(
+      svc.moveTo('ws-1', 'p1', new Date(Date.now() + 60_000)),
+    ).resolves.toBe('moved');
+    expect(queue.add).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -256,7 +283,7 @@ describe('WorkspaceTimezoneMoveService.assertNoMoveInProgress', () => {
 });
 
 describe('WorkspaceTimezoneMoveProcessor', () => {
-  it("hands the job data and the job's creation time to the service", async () => {
+  it('hands the job data to the service', async () => {
     const processQueued = jest.fn().mockResolvedValue(7);
     const processor = new WorkspaceTimezoneMoveProcessor({
       processQueued,
@@ -266,6 +293,13 @@ describe('WorkspaceTimezoneMoveProcessor', () => {
       fromZone: 'Asia/Karachi',
       toZone: 'America/New_York',
       channelZones: { '1': 'Asia/Karachi' },
+      posts: [
+        {
+          id: 'p1',
+          from: KARACHI_9AM.toISOString(),
+          to: NEW_YORK_9AM.toISOString(),
+        },
+      ],
     };
 
     await expect(
@@ -274,9 +308,6 @@ describe('WorkspaceTimezoneMoveProcessor', () => {
         timestamp: 1_700_000_000_000,
       } as Job<TimezoneMoveJob>),
     ).resolves.toBe(7);
-    expect(processQueued).toHaveBeenCalledWith(
-      data,
-      new Date(1_700_000_000_000),
-    );
+    expect(processQueued).toHaveBeenCalledWith(data);
   });
 });

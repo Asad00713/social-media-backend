@@ -17,10 +17,7 @@ export class WorkspaceTimezoneMoveProcessor extends WorkerHost {
   }
 
   async process(job: Job<TimezoneMoveJob>): Promise<number> {
-    const moved = await this.moves.processQueued(
-      job.data,
-      new Date(job.timestamp),
-    );
+    const moved = await this.moves.processQueued(job.data);
     this.logger.log(
       `Time-zone move for workspace ${job.data.workspaceId}: ${moved} posts re-armed in ${job.data.toZone}`,
     );
