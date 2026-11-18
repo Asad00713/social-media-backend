@@ -196,8 +196,9 @@ describe('AccountDeletionService.deleteAccount', () => {
   });
 
   describe('avatar removal after commit', () => {
+    // In u1's own folder: avatars/<safeKeyUserId('u1')>/.
     const URL =
-      'https://cdn.test/avatars/abc/1700000000000-0123456789abcdef01234567.png';
+      'https://cdn.test/avatars/u1/1700000000000-0123456789abcdef01234567.png';
 
     it('deletes exactly the object the avatar URL names, as an avatar key', async () => {
       const { service, r2 } = setup({ avatarUrl: URL });
@@ -205,7 +206,7 @@ describe('AccountDeletionService.deleteAccount', () => {
       expect(r2.isOwnPublicUrl).toHaveBeenCalledWith(URL, 'avatar');
       expect(r2.deleteObject).toHaveBeenCalledTimes(1);
       expect(r2.deleteObject).toHaveBeenCalledWith(
-        'avatars/abc/1700000000000-0123456789abcdef01234567.png',
+        'avatars/u1/1700000000000-0123456789abcdef01234567.png',
       );
     });
 
@@ -231,6 +232,27 @@ describe('AccountDeletionService.deleteAccount', () => {
       });
       await foreign.service.deleteAccount('u1', SELF('old@example.com'));
       expect(foreign.r2.deleteObject).not.toHaveBeenCalled();
+    });
+
+    it("an avatar in ANOTHER user's folder is never deleted, and the account delete still succeeds", async () => {
+      // u1 had set their avatar to u2's picture (a valid avatar key of ours).
+      const theirs =
+        'https://cdn.test/avatars/u2/1700000000000-0123456789abcdef01234567.png';
+      const { service, db, r2 } = setup({ avatarUrl: theirs });
+      await expect(
+        service.deleteAccount('u1', SELF('old@example.com')),
+      ).resolves.toBeUndefined();
+      expect(db.transaction).toHaveBeenCalledTimes(1);
+      expect(r2.deleteObject).not.toHaveBeenCalled();
+    });
+
+    it('a folder that only starts with the same characters is not ours', async () => {
+      // 'u1' must match the whole segment, not a prefix of 'u10'.
+      const near =
+        'https://cdn.test/avatars/u10/1700000000000-0123456789abcdef01234567.png';
+      const { service, r2 } = setup({ avatarUrl: near });
+      await service.deleteAccount('u1', SELF('old@example.com'));
+      expect(r2.deleteObject).not.toHaveBeenCalled();
     });
 
     it('a refused delete (email mismatch) never touches storage', async () => {

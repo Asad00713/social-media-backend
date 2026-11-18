@@ -6,7 +6,10 @@ import {
 } from '../planner/testing/rollback-db';
 import type { SubscriptionService } from '../billing/services/subscription.service';
 import type { UsageService } from '../billing/services/usage.service';
-import type { CloudflareR2Service } from '../media/cloudflare-r2.service';
+import {
+  avatarKeyFolder,
+  type CloudflareR2Service,
+} from '../media/cloudflare-r2.service';
 import { AccountDeletionService } from './account-deletion.service';
 
 // 0080: REMOVED memberships. 0088: users.deleted_at and preferences.
@@ -530,6 +533,13 @@ describeDb('AccountDeletionService (database)', () => {
   it('an own R2 avatar is deleted by its exact key, read under the lock', async () => {
     await withRollbackDb(MIGRATIONS, async (db, client) => {
       const me = await seedUser(client);
+      // An avatar in the person's own folder, as an upload would key it.
+      const key = `${avatarKeyFolder(me.id)}1700000000000-0123456789abcdef01234567.png`;
+      const url = `https://x.test/${key}`;
+      await client.query(`UPDATE users SET avatar_url = $2 WHERE id = $1`, [
+        me.id,
+        url,
+      ]);
       const { service, r2 } = makeService(db);
       r2.isOwnPublicUrl.mockReturnValue(true);
       r2.keyFromPublicUrl.mockImplementation((url: string) =>
@@ -542,12 +552,9 @@ describeDb('AccountDeletionService (database)', () => {
         actorId: me.id,
       });
 
-      // seedUser's avatar_url, as the row held it before anonymising.
-      expect(r2.isOwnPublicUrl).toHaveBeenCalledWith(
-        'https://x.test/a.png',
-        'avatar',
-      );
-      expect(r2.deleteObject.mock.calls).toEqual([['a.png']]);
+      // The avatar_url as the row held it before anonymising.
+      expect(r2.isOwnPublicUrl).toHaveBeenCalledWith(url, 'avatar');
+      expect(r2.deleteObject.mock.calls).toEqual([[key]]);
       expect((await userRow(client, me.id)).avatar_url).toBeNull();
     });
   });

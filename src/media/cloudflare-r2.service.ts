@@ -65,6 +65,21 @@ const KIND_TO_PREFIX: Record<R2MediaKind, string> = {
   'workspace-logo': 'workspace-logos',
 };
 
+/**
+ * The user segment of every key this service issues: the id with anything
+ * but letters, digits and '-' removed, cut to 12 characters. One rule, so a
+ * caller that must recognise a person's own keys (the account delete) builds
+ * exactly the segment the upload did.
+ */
+export function safeKeyUserId(userId: string): string {
+  return userId.replace(/[^a-zA-Z0-9-]/g, '').slice(0, 12);
+}
+
+/** The folder a person's avatars are uploaded into: `avatars/<safeUserId>/`. */
+export function avatarKeyFolder(userId: string): string {
+  return `${KIND_TO_PREFIX.avatar}/${safeKeyUserId(userId)}/`;
+}
+
 const MAX_BYTES: Record<R2MediaKind, number> = {
   image: 10 * 1024 * 1024, // 10 MB
   voice: 25 * 1024 * 1024, // 25 MB (~25 min of opus @ 128kbps)
@@ -237,7 +252,7 @@ export class CloudflareR2Service {
 
     const ext = this.extensionFor(contentType, filename);
     const id = crypto.randomBytes(12).toString('hex');
-    const safeUserId = userId.replace(/[^a-zA-Z0-9-]/g, '').slice(0, 12);
+    const safeUserId = safeKeyUserId(userId);
     // An avatar belongs to the person, not to a workspace — the same face
     // follows them into every workspace they join — so its key leaves the
     // workspace segment out. Every other kind is workspace media, and its

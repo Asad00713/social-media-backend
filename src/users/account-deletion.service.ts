@@ -35,7 +35,10 @@ import {
 } from '../drizzle/schema';
 import { SubscriptionService } from '../billing/services/subscription.service';
 import { UsageService } from '../billing/services/usage.service';
-import { CloudflareR2Service } from '../media/cloudflare-r2.service';
+import {
+  avatarKeyFolder,
+  CloudflareR2Service,
+} from '../media/cloudflare-r2.service';
 import { normalizeEmail } from './normalize-email';
 
 type Executor = DbType | Parameters<Parameters<DbType['transaction']>[0]>[0];
@@ -180,8 +183,11 @@ export class AccountDeletionService {
   /**
    * Deletes the one object the avatar URL names, never a prefix: the
    * `avatars/<12 chars>/` folder is not guaranteed unique per user. Only a URL
-   * that is really one of our avatar keys is touched. Older avatars the
-   * person replaced earlier are left to the orphan sweep. Never throws.
+   * that is really one of our avatar keys AND sits in this person's own
+   * folder is touched: anyone can set their avatar to someone else's URL, and
+   * deleting their account must not delete the other person's picture. Older
+   * avatars the person replaced earlier are left to the orphan sweep. Never
+   * throws.
    */
   private async deleteAvatar(
     userId: string,
@@ -189,7 +195,7 @@ export class AccountDeletionService {
   ): Promise<void> {
     if (!avatarUrl || !this.r2.isOwnPublicUrl(avatarUrl, 'avatar')) return;
     const key = this.r2.keyFromPublicUrl(avatarUrl);
-    if (!key) return;
+    if (!key || !key.startsWith(avatarKeyFolder(userId))) return;
     try {
       await this.r2.deleteObject(key);
     } catch (error) {
