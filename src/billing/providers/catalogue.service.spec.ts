@@ -78,3 +78,25 @@ describe('CatalogueService.resolveRef', () => {
     ).rejects.toThrow(/lemonsqueezy.*MAX.*EXTRA_MEMBER/i);
   });
 });
+
+describe('CatalogueService display names', () => {
+  it('reads the plan name for an invoice line', async () => {
+    const { db } = makeDb([[{ name: 'Pro' }]]);
+    await expect(
+      new CatalogueService(db as never).planName('PRO'),
+    ).resolves.toBe('Pro');
+  });
+
+  it('falls back to the plan code when the plan row is gone', async () => {
+    const { db } = makeDb([[]]);
+    await expect(
+      new CatalogueService(db as never).planName('OLD'),
+    ).resolves.toBe('OLD');
+  });
+
+  it('names add-ons for people, not by their item type', () => {
+    const svc = new CatalogueService({} as never);
+    expect(svc.addonName('EXTRA_CHANNEL')).toBe('Extra Channel');
+    expect(svc.addonName('EXTRA_MEMBER')).toBe('Extra Team Member');
+  });
+});

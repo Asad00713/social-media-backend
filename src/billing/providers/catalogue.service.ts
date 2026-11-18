@@ -9,6 +9,7 @@ import {
   PaymentProvider,
   ProviderItemType,
 } from '../../drizzle/schema';
+import { ADDON_DISPLAY_NAMES } from '../../stripe/price-provisioning';
 
 /**
  * What a plan or add-on is called at a given provider.
@@ -55,6 +56,24 @@ export class CatalogueService {
       `A ${provider} price for ${planCode} / ${itemType} is not provisioned. ` +
         `Add a provider_prices row for it.`,
     );
+  }
+
+  /**
+   * The name an invoice line shows for a plan: `plans.name` ("Pro"), falling
+   * back to the code when the plan row is gone.
+   */
+  async planName(planCode: string): Promise<string> {
+    const rows = await this.db
+      .select({ name: plans.name })
+      .from(plans)
+      .where(eq(plans.code, planCode))
+      .limit(1);
+    return rows[0]?.name ?? planCode;
+  }
+
+  /** "Extra Channel" for `EXTRA_CHANNEL`; the raw code for an unknown type. */
+  addonName(itemType: ProviderItemType): string {
+    return ADDON_DISPLAY_NAMES[itemType] ?? itemType;
   }
 
   private async legacyStripeRef(

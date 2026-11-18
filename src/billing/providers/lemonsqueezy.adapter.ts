@@ -1,4 +1,5 @@
 import {
+  BadGatewayException,
   BadRequestException,
   Inject,
   Injectable,
@@ -16,8 +17,11 @@ import {
 import { CatalogueService } from './catalogue.service';
 import { LemonSqueezyClient } from './lemonsqueezy.client';
 import {
+  BillingProfile,
+  PortalIntent,
   PROVIDER_ITEM_ORDER,
   PaymentProviderAdapter,
+  ProviderInvoice,
   PurchaseResult,
 } from './payment-provider.interface';
 
@@ -44,6 +48,45 @@ interface LsSubscriptionResponse {
     };
   };
 }
+
+interface LsPortalResponse {
+  data?: {
+    attributes?: {
+      customer_id?: number | string;
+      card_brand?: string | null;
+      card_last_four?: string | null;
+      urls?: {
+        customer_portal?: string | null;
+        update_payment_method?: string | null;
+      };
+    };
+  };
+}
+interface LsInvoicesResponse {
+  data?: {
+    id: string | number;
+    attributes?: {
+      created_at?: string;
+      status?: string;
+      billing_reason?: string;
+      total?: number;
+      currency?: string;
+      urls?: { invoice_url?: string | null };
+    };
+  }[];
+}
+interface LsCustomerResponse {
+  data?: {
+    attributes?: {
+      name?: string | null;
+      email?: string | null;
+      country?: string | null;
+    };
+  };
+}
+
+/** An unpaid renewal this old is a failed charge, not one still in flight. */
+const RENEWAL_GRACE_MS = 60 * 60 * 1000;
 
 /**
  * Lemon Squeezy, expressed as our billing intent.
@@ -297,6 +340,165 @@ export class LemonSqueezyAdapter implements PaymentProviderAdapter {
         })
         .where(eq(providerSubscriptions.id, row.id));
     }
+  }
+
+  // ------------------------------------------------- portal, invoices, profile
+
+  /**
+   * Lemon Squeezy's portal URLs are per SUBSCRIPTION and signed, and the base
+   * plan's subscription is the one the customer thinks of as "my account".
+   * A response without the URL is the provider's fault, not the caller's, so
+   * it is a 502 with a machine code rather than a 500. The portal has no return
+   * URL to set here, so `_opts.workspaceId` is accepted and ignored.
+   */
+  async createPortalLink(
+    subscriptionId: number,
+    intent: PortalIntent,
+    _opts?: { workspaceId?: string },
+  ): Promise<{ url: string }> {
+    const base = await this.requireRow(subscriptionId, 'BASE_PLAN');
+    const res = await this.client.get<LsPortalResponse>(
+      `subscriptions/${base.providerSubscriptionId}`,
+    );
+
+    const urls = res?.data?.attributes?.urls;
+    const url =
+      intent === 'update_payment_method'
+        ? urls?.update_payment_method
+        : urls?.customer_portal;
+
+    if (!url) {
+      this.logger.error(
+        `Lemon Squeezy returned no ${intent} url for subscription ${base.providerSubscriptionId}.`,
+      );
+      throw new BadGatewayException({
+        statusCode: 502,
+        error: 'Bad Gateway',
+        code: 'PORTAL_UNAVAILABLE',
+        message: 'The billing portal is not available right now.',
+      });
+    }
+    return { url };
+  }
+
+  /**
+   * An account is several Lemon Squeezy subscriptions, so its invoices are
+   * several lists. Each is fetched with the page size the caller wants (the
+   * newest `limit` of the merged list can come entirely from one of them),
+   * then merged newest first and cut to `limit`.
+   */
+  async listInvoices(
+    subscriptionId: number,
+    limit: number,
+  ): Promise<ProviderInvoice[]> {
+    const rows = (await this.rowsFor(subscriptionId)).filter(
+      (r) => r.providerSubscriptionId,
+    );
+    if (rows.length === 0) return [];
+
+    const { planCode } = await this.accountOf(subscriptionId);
+    const planName = await this.catalogue.planName(planCode);
+    const now = Date.now();
+
+    const lists = await Promise.all(
+      rows.map(async (row) => {
+        const query = new URLSearchParams({
+          'filter[subscription_id]': String(row.providerSubscriptionId),
+          'page[size]': String(limit),
+        });
+        const res = await this.client.get<LsInvoicesResponse>(
+          `subscription-invoices?${query.toString()}`,
+        );
+        const description =
+          row.itemType === 'BASE_PLAN'
+            ? `${planName} plan`
+            : this.catalogue.addonName(row.itemType as ProviderItemType);
+
+        return (res?.data ?? []).map((inv) =>
+          this.toInvoice(inv, description, now),
+        );
+      }),
+    );
+
+    return lists
+      .flat()
+      .sort((a, b) => Date.parse(b.date) - Date.parse(a.date))
+      .slice(0, limit);
+  }
+
+  async getBillingProfile(subscriptionId: number): Promise<BillingProfile> {
+    const base = await this.requireRow(subscriptionId, 'BASE_PLAN');
+    const sub = await this.client.get<LsPortalResponse>(
+      `subscriptions/${base.providerSubscriptionId}`,
+    );
+    const attrs = sub?.data?.attributes ?? {};
+
+    const card =
+      attrs.card_brand || attrs.card_last_four
+        ? {
+            brand: attrs.card_brand ?? null,
+            last4: attrs.card_last_four ?? null,
+          }
+        : null;
+
+    let billingDetails: BillingProfile['billingDetails'] = null;
+    if (attrs.customer_id !== undefined && attrs.customer_id !== null) {
+      const customer = await this.client.get<LsCustomerResponse>(
+        `customers/${attrs.customer_id}`,
+      );
+      const c = customer?.data?.attributes;
+      if (c) {
+        billingDetails = {
+          name: c.name ?? null,
+          email: c.email ?? null,
+          country: c.country ?? null,
+        };
+      }
+    }
+
+    return { card, billingDetails };
+  }
+
+  private toInvoice(
+    inv: NonNullable<LsInvoicesResponse['data']>[number],
+    description: string,
+    now: number,
+  ): ProviderInvoice {
+    const a = inv.attributes ?? {};
+    const date = a.created_at ?? new Date(0).toISOString();
+
+    let status: ProviderInvoice['status'];
+    switch (a.status) {
+      case 'paid':
+        status = 'paid';
+        break;
+      case 'refunded':
+      case 'partial_refund':
+        status = 'refunded';
+        break;
+      case 'void':
+        status = 'void';
+        break;
+      default:
+        // A renewal still unpaid after the grace window has failed to charge;
+        // the first invoice of a checkout is simply still being processed.
+        status =
+          a.status === 'pending' &&
+          a.billing_reason === 'renewal' &&
+          now - Date.parse(date) > RENEWAL_GRACE_MS
+            ? 'failed'
+            : 'pending';
+    }
+
+    return {
+      id: String(inv.id),
+      date,
+      description,
+      amountCents: a.total ?? 0,
+      currency: a.currency ?? 'USD',
+      status,
+      downloadUrl: a.urls?.invoice_url ?? null,
+    };
   }
 
   // ------------------------------------------------------------------ shared

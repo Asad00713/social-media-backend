@@ -6,6 +6,9 @@ import {
 
 const BASE = 'https://api.lemonsqueezy.com/v1/';
 
+/** A call that takes longer than this is cancelled, not left to hang. */
+export const LS_REQUEST_TIMEOUT_MS = 10_000;
+
 /**
  * Thin HTTP client for the Lemon Squeezy API.
  *
@@ -32,15 +35,26 @@ export class LemonSqueezyClient {
     path: string,
     body?: unknown,
   ): Promise<T> {
-    const res = await fetch(BASE + path, {
-      method,
-      headers: {
-        Accept: 'application/vnd.api+json',
-        'Content-Type': 'application/vnd.api+json',
-        Authorization: `Bearer ${this.key()}`,
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    let res: Response;
+    try {
+      res = await fetch(BASE + path, {
+        method,
+        headers: {
+          Accept: 'application/vnd.api+json',
+          'Content-Type': 'application/vnd.api+json',
+          Authorization: `Bearer ${this.key()}`,
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: AbortSignal.timeout(LS_REQUEST_TIMEOUT_MS),
+      });
+    } catch (err) {
+      if ((err as { name?: unknown } | null)?.name === 'TimeoutError') {
+        throw new InternalServerErrorException(
+          `Lemon Squeezy ${method} ${path} timed out after ${LS_REQUEST_TIMEOUT_MS}ms`,
+        );
+      }
+      throw err;
+    }
 
     const text = await res.text();
     const parsed: unknown = text ? JSON.parse(text) : {};

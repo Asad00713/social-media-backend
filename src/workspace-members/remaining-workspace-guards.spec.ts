@@ -138,6 +138,9 @@ const EXPECTED: Array<
       getSubscriptionHistory: 'billing:manage',
       getWorkspaceInvoices: 'billing:manage',
       getUpcomingInvoice: 'billing:manage',
+      getBillingOverview: 'billing:manage',
+      getProviderInvoices: 'billing:manage',
+      createPortalLink: 'billing:manage',
     },
   ],
   [

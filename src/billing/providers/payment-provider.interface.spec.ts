@@ -3,6 +3,8 @@ import {
   PROVIDER_ITEM_ORDER,
   PurchaseResult,
 } from './payment-provider.interface';
+import { LemonSqueezyAdapter } from './lemonsqueezy.adapter';
+import { StripeAdapter } from './stripe.adapter';
 
 describe('isCheckoutRequired', () => {
   it('is true when the provider handed back a checkout url', () => {
@@ -40,5 +42,25 @@ describe('PROVIDER_ITEM_ORDER', () => {
       ].sort(),
     );
     expect(new Set(PROVIDER_ITEM_ORDER).size).toBe(PROVIDER_ITEM_ORDER.length);
+  });
+});
+
+describe('PaymentProviderAdapter portal, invoices and billing profile', () => {
+  // Reading the prototype is what proves the method exists on the CLASS, so a
+  // provider added later cannot satisfy the interface with a missing method
+  // that only a runtime call would reveal.
+  const METHODS = ['createPortalLink', 'listInvoices', 'getBillingProfile'];
+
+  it.each([
+    ['LemonSqueezyAdapter', LemonSqueezyAdapter],
+    ['StripeAdapter', StripeAdapter],
+  ])('%s implements all three', (_name, adapter) => {
+    for (const method of METHODS) {
+      expect(
+        typeof (adapter.prototype as unknown as Record<string, unknown>)[
+          method
+        ],
+      ).toBe('function');
+    }
   });
 });
