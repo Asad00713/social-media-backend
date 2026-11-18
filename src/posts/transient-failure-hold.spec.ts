@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   HELD_REASON,
+  releaseTarget,
   HELD_REASON_DISCONNECTED,
   HELD_REASON_RATE_LIMITED,
   HELD_REASON_TRANSIENT,
@@ -11,6 +12,8 @@ import {
   isSelfReleasing,
   TRANSIENT_RETRY_DELAY_MS,
 } from './lib/held-targets';
+import { reattemptTarget } from './lib/held-targets';
+import { targetStatusOf } from './lib/post-status';
 import type { PostTarget } from '../drizzle/schema/posts.schema';
 
 /**
@@ -46,7 +49,7 @@ function target(over: Partial<PostTarget> = {}): PostTarget {
   return {
     channelId: '7',
     platform: 'twitter',
-    status: 'pending',
+    status: 'scheduled',
     ...over,
   } as PostTarget;
 }
@@ -68,11 +71,14 @@ describe('the classifier already knew, and was ignored', () => {
 
 describe('holdTransient', () => {
   it('holds the target without touching its status', () => {
-    const held = holdTransient(target({ status: 'pending' }), NOW, '503');
+    const held = holdTransient(target({ status: 'scheduled' }), NOW, '503');
     expect(held.heldReason).toBe(HELD_REASON_TRANSIENT);
     expect(held.heldAt).toBe(NOW.toISOString());
     // The post is still waiting, so the target is not `failed`.
-    expect(held.status).toBe('pending');
+    expect(held.status).toBe('scheduled');
+    // And it reads as waiting, which is the property that actually matters:
+    // `present-post` gates the hold markers on this being 'scheduled'.
+    expect(targetStatusOf(held, 'scheduled')).toBe('scheduled');
   });
 
   it('keeps the message and code, so the author sees why it waits', () => {
@@ -173,12 +179,15 @@ describe('what stays a failure', () => {
     );
   });
 
-  it('only `transient` is held; the other codes still fail', () => {
-    // `rate_limited` is held earlier by the limiter, before the attempt.
+  it('only a RETRYABLE code is held; the rest still fail', () => {
     // `auth_failed`, `media_invalid`, `content_rejected`, `permanent` are all
     // retryable: false and must stay failures - retrying them forever would
-    // hide a real problem from the author.
-    expect(service).toMatch(/classified\.code === 'transient'/);
+    // hide a real problem from the author. Asserted as the invariant (the
+    // gate consults `retryable`) rather than as one code's spelling, which
+    // is what this assertion used to pin - and it broke the moment the gate
+    // correctly widened to cover a platform 429.
+    expect(service).toMatch(/classified\.retryable &&/);
+    expect(mapper).toMatch(/retryable: false/);
   });
 });
 
@@ -194,6 +203,128 @@ describe('the post stays scheduled while it waits', () => {
   it('records the hold in post_history, as the other holds do', () => {
     const block = service.slice(service.indexOf('retryTransient'));
     expect(block.slice(0, 2000)).toMatch(/'held'/);
-    expect(block.slice(0, 2000)).toMatch(/heldReason: HELD_REASON_TRANSIENT/);
+    // The reason that was actually taken, not a literal - the same block now
+    // serves both self-releasing reasons.
+    expect(block.slice(0, 2500)).toMatch(/heldReason: held\.heldReason/);
+  });
+});
+
+/**
+ * The case the first version of this spec missed entirely: it only ever
+ * exercised a never-attempted target, so the retry-of-a-failed-target path
+ * - the ORDINARY one, since an author retries a post precisely because it
+ * failed - went untested, and a real divergence hid there.
+ */
+describe('retrying a target that failed before', () => {
+  const failedEarlier = () =>
+    target({
+      status: 'failed',
+      errorCode: 'permanent',
+      errorMessage: 'bad creds',
+    });
+
+  it('clears the previous failure before the attempt', () => {
+    const fresh = reattemptTarget(failedEarlier());
+    expect(fresh.status).toBeUndefined();
+    expect(fresh.errorCode).toBeUndefined();
+    expect(fresh.errorMessage).toBeUndefined();
+  });
+
+  it('also clears a composer-written publishStatus', () => {
+    // `targetStatusOf` reads either field, so clearing only `status` leaves
+    // the same bug reachable by the composer's spelling.
+    const fresh = reattemptTarget({
+      ...failedEarlier(),
+      publishStatus: 'failed',
+    } as PostTarget);
+    expect((fresh as { publishStatus?: string }).publishStatus).toBeUndefined();
+  });
+
+  /**
+   * The divergence itself. Without the clear, a 503 on the retry stored a
+   * target reading `failed` while the post read `scheduled` - and
+   * `present-post` gates `heldAt`/`heldReason` on `status === 'scheduled'`,
+   * so the hold vanished from the API and the UI could not say "retrying".
+   */
+  it('a transient hold on the retry still reads as waiting', () => {
+    const held = holdTransient(reattemptTarget(failedEarlier()), NOW, '503');
+    expect(held.heldReason).toBe(HELD_REASON_TRANSIENT);
+    expect(targetStatusOf(held, 'scheduled')).toBe('scheduled');
+  });
+
+  it('carries the NEW error, not the old one', () => {
+    const held = holdTransient(
+      reattemptTarget(failedEarlier()),
+      NOW,
+      '503 Service Unavailable',
+    );
+    expect(held.errorMessage).toBe('503 Service Unavailable');
+    expect(held.errorCode).toBe('transient');
+  });
+
+  it('a success on the retry is not shadowed by the old failure', () => {
+    const fresh = reattemptTarget(failedEarlier());
+    const published = { ...fresh, status: 'published' as const };
+    expect(targetStatusOf(published, 'scheduled')).toBe('published');
+  });
+
+  /**
+   * `reattemptTarget` must stay distinct from `releaseTarget`: resume and
+   * reconnect release a hold WITHOUT attempting anything, and a target that
+   * failed before must still read `failed` there.
+   */
+  it('releaseTarget still leaves a previous failure intact', () => {
+    const released = releaseTarget(
+      holdTarget(failedEarlier(), NOW, HELD_REASON),
+    );
+    expect(released.status).toBe('failed');
+    expect(released.errorCode).toBe('permanent');
+  });
+
+  it('the publish path uses reattemptTarget at the attempt', () => {
+    expect(service).toMatch(/const target = reattemptTarget\(storedTarget\)/);
+  });
+});
+
+/**
+ * F3: the platform's OWN 429, which arrives in the catch rather than at the
+ * pre-check (our limiter thought there was budget; the platform disagreed).
+ * It is classified `rate_limited`, `retryable: true` - and the first version
+ * of this change gated on `code === 'transient'`, so this one case kept the
+ * exact bug the change set out to fix: permanently failed, no retry.
+ */
+describe('a platform-reported rate limit is held too', () => {
+  it('the classifier marks it retryable', () => {
+    expect(mapper).toMatch(
+      /return \{ code: 'rate_limited', retryable: true \}/,
+    );
+    expect(mapper).toMatch(/RETRYABLE[\s\S]{0,80}'rate_limited'/);
+  });
+
+  it('the gate keys on `retryable`, not on a single code', () => {
+    // The conjunct that excluded it. Keying on the flag is the whole point
+    // of this branch: the classifier already knew, and was ignored.
+    expect(service).not.toMatch(/classified\.code === 'transient' &&/);
+    expect(service).toMatch(/classified\.retryable &&/);
+  });
+
+  it('holds it as a rate limit, with the limiter floor', () => {
+    expect(service).toMatch(
+      /const limited = classified\.code === 'rate_limited'/,
+    );
+    expect(service).toMatch(
+      /holdRateLimited\(target, now\)[\s\S]{0,120}errorCode: 'rate_limited'/,
+    );
+    expect(service).toMatch(/RATE_LIMIT_MIN_DELAY_MS/);
+  });
+
+  it('records the reason it actually held, not a hard-coded one', () => {
+    const block = service.slice(service.indexOf('const retryTransient'));
+    expect(block.slice(0, 2500)).toMatch(/heldReason: held\.heldReason/);
+  });
+
+  it('a non-retryable code is still a failure', () => {
+    // auth_failed / media_invalid / content_rejected / permanent.
+    expect(mapper).toMatch(/retryable: false/);
   });
 });

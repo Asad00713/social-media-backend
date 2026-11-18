@@ -162,8 +162,12 @@ describe('the app-wide limit is not a customer quota', () => {
 describe('the grace is enforced before the publish, not after', () => {
   it('checks lateness before releaseTarget strips the hold', () => {
     const graceAt = service.indexOf('isMissedRelease(post.scheduledAt');
+    // `reattemptTarget` (not `releaseTarget`) since the attempt also has to
+    // clear the previous failure's status and code; the ordering property
+    // this test guards is unchanged - the grace is judged BEFORE the hold
+    // markers are stripped.
     const releaseAt = service.indexOf(
-      'const target = releaseTarget(storedTarget)',
+      'const target = reattemptTarget(storedTarget)',
     );
     const publishAt = service.indexOf('this.publishToChannel(post, target)');
     expect(graceAt).toBeGreaterThan(-1);

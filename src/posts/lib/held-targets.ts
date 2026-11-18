@@ -249,6 +249,47 @@ export function releaseTarget<T extends PostTarget>(target: T): T {
   return copy;
 }
 
+/**
+ * The target as it should look at the START of a fresh attempt: hold markers
+ * gone, and the previous failure's residue gone with them.
+ *
+ * `releaseTarget` alone is not enough here, because it clears only the hold.
+ * A target that failed earlier keeps `status: 'failed'` and its old
+ * `errorCode`/`errorMessage` through the release, and nothing else on the
+ * publish path resets them — so a retry that is then HELD (rate limit or
+ * transient failure) stores a target still reading `failed`:
+ *
+ *   - `targetStatusOf` answers 'failed' for the post's own status line, so
+ *     the row says `scheduled` while its only target says `failed`;
+ *   - `present-post` gates `heldAt`/`heldReason` on `status === 'scheduled'`,
+ *     so the hold vanishes from the API and the UI cannot say "retrying";
+ *   - `nothingFailed` is false, so `lastError` is written on a post that is
+ *     actually waiting — the one thing the hold logic tries to avoid.
+ *
+ * Clearing them is also what `PostTarget.errorCode` already documents
+ * ("cleared when the target is attempted again") — a promise the code did
+ * not keep. This is deliberately NOT folded into `releaseTarget`, whose
+ * other callers (channel resume, reconnect) release a hold WITHOUT
+ * attempting anything, and must leave a previous failure intact.
+ */
+export function reattemptTarget<T extends PostTarget>(target: T): T {
+  const released = releaseTarget(target);
+  const fresh: T = released === target ? { ...target } : released;
+  const loose = fresh as Partial<PostTarget> & { publishStatus?: string };
+
+  // Both status fields, because `targetStatusOf` reads either one - clearing
+  // only `status` would leave a composer-written `publishStatus: 'failed'`
+  // winning, which is the same bug with a longer path to it.
+  if (loose.status === 'failed') delete loose.status;
+  if (loose.publishStatus === 'failed') delete loose.publishStatus;
+
+  // The previous attempt's reason. Keeping it would caption a target that is
+  // now waiting with the error that ended its LAST try.
+  delete loose.errorCode;
+  delete loose.errorMessage;
+  return fresh;
+}
+
 /** Delay for a held post: at its time if that is still ahead, else now. */
 export function resumeDelayMs(
   scheduledAt: Date | string | null,
