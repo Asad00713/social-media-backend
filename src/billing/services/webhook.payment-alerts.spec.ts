@@ -112,18 +112,42 @@ function makeDb(): any {
     },
     insert: (t: unknown) => {
       const target = tableName(t);
+      let pending: Row = {};
+      /**
+       * `billing_events.stripe_event_id` is UNIQUE, and the webhook's dedup
+       * gate IS that constraint now: it inserts with ON CONFLICT DO NOTHING
+       * and reads `returning()` to learn whether it won the claim.
+       *
+       * So this fake has to ENFORCE the constraint. Pushing unconditionally —
+       * what it did — hands the gate a row back every time, and the redelivery
+       * test below would then pass even if the gate let both deliveries
+       * through: the fake agreeing with a broken implementation.
+       */
+      const run = (): Row[] => {
+        if (target === 'billing_events') {
+          const id = pending.stripeEventId;
+          if (rowsOf(target).some((r) => r.stripeEventId === id)) return [];
+        }
+        const row = {
+          id: rowsOf(target).length + 1,
+          resolved: false,
+          createdAt: new Date(),
+          ...pending,
+        };
+        rowsOf(target).push(row);
+        return [row];
+      };
       const chain: any = {
         values: (v: Row) => {
-          rowsOf(target).push({
-            id: rowsOf(target).length + 1,
-            resolved: false,
-            createdAt: new Date(),
-            ...v,
-          });
+          pending = v;
           return chain;
         },
-        then: (resolve: (v: unknown) => unknown) =>
-          Promise.resolve([]).then(resolve),
+        onConflictDoNothing: () => chain,
+        returning: () => Promise.resolve(run().map((r) => ({ id: r.id }))),
+        then: (resolve: (v: unknown) => unknown) => {
+          run();
+          return Promise.resolve([]).then(resolve);
+        },
       };
       return chain;
     },

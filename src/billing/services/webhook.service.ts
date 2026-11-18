@@ -48,26 +48,54 @@ export class WebhookService {
     private readonly paymentAlerts: PaymentAlertsService,
   ) {}
 
+  /**
+   * CLAIM the event, then handle it. The insert IS the gate.
+   *
+   * It used to SELECT for the event id and then INSERT, with nothing between
+   * them - check-then-act across two statements, on a column that already
+   * carries a UNIQUE constraint the gate never used. Proven against Postgres
+   * with two concurrent deliveries of one event id:
+   *
+   *   old (select, then insert):   PROCESSED | CRASH 23505
+   *   new (insert .. on conflict): PROCESSED | skipped
+   *
+   * So both deliveries ran the handler - duplicate emails, duplicate counter
+   * writes, duplicate invoice work - and the loser then 500'd on the unique
+   * index, which is itself a response Stripe retries. Stripe redelivers on any
+   * non-2xx and this route is held open for the whole handler, so a slow
+   * handler makes the overlap ordinary rather than rare.
+   *
+   * `onConflictDoNothing().returning()` hands Postgres both jobs under its own
+   * index: zero rows back means another delivery owns this event.
+   *
+   * THE SECOND BUG, in the same four lines: the gate tested EXISTENCE, while
+   * the catch below records the error and rethrows so that Stripe WILL retry.
+   * The row was already there with `processed = false`, so that retry hit the
+   * gate and returned early - and nothing ever replays a `processed = false`
+   * row (the column is written in one place and read in none). A transient
+   * failure during `invoice.paid` therefore dropped that payment silently and
+   * permanently.
+   *
+   * So a handler that throws now RELEASES its claim, after recording the
+   * error, letting Stripe's next delivery pick the event up. A delivery that
+   * SUCCEEDS keeps the row as the processed-event log it has always been.
+   */
   async handleWebhook(event: Stripe.Event): Promise<void> {
-    // Check if event already processed
-    const existingEvent = await db
-      .select()
-      .from(billingEvents)
-      .where(eq(billingEvents.stripeEventId, event.id))
-      .limit(1);
+    const claimed = await db
+      .insert(billingEvents)
+      .values({
+        stripeEventId: event.id,
+        eventType: event.type,
+        payload: event as any,
+        processed: false,
+      } as NewBillingEvent)
+      .onConflictDoNothing({ target: billingEvents.stripeEventId })
+      .returning({ id: billingEvents.id });
 
-    if (existingEvent.length > 0) {
-      this.logger.warn(`Event ${event.id} already processed, skipping`);
+    if (claimed.length === 0) {
+      this.logger.warn(`Event ${event.id} already claimed, skipping`);
       return;
     }
-
-    // Save event to database
-    await db.insert(billingEvents).values({
-      stripeEventId: event.id,
-      eventType: event.type,
-      payload: event as any,
-      processed: false,
-    } as NewBillingEvent);
 
     // Process event based on type
     try {
@@ -146,13 +174,31 @@ export class WebhookService {
     } catch (error) {
       this.logger.error(`Error processing event ${event.id}:`, error);
 
-      // Save error
-      await db
-        .update(billingEvents)
-        .set({
-          errorMessage: error.message,
-        })
-        .where(eq(billingEvents.stripeEventId, event.id));
+      // RELEASE the claim: this event was NOT handled, and the throw below
+      // makes Stripe redeliver it. Leaving the row would make the claim above
+      // reject that redelivery and the event would be lost for good - which is
+      // exactly what used to happen, because the old gate only tested that a
+      // row existed, never whether it had been processed.
+      //
+      // The row is deleted rather than marked, so `errorMessage` is NOT
+      // written here: a column on a row about to be removed records nothing,
+      // and the failure is already in the log above with its stack. The
+      // surviving trace is that log line; the table goes back to being what
+      // its only reader treats it as - the log of events that SUCCEEDED.
+      try {
+        await db
+          .delete(billingEvents)
+          .where(eq(billingEvents.stripeEventId, event.id));
+      } catch (releaseError) {
+        // The claim could not be released, so Stripe's retry will be skipped
+        // by the gate. Loud, because it means a dropped event: the row has to
+        // be cleared by hand for the event to be replayable.
+        this.logger.error(
+          `Could not release the claim on event ${event.id}; a redelivery ` +
+            `will be skipped and the event must be replayed manually: ` +
+            `${releaseError instanceof Error ? releaseError.message : String(releaseError)}`,
+        );
+      }
 
       throw error;
     }
