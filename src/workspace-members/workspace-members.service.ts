@@ -1315,6 +1315,12 @@ export class WorkspaceMembersService {
                 AND other.status = 'ACCEPTED'
                 AND (other.user_id = ${userId} OR lower(other.email) = ${email})
             )`,
+            // An account deleted after the read above is not brought back.
+            sql`NOT EXISTS (
+              SELECT 1 FROM users AS deleted_user
+              WHERE deleted_user.id = ${userId}
+                AND deleted_user.deleted_at IS NOT NULL
+            )`,
           ),
         )
         .returning();
