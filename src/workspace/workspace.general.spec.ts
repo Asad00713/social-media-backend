@@ -49,9 +49,19 @@ function makeService() {
   const r2 = {
     isOwnPublicUrl: jest.fn((url: string) => url === OWN_LOGO),
   };
+  // Like the real move: the row is written inside its transaction.
   const timezoneMove = {
-    assertNoMoveInProgress: jest.fn().mockResolvedValue(undefined),
-    moveExisting: jest.fn().mockResolvedValue(MOVED),
+    moveExisting: jest.fn(
+      async (
+        _ws: string,
+        _from: string,
+        _to: string,
+        options?: { writeFirst?: (tx: unknown) => Promise<void> },
+      ) => {
+        await options?.writeFirst?.(db);
+        return MOVED;
+      },
+    ),
   };
   const service = new WorkspaceService(
     db as never,
@@ -91,7 +101,6 @@ describe('WorkspaceService.update (General)', () => {
       const { service, timezoneMove } = makeService();
       expect((await service.update('ws-1', dto)).timezoneMove).toBeNull();
       expect(timezoneMove.moveExisting).not.toHaveBeenCalled();
-      expect(timezoneMove.assertNoMoveInProgress).not.toHaveBeenCalled();
     }
   });
 
@@ -115,13 +124,17 @@ describe('WorkspaceService.update (General)', () => {
       'ws-1',
       'UTC',
       'America/New_York',
+      { writeFirst: expect.any(Function) },
     );
     expect(res.timezoneMove).toEqual(MOVED);
+    // The row is written once, by the move's transaction.
+    expect(res.workspace).toMatchObject({ timezone: 'America/New_York' });
   });
 
-  it('409 TIMEZONE_MOVE_IN_PROGRESS before any write while a move is queued', async () => {
+  it('409 TIMEZONE_MOVE_IN_PROGRESS saves nothing: the row is only written by the move', async () => {
     const { service, db, timezoneMove } = makeService();
-    timezoneMove.assertNoMoveInProgress.mockRejectedValueOnce(
+    // The locked check refuses before it would run writeFirst.
+    timezoneMove.moveExisting.mockRejectedValueOnce(
       new ConflictException({ code: 'TIMEZONE_MOVE_IN_PROGRESS' }),
     );
     await expect(
@@ -131,7 +144,6 @@ describe('WorkspaceService.update (General)', () => {
       }),
     ).rejects.toBeInstanceOf(ConflictException);
     expect(db.update).not.toHaveBeenCalled();
-    expect(timezoneMove.moveExisting).not.toHaveBeenCalled();
   });
 
   it('400 TIMEZONE_REQUIRED when applyTimezoneToChannels comes without a timezone, before any write', async () => {

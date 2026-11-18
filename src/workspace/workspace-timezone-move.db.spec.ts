@@ -31,7 +31,7 @@ interface AddCall {
  * tz-move id), `add` records. `lockedJobs` cannot be removed, as a job that
  * is running cannot.
  */
-function fakeQueue(lockedJobs: string[] = []) {
+function fakeQueue(lockedJobs: string[] = [], state = 'completed') {
   const removed: string[] = [];
   const added: AddCall[] = [];
   const queue = {
@@ -44,7 +44,7 @@ function fakeQueue(lockedJobs: string[] = []) {
           removed.push(id);
           return Promise.resolve();
         }),
-        getState: jest.fn(() => Promise.resolve('completed')),
+        getState: jest.fn(() => Promise.resolve(state)),
       }),
     ),
     add: jest.fn((name: string, data: unknown, opts: AddCall['opts']) => {
@@ -55,9 +55,12 @@ function fakeQueue(lockedJobs: string[] = []) {
   return { queue, removed, added };
 }
 
-function makeServices(db: never, opts: { lockedJobs?: string[] } = {}) {
+function makeServices(
+  db: never,
+  opts: { lockedJobs?: string[]; moveJobState?: string } = {},
+) {
   const publishing = fakeQueue(opts.lockedJobs);
-  const moveQueue = fakeQueue();
+  const moveQueue = fakeQueue([], opts.moveJobState);
   const reschedule = new PostRescheduleService(db, publishing.queue as never);
   const moves = new WorkspaceTimezoneMoveService(
     db,
@@ -435,6 +438,41 @@ describeDb('WorkspaceTimezoneMoveService (database)', () => {
       expect(publishing.added.map((c) => c.opts.jobId)).toEqual([
         `composer-publish-${fine}`,
       ]);
+    });
+  });
+
+  it('update with the flag saves nothing on 409 while the last move is still queued', async () => {
+    await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const { ws, channel } = await karachiWorkspace(client);
+      const post = await seedPost(client, ws, {
+        status: 'scheduled',
+        channelId: channel,
+        scheduledAt: KARACHI_9AM,
+      });
+      const { workspaces, publishing } = makeServices(db as never, {
+        moveJobState: 'active',
+      });
+
+      const err = await workspaces
+        .update(ws, {
+          name: 'Renamed',
+          timezone: 'America/New_York',
+          applyTimezoneToChannels: true,
+        })
+        .catch((e: unknown) => e);
+
+      expect((err as { getStatus?: () => number }).getStatus?.()).toBe(409);
+      const row = await client.query<{ name: string; timezone: string }>(
+        `SELECT name, timezone FROM workspace WHERE id = $1`,
+        [ws],
+      );
+      expect(row.rows[0]).toEqual({
+        name: 'Inbox WS',
+        timezone: 'Asia/Karachi',
+      });
+      expect(await channelZones(client, ws)).toEqual(['Asia/Karachi']);
+      expect((await postRow(client, post)).scheduled_at).toEqual(KARACHI_9AM);
+      expect(publishing.added).toHaveLength(0);
     });
   });
 

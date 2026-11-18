@@ -12,7 +12,7 @@ import { isHeld, isJobPending } from '../posts/lib/held-targets';
 import { PostRescheduleService } from '../posts/services/post-reschedule.service';
 
 /** The root db or a transaction on it. */
-type Executor = Pick<DbType, 'select' | 'update' | 'execute'>;
+export type Executor = Pick<DbType, 'select' | 'update' | 'execute'>;
 
 /**
  * Above this many posts to move, the job moves run on the queue: each post
@@ -58,6 +58,11 @@ export interface TimezoneMoveJob {
    * someone re-timed in between is left alone.
    */
   posts: QueuedPostMove[];
+}
+
+export interface MoveExistingOptions {
+  /** A write that must commit with the move, or not at all. */
+  writeFirst?: (tx: Executor) => Promise<void>;
 }
 
 export interface MovablePost {
@@ -134,26 +139,16 @@ export class WorkspaceTimezoneMoveService {
   ) {}
 
   /**
-   * Early refusal, before the settings row is written, while an earlier
-   * move is still on the queue. moveExisting checks again under the lock.
+   * `options.writeFirst` runs inside the locked transaction, after the
+   * in-progress check and before anything else is written: the settings row
+   * goes there, so a 409 saves nothing and the row commits (or rolls back)
+   * with the channels and the plan.
    */
-  async assertNoMoveInProgress(workspaceId: string): Promise<void> {
-    let pending = false;
-    try {
-      pending = await isJobPending(this.moveQueue, moveJobId(workspaceId));
-    } catch (error) {
-      // No queue to ask: moveExisting checks again under the lock.
-      this.logger.warn(
-        `Could not check for a queued time-zone move: ${errorText(error)}`,
-      );
-    }
-    if (pending) throw moveInProgress();
-  }
-
   async moveExisting(
     workspaceId: string,
     fromZone: string,
     toZone: string,
+    options: MoveExistingOptions = {},
   ): Promise<TimezoneMoveResult> {
     const now = new Date();
     const outcome = await this.db.transaction(async (tx) => {
@@ -183,6 +178,7 @@ export class WorkspaceTimezoneMoveService {
       const queued = plan.length > TZ_MOVE_INLINE_LIMIT;
 
       await this.claimMoveJobId(workspaceId, queued);
+      await options.writeFirst?.(tx);
       const movedChannels = await this.moveChannels(tx, workspaceId, toZone);
 
       if (queued) {

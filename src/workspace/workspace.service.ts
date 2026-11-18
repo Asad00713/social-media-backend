@@ -495,23 +495,51 @@ export class WorkspaceService {
       }
     }
 
-    // "Also move existing": refused before any write while an earlier move
-    // is still on the queue.
+    const writeRow = async (db: Pick<DbType, 'update'>): Promise<Workspace> => {
+      const [row] = await db
+        .update(workspace)
+        .set({
+          ...columns,
+          ...slugChange,
+          updatedAt: new Date(),
+        })
+        .where(eq(workspace.id, workspaceId))
+        .returning();
+      return row;
+    };
+
+    // "Also move existing": the row is written inside the move's locked
+    // transaction, after its in-progress check, so a 409 saves nothing and
+    // the workspace never lands on a zone its channels and posts did not
+    // follow. Channels and scheduled posts follow the new zone; a post keeps
+    // the local time it had in its channel's old zone. It runs even when the
+    // workspace zone is unchanged: it pulls channels still in another zone
+    // onto it. A save without the flag takes no lock.
     const moveToZone =
       applyTimezoneToChannels === true ? columns.timezone : undefined;
-    if (moveToZone !== undefined) {
-      await this.timezoneMove.assertNoMoveInProgress(workspaceId);
+    // Filled by whichever path writes the row.
+    const saved: { row?: Workspace } = {};
+    let timezoneMove: TimezoneMoveResult | null = null;
+    if (moveToZone === undefined) {
+      saved.row = await writeRow(this.db);
+    } else {
+      timezoneMove = await this.timezoneMove.moveExisting(
+        workspaceId,
+        existingWorkspace.timezone,
+        moveToZone,
+        {
+          writeFirst: async (tx) => {
+            saved.row = await writeRow(tx);
+          },
+        },
+      );
     }
-
-    const [updatedWorkspace] = await this.db
-      .update(workspace)
-      .set({
-        ...columns,
-        ...slugChange,
-        updatedAt: new Date(),
-      })
-      .where(eq(workspace.id, workspaceId))
-      .returning();
+    // Deleted between the read above and the write.
+    if (!saved.row) {
+      throw new NotFoundException(
+        `Workspace with id "${workspaceId}" not found`,
+      );
+    }
 
     // One tail for a rename and a plain save alike.
     if (
@@ -521,19 +549,7 @@ export class WorkspaceService {
       await this.rescheduleReports(workspaceId, columns.timezone);
     }
 
-    // Channels and scheduled posts follow the new zone; a post keeps the local
-    // time it had in its channel's old zone. Run even when the workspace zone
-    // is unchanged: it pulls channels still in another zone onto it.
-    const timezoneMove =
-      moveToZone === undefined
-        ? null
-        : await this.timezoneMove.moveExisting(
-            workspaceId,
-            existingWorkspace.timezone,
-            moveToZone,
-          );
-
-    return { workspace: updatedWorkspace, timezoneMove };
+    return { workspace: saved.row, timezoneMove };
   }
 
   /**

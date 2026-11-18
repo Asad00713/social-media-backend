@@ -4,6 +4,7 @@ import type { PostTarget } from '../drizzle/schema/posts.schema';
 import { PostRescheduleService } from '../posts/services/post-reschedule.service';
 import { WorkspaceTimezoneMoveProcessor } from './workspace-timezone-move.processor';
 import {
+  TZ_MOVE_INLINE_LIMIT,
   WorkspaceTimezoneMoveService,
   planPostMoves,
   type TimezoneMoveJob,
@@ -239,46 +240,143 @@ describe('PostRescheduleService.moveTo', () => {
   });
 });
 
-describe('WorkspaceTimezoneMoveService.assertNoMoveInProgress', () => {
-  function make(state: string | null, fail = false) {
-    const queue = {
-      getJob: jest.fn((id: string) => {
-        if (fail) return Promise.reject(new Error('redis down'));
-        expect(id).toBe('tz-move-ws-1');
-        return Promise.resolve(
-          state ? { getState: () => Promise.resolve(state) } : undefined,
-        );
+describe('WorkspaceTimezoneMoveService.moveExisting: lock, check, then write', () => {
+  /**
+   * A db whose transaction records the order of what happens in it. The
+   * channel read answers `channels`; the post read answers `postCount`
+   * scheduled posts at 09:00 Karachi.
+   */
+  function make(opts: {
+    jobState?: string | null;
+    queueDown?: boolean;
+    postCount?: number;
+  }) {
+    const calls: string[] = [];
+    const posts = Array.from({ length: opts.postCount ?? 0 }, (_, i) => ({
+      id: `p${i}`,
+      scheduledAt: KARACHI_9AM,
+      targets: [target('1')],
+    }));
+    let reads = 0;
+    const tx = {
+      execute: jest.fn(() => {
+        calls.push('lock');
+        return Promise.resolve();
+      }),
+      select: jest.fn(() => ({
+        from: jest.fn(() => ({
+          where: jest.fn(() => {
+            reads += 1;
+            calls.push(reads === 1 ? 'read-channels' : 'read-posts');
+            return Promise.resolve(
+              reads === 1 ? [{ id: 1, timezone: 'Asia/Karachi' }] : posts,
+            );
+          }),
+        })),
+      })),
+      update: jest.fn(() => {
+        calls.push('update');
+        return {
+          set: () => ({
+            where: () => ({ returning: () => Promise.resolve([]) }),
+          }),
+        };
       }),
     };
-    return new WorkspaceTimezoneMoveService(
-      {} as never,
-      {} as never,
+    const db = {
+      transaction: jest.fn((fn: (t: typeof tx) => Promise<unknown>) => fn(tx)),
+    };
+    const queue = {
+      getJob: jest.fn(() => {
+        calls.push('check');
+        if (opts.queueDown) return Promise.reject(new Error('redis down'));
+        return Promise.resolve(
+          opts.jobState
+            ? {
+                getState: () => Promise.resolve(opts.jobState),
+                remove: () => Promise.resolve(),
+              }
+            : undefined,
+        );
+      }),
+      add: jest.fn(() => {
+        calls.push('enqueue');
+        return Promise.resolve({ id: 'tz-move-ws-1' });
+      }),
+    };
+    const service = new WorkspaceTimezoneMoveService(
+      db as never,
+      { moveTo: jest.fn() } as never,
       queue as never,
     );
+    const writeFirst = jest.fn(() => {
+      calls.push('writeFirst');
+      return Promise.resolve();
+    });
+    return { service, calls, writeFirst, tx, queue };
   }
 
-  it('409 TIMEZONE_MOVE_IN_PROGRESS while the job waits or runs', async () => {
-    for (const state of ['waiting', 'delayed', 'active']) {
-      const err = await make(state)
-        .assertNoMoveInProgress('ws-1')
+  it.each(['waiting', 'delayed', 'active'])(
+    '409 while the last move is %s, before writeFirst or any update',
+    async (jobState) => {
+      const { service, calls, writeFirst, tx } = make({ jobState });
+      const err = await service
+        .moveExisting('ws-1', 'Asia/Karachi', 'America/New_York', {
+          writeFirst,
+        })
         .catch((e: unknown) => e);
       expect(err).toBeInstanceOf(ConflictException);
       expect((err as ConflictException).getResponse()).toMatchObject({
         code: 'TIMEZONE_MOVE_IN_PROGRESS',
       });
-    }
+      expect(writeFirst).not.toHaveBeenCalled();
+      expect(tx.update).not.toHaveBeenCalled();
+      expect(calls[0]).toBe('lock');
+    },
+  );
+
+  it('takes the lock, checks, then writes the row before the channels', async () => {
+    const { service, calls, writeFirst } = make({ jobState: 'completed' });
+    await service.moveExisting('ws-1', 'Asia/Karachi', 'America/New_York', {
+      writeFirst,
+    });
+    expect(calls.slice(0, 4)).toEqual([
+      'lock',
+      'read-channels',
+      'read-posts',
+      'check',
+    ]);
+    expect(calls.indexOf('writeFirst')).toBeGreaterThan(
+      calls.lastIndexOf('check'),
+    );
+    expect(calls.indexOf('update')).toBeGreaterThan(
+      calls.indexOf('writeFirst'),
+    );
   });
 
-  it('passes with no job, a finished one, or no queue to ask', async () => {
-    await expect(make(null).assertNoMoveInProgress('ws-1')).resolves.toBe(
-      undefined,
-    );
+  it('inline: an unreachable queue only warns, the move goes on', async () => {
+    const { service, writeFirst } = make({ queueDown: true, postCount: 1 });
     await expect(
-      make('completed').assertNoMoveInProgress('ws-1'),
-    ).resolves.toBe(undefined);
-    await expect(make(null, true).assertNoMoveInProgress('ws-1')).resolves.toBe(
-      undefined,
-    );
+      service.moveExisting('ws-1', 'Asia/Karachi', 'America/New_York', {
+        writeFirst,
+      }),
+    ).resolves.toMatchObject({ queued: false });
+    expect(writeFirst).toHaveBeenCalled();
+  });
+
+  it('queued: an unreachable queue refuses the move before any write', async () => {
+    const { service, writeFirst, tx, queue } = make({
+      queueDown: true,
+      postCount: TZ_MOVE_INLINE_LIMIT + 1,
+    });
+    await expect(
+      service.moveExisting('ws-1', 'Asia/Karachi', 'America/New_York', {
+        writeFirst,
+      }),
+    ).rejects.toThrow('redis down');
+    expect(writeFirst).not.toHaveBeenCalled();
+    expect(tx.update).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
   });
 });
 
