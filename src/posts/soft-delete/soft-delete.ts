@@ -1,4 +1,5 @@
-import { isNull, sql, type SQL } from 'drizzle-orm';
+import { and, eq, isNull, sql, type SQL } from 'drizzle-orm';
+import type { DbType } from '../../drizzle/db';
 import { posts, workspace } from '../../drizzle/schema';
 
 /**
@@ -79,4 +80,35 @@ export function purgeCutoff(
   days: number = SOFT_DELETE_RETENTION_DAYS,
 ): Date {
   return new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+}
+
+/**
+ * Is this workspace still live? For a path that must stop BEFORE it writes.
+ *
+ * `liveWorkspacePosts()` filters a read of `posts`, which is the right shape
+ * when the question is "may I act on this existing row". It is the wrong shape
+ * when the work begins by CREATING a row: a repeating series inserts the next
+ * post and enqueues it, and a filter on a later read cannot prevent either.
+ * Guarding the conflict-retry branch there looked like a fix and stopped
+ * nothing, because the normal path never enters it.
+ *
+ * So the engines that materialise posts ask this first, and return early.
+ *
+ * Takes its executor as `Pick<DbType, 'select'>` so a caller inside a
+ * transaction can pass `tx` and be answered on the same connection - the
+ * distinction the usage-counter work turned on, where a read on the pool sat
+ * outside the advisory lock meant to protect it.
+ */
+export async function isWorkspaceLive(
+  executor: Pick<DbType, 'select'>,
+  workspaceId: string,
+): Promise<boolean> {
+  // No `.limit(1)`: `workspace.id` is the primary key, so this matches at
+  // most one row anyway, and every test fake in the callers' suites would
+  // otherwise need a `limit` on its chain.
+  const rows = await executor
+    .select({ id: workspace.id })
+    .from(workspace)
+    .where(and(eq(workspace.id, workspaceId), liveWorkspaces()));
+  return rows.length > 0;
 }

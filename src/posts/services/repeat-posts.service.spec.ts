@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return, @typescript-eslint/require-await -- test doubles are loosely typed */
+import { getTableName } from 'drizzle-orm';
 import { RepeatPostsService } from './repeat-posts.service';
 import { seriesPostId } from '../lib/recurrence';
 
@@ -49,21 +50,45 @@ const post = (over: any = {}): any => ({
   ...over,
 });
 
-function make(opts: { inserted?: boolean; existing?: any } = {}) {
+function make(
+  opts: { inserted?: boolean; existing?: any; workspaceLive?: boolean } = {},
+) {
   const inserts: any[] = [];
-  let selects = 0;
   const db = {
-    // First select: workspace zone (loadWorkspaceTimezone). Second: the
-    // existing next post, read only when the insert hit a conflict.
+    /**
+     * TABLE-KEYED, not positional.
+     *
+     * This fake used to count calls - "first select is the timezone, second is
+     * the existing row" - and that broke the moment `ensureNext` grew a THIRD
+     * read: the workspace-liveness check, which now runs before either of the
+     * others. Every test then got the timezone row for its liveness check and
+     * `undefined` for its timezone.
+     *
+     * Keyed on the table instead, so adding or reordering a read cannot
+     * silently shift what each one receives.
+     */
     select: jest.fn(() => ({
-      from: () => ({
-        where: () => {
-          selects += 1;
-          if (selects === 1)
-            return Promise.resolve([{ timezone: 'Asia/Karachi' }]);
-          return { limit: async () => (opts.existing ? [opts.existing] : []) };
-        },
-      }),
+      from: (table: unknown) => {
+        const name = getTableName(table as never);
+        if (name === 'workspace') {
+          // `isWorkspaceLive` reads this; `loadWorkspaceTimezone` reads the
+          // same table for its zone. One row serves both - a live workspace
+          // in Asia/Karachi. `workspaceLive: false` is the deleted case: the
+          // series must stop before it creates anything.
+          const rows =
+            opts.workspaceLive === false
+              ? []
+              : [{ id: 'w1', timezone: 'Asia/Karachi' }];
+          return {
+            where: () => Promise.resolve(rows),
+          };
+        }
+        return {
+          where: () => ({
+            limit: async () => (opts.existing ? [opts.existing] : []),
+          }),
+        };
+      },
     })),
     insert: jest.fn(() => ({
       values: (v: any) => {
@@ -183,6 +208,27 @@ describe('RepeatPostsService.ensureNext', () => {
       },
     });
     await expect(svc.ensureNext(last, NOW)).resolves.toBeNull();
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A deleted workspace's series stops, and stops BEFORE it creates anything.
+   *
+   * Deleting a workspace is a soft delete that marks only the `workspace`
+   * row, so every post in it still reads as live. Without this the series went
+   * on inserting a new `posts` row and enqueueing a job on every iteration,
+   * until the purge 30 days later.
+   *
+   * The check has to be a return, not a filter on a read: the first attempt at
+   * this guard sat on the read inside the `inserted.length === 0` branch - the
+   * conflict-retry path, never entered on a normal run - so it stopped
+   * nothing. Hence the assertions on `insert` and `queue.add`, not on a
+   * returned value alone.
+   */
+  it('stops the series when the workspace is deleted, creating nothing', async () => {
+    const { svc, db, queue } = make({ workspaceLive: false });
+    await expect(svc.ensureNext(post(), NOW)).resolves.toBeNull();
     expect(db.insert).not.toHaveBeenCalled();
     expect(queue.add).not.toHaveBeenCalled();
   });

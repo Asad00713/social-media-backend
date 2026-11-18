@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/require-await, @typescript-eslint/no-unsafe-assignment -- db double */
 import { dripCampaigns, dripPosts } from '../../drizzle/schema/drips.schema';
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
+import { workspace } from '../../drizzle/schema/workspace.schema';
 
 let updates: Array<{ table: unknown; set: Record<string, unknown> }>;
 let historyRows: Record<string, unknown>[];
@@ -32,6 +33,15 @@ const rowsFor = (table: unknown): unknown[] => {
   }
   if (table === socialMediaChannels) {
     return [{ id: 7, platform: 'bluesky' }];
+  }
+  if (table === workspace) {
+    // A LIVE workspace. The publish path now checks this BEFORE it creates
+    // the `posts` row: a drip post in a soft-deleted workspace used to
+    // publish to the platform for real, because this path calls
+    // `publishPost` directly and so never passed through
+    // PostPublishProcessor's own guard. Without this row these tests read as
+    // "workspace deleted" and skip - which is itself proof the guard works.
+    return [{ id: 'w1' }];
   }
   return [];
 };

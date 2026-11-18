@@ -212,7 +212,12 @@ function buildFakeDb(fixture: {
   postsTableRows?: FakePostsRow[];
   // campaigns.schema tables — only needed for the bulk-campaign regression
   // guard (CampaignsService.launch reads campaignDays/campaignSlotContent).
-  campaignDaysRows?: { id: string; campaignId: string; date: string; skip: boolean }[];
+  campaignDaysRows?: {
+    id: string;
+    campaignId: string;
+    date: string;
+    skip: boolean;
+  }[];
   campaignSlotContentRows?: Record<string, unknown>[];
 }) {
   const campaignRows = fixture.campaignRows ?? [];
@@ -230,7 +235,13 @@ function buildFakeDb(fixture: {
     posts: unknown[];
     occurrences: unknown[];
     postsTable: unknown[];
-  } = { campaigns: [], categories: [], posts: [], occurrences: [], postsTable: [] };
+  } = {
+    campaigns: [],
+    categories: [],
+    posts: [],
+    occurrences: [],
+    postsTable: [],
+  };
   const deletes: {
     categoryIds: string[];
     postIds: string[];
@@ -258,6 +269,11 @@ function buildFakeDb(fixture: {
       return campaignDaysRows as unknown as Record<string, unknown>[];
     if (name === 'campaign_slot_content')
       return campaignSlotContentRows as unknown as Record<string, unknown>[];
+    // A LIVE workspace. `reconcile` now joins on it, and `fireOccurrence`
+    // checks it, so an evergreen campaign in a soft-deleted workspace is no
+    // longer armed or fired - it used to be, daily, for the whole 30-day
+    // window, materialising `posts` rows the entire time.
+    if (name === 'workspace') return [{ id: WORKSPACE_ID, deletedAt: null }];
     return [];
   }
 
@@ -306,6 +322,34 @@ function buildFakeDb(fixture: {
         };
 
         return {
+          /**
+           * `reconcile()` reads
+           * `.select({ campaign: campaigns }).from(campaigns).innerJoin(workspace, ...).where(liveWorkspaces())`
+           * so that a deleted workspace's campaigns are never swept.
+           *
+           * The join keeps only campaigns whose workspace is live, and the
+           * selection wraps each row under `campaign` - both modelled here,
+           * because a fake that ignored the join would let this spec pass
+           * while the sweep was unscoped, which is the bug.
+           */
+          innerJoin() {
+            const live = new Set(
+              tableRows('workspace')
+                .filter((w) => !w.deletedAt)
+                .map((w) => w.id),
+            );
+            const joined = rows
+              .filter((r) => live.has(r.workspaceId))
+              .map((r) => ({ campaign: { ...r } }));
+            const run = () => Promise.resolve(joined);
+            return {
+              where: () => run(),
+              then: (
+                resolve: (v: unknown[]) => void,
+                reject: (e: unknown) => void,
+              ) => run().then(resolve, reject),
+            };
+          },
           where(whereCond: unknown) {
             return {
               orderBy: () => exec(whereCond),
@@ -573,11 +617,7 @@ describe('EvergreenService.armCategory — multi-channel fan-out', () => {
     // One BullMQ job per occurrence, deterministic non-colliding jobIds.
     expect(queue.add).toHaveBeenCalledTimes(2);
     const jobIds = (
-      queue.add.mock.calls as unknown as [
-        string,
-        unknown,
-        { jobId: string },
-      ][]
+      queue.add.mock.calls as unknown as [string, unknown, { jobId: string }][]
     ).map(([, , opts]) => opts.jobId);
     expect(new Set(jobIds).size).toBe(2);
     expect(jobIds.sort()).toEqual(
@@ -827,7 +867,10 @@ describe('EvergreenService.pause', () => {
 
 describe('EvergreenService.resume', () => {
   it('re-arms every active category and sets status active', async () => {
-    const activeCategory = makeCategoryRow({ isActive: true, channelIds: ['12'] });
+    const activeCategory = makeCategoryRow({
+      isActive: true,
+      channelIds: ['12'],
+    });
     const inactiveCategory = makeCategoryRow({
       id: 'category-b',
       isActive: false,
@@ -857,7 +900,10 @@ describe('EvergreenService.resume', () => {
   });
 
   it('fans out multi-channel categories on resume too', async () => {
-    const category = makeCategoryRow({ isActive: true, channelIds: ['12', '34'] });
+    const category = makeCategoryRow({
+      isActive: true,
+      channelIds: ['12', '34'],
+    });
     const campaign = makeCampaignRow({ status: 'paused' });
     const { db, inserts } = buildFakeDb({
       campaignRows: [campaign],
@@ -995,7 +1041,9 @@ describe('CampaignsService lifecycle delegation to EvergreenService', () => {
     const campaign = makeCampaignRow({ type: 'evergreen', status: 'draft' });
     const { db } = buildFakeDb({ campaignRows: [campaign] });
     const fakeEvergreen = {
-      launch: jest.fn().mockResolvedValue({ id: CAMPAIGN_ID, status: 'active' }),
+      launch: jest
+        .fn()
+        .mockResolvedValue({ id: CAMPAIGN_ID, status: 'active' }),
       pause: jest.fn(),
       resume: jest.fn(),
       // getOne (called before the launch/pause/resume delegation below)
@@ -1015,7 +1063,10 @@ describe('CampaignsService lifecycle delegation to EvergreenService', () => {
 
     const result = await service.launch(WORKSPACE_ID, CAMPAIGN_ID);
 
-    expect(fakeEvergreen.launch).toHaveBeenCalledWith(WORKSPACE_ID, CAMPAIGN_ID);
+    expect(fakeEvergreen.launch).toHaveBeenCalledWith(
+      WORKSPACE_ID,
+      CAMPAIGN_ID,
+    );
     expect(result).toEqual({ id: CAMPAIGN_ID, status: 'active' });
   });
 
@@ -1050,7 +1101,9 @@ describe('CampaignsService lifecycle delegation to EvergreenService', () => {
     const fakeEvergreen = {
       launch: jest.fn(),
       pause: jest.fn(),
-      resume: jest.fn().mockResolvedValue({ id: CAMPAIGN_ID, status: 'active' }),
+      resume: jest
+        .fn()
+        .mockResolvedValue({ id: CAMPAIGN_ID, status: 'active' }),
       assembleEvergreen: jest.fn().mockResolvedValue({
         id: CAMPAIGN_ID,
         type: 'evergreen',
@@ -1065,7 +1118,10 @@ describe('CampaignsService lifecycle delegation to EvergreenService', () => {
 
     const result = await service.resume(WORKSPACE_ID, CAMPAIGN_ID);
 
-    expect(fakeEvergreen.resume).toHaveBeenCalledWith(WORKSPACE_ID, CAMPAIGN_ID);
+    expect(fakeEvergreen.resume).toHaveBeenCalledWith(
+      WORKSPACE_ID,
+      CAMPAIGN_ID,
+    );
     expect(result).toEqual({ id: CAMPAIGN_ID, status: 'active' });
   });
 

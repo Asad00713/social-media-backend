@@ -4,7 +4,7 @@ import { and, eq, lt, inArray } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import { posts, postHistory } from '../../drizzle/schema';
 import type { PostTarget } from '../../drizzle/schema/posts.schema';
-import { livePosts, liveWorkspacePosts } from '../soft-delete/soft-delete';
+import { livePosts } from '../soft-delete/soft-delete';
 
 /**
  * How long a post may sit in `publishing` before it is considered stranded.
@@ -110,7 +110,6 @@ export class StrandedPostSweeperService implements OnApplicationBootstrap {
             lt(posts.updatedAt, cutoff),
           ),
           livePosts(),
-          liveWorkspacePosts(),
         ),
       )
       .limit(1);
@@ -139,7 +138,6 @@ export class StrandedPostSweeperService implements OnApplicationBootstrap {
           eq(posts.status, 'publishing'),
           lt(posts.updatedAt, cutoff),
           livePosts(),
-          liveWorkspacePosts(),
         ),
       )
       .limit(BATCH);
