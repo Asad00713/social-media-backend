@@ -268,25 +268,50 @@ export class PostService {
       );
     }
 
-    const [post] = await db
-      .insert(posts)
-      .values({
-        workspaceId,
-        createdById: userId,
-        content: dto.content,
-        mediaItems: dto.mediaItems || [],
-        targets,
-        status,
-        scheduledAt: dto.scheduledAt,
-        platformContent: dto.platformContent || {},
-        // An approval is only ever asked for and granted through its own
-        // routes; a client cannot hand one in.
-        metadata: withoutApproval(dto.metadata) ?? {},
-      })
-      .returning();
+    // The post and the record of its creation commit together.
+    //
+    // They were two statements on the pool: a crash or a connection drop
+    // between them left a post whose `post_history` had no `created` row. That
+    // matters beyond tidiness - the stranded-post sweeper reconstructs what
+    // actually happened to a post FROM `post_history`, so a post with a
+    // missing history is a post it can reason about incorrectly.
+    //
+    // The queue is deliberately NOT in here. BullMQ writes to Redis, which no
+    // Postgres transaction can roll back, so enqueueing inside would risk a
+    // job for a post that never committed - the worse failure, since the job
+    // would fire and find nothing. It is enqueued after the commit instead,
+    // and the reconciler re-arms a post whose job never made it.
+    const post = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .insert(posts)
+        .values({
+          workspaceId,
+          createdById: userId,
+          content: dto.content,
+          mediaItems: dto.mediaItems || [],
+          targets,
+          status,
+          scheduledAt: dto.scheduledAt,
+          platformContent: dto.platformContent || {},
+          // An approval is only ever asked for and granted through its own
+          // routes; a client cannot hand one in.
+          metadata: withoutApproval(dto.metadata) ?? {},
+        })
+        .returning();
 
-    // Record history
-    await this.recordHistory(post.id, 'created', null, status, null, userId);
+      await this.recordHistory(
+        row.id,
+        'created',
+        null,
+        status,
+        null,
+        userId,
+        undefined,
+        tx,
+      );
+
+      return row;
+    });
 
     // Schedule job if post is scheduled
     if (dto.scheduledAt) {
@@ -1660,6 +1685,14 @@ export class PostService {
   /**
    * Record post history
    */
+  /**
+   * One `post_history` row.
+   *
+   * `executor` lets a caller inside a transaction write the history on the
+   * SAME connection, so the post and the record of its creation commit
+   * together. It defaults to the pool, so the eleven callers that are not in a
+   * transaction are unchanged.
+   */
   private async recordHistory(
     postId: string,
     action: string,
@@ -1668,8 +1701,9 @@ export class PostService {
     channelId: string | null,
     performedById: string,
     details?: Record<string, any>,
+    executor: Pick<typeof db, 'insert'> = db,
   ): Promise<void> {
-    await db.insert(postHistory).values({
+    await executor.insert(postHistory).values({
       postId,
       action,
       previousStatus,
