@@ -44,8 +44,11 @@ export class ParseInviteCodePipe implements PipeTransform<string, string> {
 export class JoinLinkController {
   constructor(private readonly inviteLinks: InviteLinkService) {}
 
-  // What the join page shows before sign-in. No auth.
+  // What the join page shows before sign-in. No auth. Gate-exempt too: a
+  // signed-in, non-allowlisted visitor sending a token must see the page they
+  // may POST to.
   @Get('join/:code')
+  @SkipLaunchGate()
   @UseGuards(ClientIpThrottlerGuard)
   @Throttle(JOIN_THROTTLE)
   preview(@Param('code', ParseInviteCodePipe) code: string) {

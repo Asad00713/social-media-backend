@@ -3,6 +3,7 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
@@ -89,6 +90,8 @@ function isUniqueViolation(error: unknown): boolean {
 
 @Injectable()
 export class InviteLinkService {
+  private readonly logger = new Logger(InviteLinkService.name);
+
   constructor(
     @Inject(DRIZZLE) private db: DbType,
     private usageService: UsageService,
@@ -174,11 +177,19 @@ export class InviteLinkService {
       await lockWorkspaceSeats(tx, found.id);
 
       // Read again under the lock: a disable or reset that committed while
-      // this request waited for it must win.
-      const ws = await tx.query.workspace.findFirst({
-        where: this.openLinkFilter(code),
-        columns: { id: true, name: true, ownerId: true, timezone: true },
-      });
+      // this request waited for it must win. FOR SHARE keeps the row from
+      // being changed until this transaction ends, so one that arrives
+      // mid-join waits for the join instead of racing it.
+      const [ws] = await tx
+        .select({
+          id: workspace.id,
+          name: workspace.name,
+          ownerId: workspace.ownerId,
+          timezone: workspace.timezone,
+        })
+        .from(workspace)
+        .where(this.openLinkFilter(code))
+        .for('share');
       if (!ws) throw new NotFoundException(NOT_FOUND_MESSAGE);
 
       const alreadyMember = () =>
@@ -191,7 +202,7 @@ export class InviteLinkService {
         where: and(
           eq(workspaceInvitation.workspaceId, ws.id),
           eq(workspaceInvitation.status, 'ACCEPTED'),
-          sql`(${workspaceInvitation.userId} = ${userId} OR lower(${workspaceInvitation.email}) = ${email})`,
+          sql`(${workspaceInvitation.userId} = ${userId} OR lower(trim(${workspaceInvitation.email})) = ${email})`,
         ),
         columns: { id: true },
       });
@@ -215,7 +226,7 @@ export class InviteLinkService {
           and(
             eq(workspaceInvitation.workspaceId, ws.id),
             eq(workspaceInvitation.status, 'PENDING'),
-            sql`lower(${workspaceInvitation.email}) = ${email}`,
+            sql`lower(trim(${workspaceInvitation.email})) = ${email}`,
           ),
         );
 
@@ -240,7 +251,9 @@ export class InviteLinkService {
         await this.usageService.incrementMemberCount(ws.id, userId, userId);
       } catch (error) {
         // Log but don't fail if usage tracking fails (as accept does)
-        console.error('Failed to track member usage:', error);
+        this.logger.error(
+          `Failed to track member usage for ${userId} joining ${ws.id}: ${(error as Error)?.message ?? String(error)}`,
+        );
       }
       return { ws, member };
     });

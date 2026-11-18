@@ -398,6 +398,26 @@ describeDb('InviteLinkService (database)', () => {
       });
     });
 
+    it('an ACCEPTED row stored with a padded, upper-case address still counts as the member', async () => {
+      await run(ROOMY, async ({ links }, client) => {
+        const owner = await seedUser(client, 'Owner');
+        const member = await seedUser(client, 'Member');
+        const ws = await seedWorkspace(client, owner.id);
+        await seedMemberRow(
+          client,
+          ws,
+          { id: member.id, email: ` ${member.email.toUpperCase()} ` },
+          'ACCEPTED',
+          null,
+        );
+        const code = codeOf(await links.setEnabled(ws, true));
+
+        expect(await conflictCode(links.join(code, member.id))).toBe(
+          'ALREADY_MEMBER',
+        );
+      });
+    });
+
     it('the owner is 409 ALREADY_MEMBER and gets no member row', async () => {
       await run(ROOMY, async ({ links, usage }, client) => {
         const owner = await seedUser(client, 'Owner');

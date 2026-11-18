@@ -325,7 +325,8 @@ describe('JoinLinkController (invite link)', () => {
     }
   });
 
-  it('join is exempt from the launch gate, preview needs no exemption', () => {
+  it('preview and join are both exempt from the launch gate', () => {
+    expect(Reflect.getMetadata('skipLaunchGate', proto.preview)).toBe(true);
     expect(Reflect.getMetadata('skipLaunchGate', proto.join)).toBe(true);
   });
 
