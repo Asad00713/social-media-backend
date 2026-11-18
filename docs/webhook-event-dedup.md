@@ -130,3 +130,96 @@ Mutation-tested, against the source:
 |---|---|
 | remove `onConflictDoNothing` | 3 |
 | remove the claim release | 1 |
+
+## What the release exposed — `failed_payments`
+
+Found in independent review of this change, and fixed in the same PR.
+
+Releasing the claim is what makes a retry possible, and a retry re-runs the
+handler **from the top**. So every write a handler performs before a later
+`await` can now happen twice, and each one needs a key of its own.
+
+`handleInvoicePaymentFailed` had exactly one that did not:
+
+```ts
+await db.insert(failedPayments).values(failedPayment);   // no key, no constraint
+```
+
+`failed_payments` carried a bigserial primary key and **no unique constraint of
+any kind**, and this insert sits before roughly eight further await points,
+several of which write (`applyPaymentFailureRestrictions`, the
+`workspaceUsage` fan-out, the `subscriptions` status flip, the alert).
+
+That is not a cosmetic duplicate, because the dunning gate counts **rows**:
+
+```ts
+if (unresolvedFailures.length >= this.MAX_FAILED_ATTEMPTS)   // 3
+  await this.applyPaymentFailureRestrictions(...);
+```
+
+A customer with two genuine failures plus one duplicated retry reads as three
+and has every owned workspace dropped to FREE limits with all purchased add-ons
+zeroed — **a full failure early, from a transient database error.** The
+duplicates also skew `startsEpisode`'s `Math.min` over unresolved ids, which
+decides whether the "moved to Free" email goes out for that episode.
+
+The old code hid this by accident: the stale `processed = false` row blocked the
+retry entirely. The fix trades silent event loss for duplicated appends, so the
+append needs the same treatment the gate got — migration 0089 adds
+`failed_payments.stripe_event_id` with a partial unique index, and the insert
+claims it. The handler already had `eventId` in hand; it was using it for the
+alert key.
+
+### The partial index needs its predicate named
+
+Postgres will **not** infer a partial index from a bare `ON CONFLICT (col)`:
+
+```
+there is no unique or exclusion constraint matching the ON CONFLICT specification
+```
+
+That error would have 500'd **every** payment failure in production. Verified
+against Postgres both ways, with Drizzle's exact emission:
+
+```
+ON CONFLICT (stripe_event_id) DO NOTHING                               -> ERROR
+ON CONFLICT (stripe_event_id) WHERE stripe_event_id IS NOT NULL ... -> works
+```
+
+So the insert passes `where: sql`...IS NOT NULL`` — Drizzle renders that as
+`(col) where <predicate> do nothing`, which is the index-predicate position the
+inference needs. The index is partial, and the column nullable, because rows
+written before 0089 have no event id, and under a *plain* unique index every
+NULL is distinct in Postgres — which would permit the very duplicates this
+forbids while appearing to prevent them.
+
+Proven on a real database:
+
+```
+first    : inserted
+retry    : skipped      <- no duplicate dunning row
+NULL #1  : inserted
+NULL #2  : inserted     <- legacy rows stay unconstrained
+```
+
+### A stale comment that made the bug look safe
+
+The alert claim's comment read *"Redelivery of the same event is stopped
+earlier by the billing_events check."* After this change that is true only of a
+redelivery of a **succeeded** event — a handler that throws now releases its
+claim on purpose. That sentence was the reasoning that made the unguarded
+insert look safe, so it is corrected rather than left to mislead the next
+reader. A regression test asserts it does not come back.
+
+### Also from the review
+
+`webhook.payment-alerts.spec.ts`'s fake had no `delete:` method. No test there
+drives a throwing handler today, so nothing reached the release path — but the
+release is wrapped in its own try/catch in production, so a future failure test
+would have had its `db.delete is not a function` **swallowed** and would have
+looked like it passed while the release never happened. The fake now has one.
+
+Verified as non-issues: `.returning()` semantics on conflict (drizzle 0.45.0 +
+pg 8), the claim's scope and the unchanged 200-response timing (one round trip
+faster, in fact), and the audit-trail loss — nothing in the backend, the admin
+app, or either frontend reads `billing_events.errorMessage` or `processed`.

@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { eq, and, gt, inArray } from 'drizzle-orm';
+import { eq, and, gt, inArray, sql } from 'drizzle-orm';
 import Stripe from 'stripe';
 import { db } from '../../drizzle/db';
 import {
@@ -627,15 +627,50 @@ export class WebhookService {
       invoiceId = invoiceRecord[0].id;
     }
 
-    // Record failed payment
+    // Record failed payment: ONE row per failure EVENT.
+    //
+    // `failed_payments` had no unique constraint at all, so every delivery
+    // appended a fresh row. That was survivable only while a redelivery could
+    // not reach this handler - and it now can, because the webhook gate
+    // releases its claim when a handler throws so that Stripe's retry can
+    // reprocess the event.
+    //
+    // This insert sits BEFORE roughly eight further await points, several of
+    // which write, so a throw after it leaves the row committed and the retry
+    // would append a second one for the same event. That is not a cosmetic
+    // duplicate: the dunning gate below counts ROWS, so a customer with two
+    // genuine failures plus one duplicate reads as three and has every owned
+    // workspace dropped to FREE limits with all add-ons zeroed, a full failure
+    // early, from a transient database error. The duplicates also skew
+    // `startsEpisode`'s `Math.min` over unresolved ids, which decides whether
+    // the "moved to Free" email goes out.
+    //
+    // So the event id is the row's identity (migration 0089, partial unique
+    // index), and the insert claims it. DO NOTHING rather than DO UPDATE: a
+    // redelivery has nothing new to say about a failure already recorded.
     const failedPayment: NewFailedPayment = {
       subscriptionId: subscription[0].id,
       invoiceId: invoiceId,
+      stripeEventId: eventId,
       failureReason: inv.last_payment_error?.message || 'Payment failed',
       attemptCount: inv.attempt_count || 1,
     };
 
-    await db.insert(failedPayments).values(failedPayment);
+    await db
+      .insert(failedPayments)
+      .values(failedPayment)
+      .onConflictDoNothing({
+        target: failedPayments.stripeEventId,
+        // The index predicate, NOT a row filter. 0089's index is partial
+        // (`WHERE stripe_event_id IS NOT NULL`), and Postgres will not infer a
+        // partial index from a bare `ON CONFLICT (col)` - it raises
+        // "there is no unique or exclusion constraint matching the ON CONFLICT
+        // specification", which here would 500 every payment failure. Verified
+        // against Postgres both ways. Drizzle emits this as
+        // `(col) where <predicate> do nothing`, which is the position the
+        // inference needs.
+        where: sql`${failedPayments.stripeEventId} IS NOT NULL`,
+      });
 
     await this.safely('payment failed', () =>
       this.emailPaymentFailed(invoice, subscription[0]),
@@ -684,8 +719,14 @@ export class WebhookService {
 
     // One alert per failure EVENT. Keyed on the event id, not the invoice's
     // `attempt_count`: a manual retry that fails again does not bump the count
-    // but is a new event. Redelivery of the same event is stopped earlier by
-    // the billing_events check, and the alert claim is unique besides.
+    // but is a new event.
+    //
+    // The claim on `alert_key` is what makes this once-only. It used to say
+    // the `billing_events` check stopped a redelivery earlier - which is now
+    // true only of a redelivery of a SUCCEEDED event, since a handler that
+    // throws releases its claim on purpose so Stripe retries. Every write on
+    // this path therefore has to carry its own key, which is why the
+    // `failed_payments` insert above claims the event id.
     await this.paymentAlerts.paymentFailed({
       userId: subscription[0].userId,
       provider: 'stripe',

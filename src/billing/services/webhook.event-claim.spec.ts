@@ -38,6 +38,8 @@
 /* eslint-disable @typescript-eslint/no-unsafe-call */
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Logger } from '@nestjs/common';
 
 interface Row {
@@ -307,6 +309,84 @@ describe('a failed delivery is retryable', () => {
       'the real cause',
     );
     spy.mockRestore();
+  });
+});
+
+/**
+ * WHAT THE RELEASE EXPOSES
+ *
+ * Releasing the claim is what makes a retry possible, and a retry re-runs the
+ * handler from the top. Every write a handler performs before a later await
+ * point can therefore happen twice, so each one needs a key of its own.
+ *
+ * `failed_payments` was the one that did not have one: no unique constraint of
+ * any kind, a bare `insert`, and ~8 further await points after it, several of
+ * which write. That matters because the dunning gate counts ROWS -
+ * `unresolvedFailures.length >= MAX_FAILED_ATTEMPTS` - so a duplicate row
+ * restricts an account a full failure early: every owned workspace dropped to
+ * FREE limits with all purchased add-ons zeroed, from a transient database
+ * error.
+ *
+ * Asserted on the source. Driving `handleInvoicePaymentFailed` behaviourally
+ * would mean standing up invoices, subscriptions, workspace usage, plans and
+ * the limit fan-out - most of the billing module - to observe one `INSERT`
+ * clause, and `webhook.payment-alerts.spec.ts` already owns that harness. The
+ * property here is narrow and exact: the insert must claim the event id, under
+ * the PARTIAL index 0089 creates.
+ */
+describe('every write the retry can repeat carries its own key', () => {
+  const source = readFileSync(join(__dirname, 'webhook.service.ts'), 'utf8');
+
+  /** The `failed_payments` insert, up to the end of its statement. */
+  function failedPaymentInsert(): string {
+    const start = source.indexOf('.insert(failedPayments)');
+    expect(start).toBeGreaterThan(-1);
+    const end = source.indexOf(';', start);
+    return source.slice(start, end);
+  }
+
+  it('the failed_payments insert claims the Stripe event id', () => {
+    const insert = failedPaymentInsert();
+    expect(insert).toMatch(/onConflictDoNothing/);
+    expect(insert).toMatch(/target:\s*failedPayments\.stripeEventId/);
+  });
+
+  it('the row carries the event id, or the claim would be on null', () => {
+    // `stripeEventId: eventId` - the handler already receives it, for the
+    // alert key. A row inserted without it falls outside the partial index
+    // and every delivery appends another.
+    expect(source).toMatch(/stripeEventId:\s*eventId/);
+  });
+
+  /**
+   * The bug this nearly shipped with. 0089's index is partial, and Postgres
+   * does NOT infer a partial index from a bare `ON CONFLICT (col)`: it raises
+   * "there is no unique or exclusion constraint matching the ON CONFLICT
+   * specification". Verified against Postgres both ways - without the
+   * predicate that error would 500 EVERY payment failure.
+   */
+  it('names the index predicate, so the partial index is inferred', () => {
+    const insert = failedPaymentInsert();
+    expect(insert).toMatch(/where:\s*sql`/);
+    expect(insert).toMatch(/IS NOT NULL/);
+  });
+
+  it('does not silently overwrite the recorded failure', () => {
+    // A redelivery has nothing new to say about a failure already recorded,
+    // and DO UPDATE would reset fields the dunning logic owns.
+    expect(failedPaymentInsert()).not.toMatch(/onConflictDoUpdate/);
+  });
+
+  /**
+   * The comment at the alert claim used to say redelivery was "stopped
+   * earlier by the billing_events check". After the release that holds only
+   * for an event that SUCCEEDED, and it was the reasoning that made the
+   * unguarded insert look safe.
+   */
+  it('no longer claims billing_events stops a redelivery outright', () => {
+    expect(source).not.toMatch(
+      /Redelivery of the same event is stopped earlier by/,
+    );
   });
 });
 

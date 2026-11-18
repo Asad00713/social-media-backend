@@ -169,6 +169,28 @@ function makeDb(): any {
       };
       return chain;
     },
+    /**
+     * The webhook's failure path DELETEs its `billing_events` claim so that
+     * Stripe's retry can reprocess the event.
+     *
+     * No test here drives a throwing handler today, so nothing reaches it -
+     * but the release is wrapped in its own try/catch in production (correctly:
+     * a failed release must not replace the handler's error). Without this
+     * method a future failure test would get `db.delete is not a function`,
+     * that TypeError would be SWALLOWED by that catch, and the test would look
+     * like it passed while the release never happened.
+     */
+    delete: (t: unknown) => {
+      const target = tableName(t);
+      const chain: any = {
+        where: (c: unknown) => {
+          const match = predicateFrom(c);
+          tables[target] = rowsOf(target).filter((row) => !match(row));
+          return Promise.resolve([]);
+        },
+      };
+      return chain;
+    },
   };
 }
 
