@@ -30,6 +30,40 @@ export function liveWorkspaces(): SQL {
 }
 
 /**
+ * The filter every read on a PUBLISHING path must carry on top of
+ * `livePosts()`: the post's workspace must still exist.
+ *
+ * Deleting a workspace is a soft delete, and it marks only the `workspace`
+ * row - posts keep `deleted_at IS NULL` deliberately, because the 30-day
+ * window exists so the whole workspace can be brought back intact. So a
+ * scheduled post in a deleted workspace is still a live post, and
+ * `livePosts()` alone happily selects it.
+ *
+ * For a read answering a user's request that is harmless: the routing already
+ * scopes it to a workspace they can reach, and a deleted one is unreachable.
+ * The BACKGROUND paths are the problem, because nothing scopes them - the
+ * publish processor, the reconciler, the stranded sweeper and the repeat
+ * series all scan `posts` globally on a timer. Without this filter a workspace
+ * someone deleted goes on PUBLISHING TO SOCIAL MEDIA in their name until the
+ * purge removes it 30 days later - and the reconciler actively re-arms the
+ * jobs that would otherwise have drained out of Redis.
+ *
+ * A correlated EXISTS rather than a join: these queries have different shapes
+ * (one aggregates, one selects a column list, one is a single-row lookup), and
+ * a join would change what each returns and how its callers read it. This
+ * drops into an existing `and(...)` unchanged.
+ *
+ * `workspace_id` is NOT NULL on `posts`, so there is no orphan case to decide.
+ */
+export function liveWorkspacePosts(): SQL {
+  return sql`EXISTS (
+    SELECT 1 FROM ${workspace}
+    WHERE ${workspace.id} = ${posts.workspaceId}
+      AND ${workspace.deletedAt} IS NULL
+  )`;
+}
+
+/**
  * The filter as raw SQL, for the handful of reads written as raw SQL rather
  * than through the query builder. `alias` is the table's alias in that query
  * (`p` in `FROM posts p`), empty for an unaliased table.

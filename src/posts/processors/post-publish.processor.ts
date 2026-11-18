@@ -16,7 +16,7 @@ import { PostService } from '../services/post.service';
 import { PublishFailureNotifier } from '../services/publish-failure-notifier.service';
 import { RepeatPostsService } from '../services/repeat-posts.service';
 import type { PublishJobData } from '../lib/held-targets';
-import { livePosts } from '../soft-delete/soft-delete';
+import { livePosts, liveWorkspacePosts } from '../soft-delete/soft-delete';
 
 @Processor(QUEUES.POST_PUBLISHING, {
   concurrency: 5, // Process up to 5 jobs simultaneously
@@ -48,7 +48,7 @@ export class PostPublishProcessor extends WorkerHost {
           // A deleted post must never publish. The `if (!post)` branch below
           // already treats a missing row as "nothing to do" without burning
           // a BullMQ retry, which is exactly right here too.
-          .where(and(eq(posts.id, postId), livePosts()))
+          .where(and(eq(posts.id, postId), livePosts(), liveWorkspacePosts()))
           .limit(1),
       );
 
