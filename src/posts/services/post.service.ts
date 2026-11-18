@@ -86,6 +86,10 @@ import {
   soonestRetry,
   HELD_REASON,
   HELD_REASON_RATE_LIMITED,
+  HELD_REASON_TRANSIENT,
+  isSelfReleasing,
+  holdTransient,
+  TRANSIENT_RETRY_DELAY_MS,
   MISSED_HELD_MESSAGE,
   PUBLISH_LATE_GRACE_MS,
   type HeldReason,
@@ -847,6 +851,12 @@ export class PostService {
     // a question a rate limit never answers. A rate limit releases itself on
     // a timer, so it needs its own re-enqueue.
     let rateLimitRetryMs: number | null = null;
+    /**
+     * Soonest moment a transiently-failed target should be tried again.
+     * Kept apart from `rateLimitRetryMs` only so the log can say which it is;
+     * both feed the one re-enqueue below.
+     */
+    let transientRetryMs: number | null = null;
     // The targets THIS run tried (published, failed or reminded). A target
     // carried over untouched - live already, held, or an old failure a
     // resume leaves alone - is not in it, so a client tells only the news.
@@ -931,14 +941,19 @@ export class PostService {
       // Same reasoning and same message as the `missedHeld` branch above; the
       // difference is only which hold reason got here.
       if (
-        storedTarget.heldReason === HELD_REASON_RATE_LIMITED &&
+        isSelfReleasing(storedTarget) &&
         isMissedRelease(post.scheduledAt, PUBLISH_LATE_GRACE_MS, now)
       ) {
         updatedTargets.push({
           ...releaseTarget(storedTarget),
           status: 'failed',
           errorMessage: MISSED_HELD_MESSAGE,
-          errorCode: 'rate_limited',
+          // The reason it waited is why it is now too late, so it is the
+          // code worth keeping: 'rate_limited' or 'transient'.
+          errorCode:
+            storedTarget.heldReason === HELD_REASON_TRANSIENT
+              ? 'transient'
+              : 'rate_limited',
           warnings: undefined,
         });
         allSuccess = false;
@@ -1152,12 +1167,65 @@ export class PostService {
           `Failed to publish to channel ${target.channelId}: ${errorMessage}`,
         );
 
+        // One classifier for Publish now and the scheduled job.
+        const classified = classifyPublishError(error);
+
+        // A RETRYABLE failure is held, not failed.
+        //
+        // `classifyPublishError` has always computed `retryable` - true for a
+        // 502/503/504, a timeout, a dropped connection - and nothing read it:
+        // every caller took `.code` and threw the flag away. So a platform
+        // hiccup wrote `status: 'failed'`, and because this catch swallows the
+        // error the job COMPLETED, so BullMQ never retried either. The post
+        // was dead because the platform was briefly unavailable.
+        //
+        // Held instead, exactly as a rate limit is: status untouched, the post
+        // stays `scheduled`, and it is re-enqueued on a delay below. The 6h
+        // `PUBLISH_LATE_GRACE_MS` still caps how long it may keep waiting.
+        //
+        // NOT applied to a partial publish: part of the post is already live
+        // on the platform, so this attempt is over - retrying is the author's
+        // call, with `itemResults` telling the retry where to resume.
+        const retryTransient =
+          classified.retryable &&
+          classified.code === 'transient' &&
+          !(error instanceof PartialPublishError) &&
+          !isMissedRelease(post.scheduledAt, PUBLISH_LATE_GRACE_MS, now);
+
+        if (retryTransient) {
+          const held = holdTransient(target, now, errorMessage);
+          updatedTargets.push(held);
+          if (held.heldReason === HELD_REASON_TRANSIENT) {
+            transientRetryMs = soonestRetry(
+              transientRetryMs,
+              TRANSIENT_RETRY_DELAY_MS,
+            );
+          }
+          this.logger.warn(
+            `Transient failure on channel ${String(target.channelId)} for post ${postId}; holding rather than failing: ${errorMessage}`,
+          );
+          await this.recordHistory(
+            postId,
+            'held',
+            'publishing',
+            'scheduled',
+            target.channelId,
+            userId,
+            {
+              platform: target.platform,
+              errorMessage,
+              heldReason: HELD_REASON_TRANSIENT,
+              retryAfterMs: TRANSIENT_RETRY_DELAY_MS,
+            },
+          );
+          continue;
+        }
+
         updatedTargets.push({
           ...target,
           status: 'failed',
           errorMessage,
-          // One classifier for Publish now and the scheduled job.
-          errorCode: classifyPublishError(error).code,
+          errorCode: classified.code,
           warnings: undefined,
           // Part of the post is live (one Pin per image): keep what went
           // out, so the retry resumes after it rather than repeating it.
@@ -1188,10 +1256,16 @@ export class PostService {
     const heldForRateLimit = updatedTargets.some(
       (t) => t.heldReason === HELD_REASON_RATE_LIMITED,
     );
+    // A transient platform failure is held the same way and needs the same
+    // delayed job, so it joins `anyHeld` below and keeps the post `scheduled`.
+    const heldForTransient = updatedTargets.some(
+      (t) => t.heldReason === HELD_REASON_TRANSIENT,
+    );
 
     // Determine final status
     let finalStatus: PostStatus;
-    const anyHeld = heldChannels.size > 0 || heldForRateLimit;
+    const anyHeld =
+      heldChannels.size > 0 || heldForRateLimit || heldForTransient;
     if (anyHeld) {
       // Part of the post still waits — for a paused channel, or for a rate
       // limit window to reopen. Either way it stays scheduled.
@@ -1250,13 +1324,27 @@ export class PostService {
     //
     // The job also keeps the reconciler away: it skips a post whose job is
     // still pending, so the two never both re-arm the same post.
-    if (updatedPost && heldForRateLimit && rateLimitRetryMs !== null) {
+    //
+    // A transient platform failure is the same shape - held, released by time
+    // alone - so it shares this one job. `soonestRetry` picks the earlier of
+    // the two when a post has both: a target held by the later one is simply
+    // held again on that run, which is correct, while waiting for the later
+    // would hold the earlier needlessly.
+    const selfReleaseRetryMs = soonestRetry(
+      rateLimitRetryMs,
+      transientRetryMs ?? undefined,
+    );
+    if (
+      updatedPost &&
+      (heldForRateLimit || heldForTransient) &&
+      selfReleaseRetryMs !== null
+    ) {
       try {
         await enqueueHeldPost(this.publishingQueue, db, updatedPost, now, {
-          delayMs: rateLimitRetryMs,
+          delayMs: selfReleaseRetryMs,
         });
         this.logger.log(
-          `Post ${postId} held for a rate limit; retrying in ${Math.ceil(rateLimitRetryMs / 60_000)} min`,
+          `Post ${postId} held for ${heldForRateLimit ? 'a rate limit' : 'a transient platform failure'}; retrying in ${Math.ceil(selfReleaseRetryMs / 60_000)} min`,
         );
       } catch (error) {
         // Leaving the post `scheduled` with no job is recoverable — the

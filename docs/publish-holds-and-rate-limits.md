@@ -164,3 +164,96 @@ exactly the shape `ScheduledPostReconciler` repairs, within 15 minutes.
 | Where holds are decided during a publish | `src/posts/services/post.service.ts` (`publishPost`) |
 | Recovery when a job is lost | `src/posts/services/scheduled-post-reconciler.service.ts` |
 | What must not regress | `src/posts/rate-limit-hold.spec.ts` |
+
+## A fourth hold reason: `transient_error`
+
+Phase 3 item #1. The audit asked to "use `retryable` + add 5xx detection".
+Checking the code first: **5xx detection already existed** —
+`classifyPublishError` has matched `50[234]`, `ETIMEDOUT`, `ECONNRESET`,
+`EAI_AGAIN`, "service unavailable", "bad gateway" and more since it was
+written, returning `{ code: 'transient', retryable: true }`.
+
+What was missing is that **nothing read `retryable`**. All three callers took
+`.code` and discarded the flag:
+
+```
+src/platform-status/lib/classify.ts:134   classifyPublishError(message).code
+src/posts/lib/post-failure.ts:33          classifyPublishError(text).code
+src/posts/services/post.service.ts:1160   classifyPublishError(error).code
+```
+
+So a target whose platform answered `503 Service Unavailable` was written
+`status: 'failed'`. And because the per-target `catch` **swallows** the error,
+the job completed successfully — so BullMQ's three attempts never came into
+play either. A customer's post was permanently dead because a platform was
+briefly unavailable, which is the one failure mode retries exist for.
+
+### The fix reuses the hold mechanism
+
+`transient` becomes a fourth hold reason rather than a parallel code path,
+exactly as `rate_limited` did:
+
+```ts
+export const HELD_REASON_TRANSIENT = 'transient_error' as const;
+```
+
+`holdTransient` mirrors `holdRateLimited`, including its refusal to take over
+an existing hold — a paused channel downgraded to a self-releasing reason
+would publish to a channel someone deliberately paused. It keeps
+`errorMessage`/`errorCode` (the attempt really did fail, and "Service
+unavailable, retrying" beats a silent wait) while leaving `status` untouched,
+so the post stays `scheduled`.
+
+### `isSelfReleasing`, instead of a comparison per site
+
+The release paths were written `heldReason !== HELD_REASON_RATE_LIMITED` when
+that was the only timer-released reason, and **every one of them had to be
+found again** when a second appeared — the channel-pause release, the grace
+check, `isHeldByUserAction`. They now ask one exported predicate, so a third
+reason needs no new site:
+
+```ts
+export function isSelfReleasing(target: Pick<PostTarget, 'heldReason'>): boolean
+```
+
+### What is deliberately NOT held
+
+| Case | Why it stays a failure |
+|---|---|
+| a partial publish | part of the post is already live, so a blind retry duplicates it; `itemResults` lets a deliberate retry resume |
+| already past the 6h grace | the post is stale; holding again would only delay telling the author |
+| `auth_failed`, `media_invalid`, `content_rejected`, `permanent` | all `retryable: false` — retrying forever would hide a real problem |
+
+### The delay is chosen, not read
+
+A rate limit states when its window reopens; an outage announces nothing. So
+`TRANSIENT_RETRY_DELAY_MS` is a flat 5 minutes — long enough for a blip to
+pass, short enough that a post scheduled to the minute is not noticeably late.
+Both self-releasing reasons share **one** delayed job, at `soonestRetry` of the
+two: a target held by the later one is simply held again on that run, which is
+correct, while waiting for the later would hold the earlier needlessly.
+
+`PUBLISH_LATE_GRACE_MS` (6h) still caps the total, so a platform that is down
+for a day fails the post and tells the author rather than retrying silently
+forever.
+
+### Tests
+
+`transient-failure-hold.spec.ts` (21 tests). Mutation-tested:
+
+| Mutation | Tests that fail |
+|---|---|
+| ignore `retryable` (the original bug) | 1 |
+| treat `transient` as a user-caused hold | 2 |
+| drop the "never downgrade an existing hold" guard | 3 |
+
+The third matters most: without it a transient failure on a paused channel
+would take over that hold and publish on a timer to a channel the user
+deliberately paused.
+
+Five assertions in `rate-limit-hold.spec.ts` also had to change — they pinned
+the old *spellings* (`heldReason !== HELD_REASON_RATE_LIMITED`,
+`delayMs: rateLimitRetryMs`, the DTO union on one line) rather than the
+invariants, so they failed while the properties they describe still held. They
+now assert the behaviour: a delay is passed and guarded, the grace is judged on
+the stored hold, each self-releasing reason is named in the presenter.

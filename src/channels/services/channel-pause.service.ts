@@ -15,7 +15,7 @@ import { QUEUES } from '../../queue/queue.module';
 import {
   enqueueHeldPost,
   HELD_REASON,
-  HELD_REASON_RATE_LIMITED,
+  isSelfReleasing,
   holdTarget,
   isHeld,
   isJobPending,
@@ -278,7 +278,10 @@ export class ChannelPauseService {
           const targets = (row.targets ?? []).map((t: PostTarget) =>
             String(t.channelId) === id &&
             isHeld(t) &&
-            t.heldReason !== HELD_REASON_RATE_LIMITED
+            // Resuming a channel must not clear a hold that releases itself:
+            // the rate-limit window, or a transient platform failure, is still
+            // there and the post already carries a delayed job for it.
+            !isSelfReleasing(t)
               ? isPaused
                 ? holdTarget(t, now, HELD_REASON)
                 : releaseTarget(t)
