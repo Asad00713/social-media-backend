@@ -1,5 +1,6 @@
 import 'reflect-metadata';
-import { ForbiddenException } from '@nestjs/common';
+import { ConflictException, ForbiddenException } from '@nestjs/common';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import type { ConfigService } from '@nestjs/config';
 import { AppLinks } from 'src/email/links/app-links';
 import { WorkspaceMembersService } from './workspace-members.service';
@@ -56,18 +57,22 @@ function makeService(db: any, usage: any) {
 /** An update chain that records what it was given and answers `rows`. */
 function updateChain(rows: unknown[]) {
   const sets: any[] = [];
+  const wheres: any[] = [];
   const update = jest.fn(() => ({
     set: (set: any) => {
       sets.push(set);
       return {
-        where: () => ({
-          returning: () =>
-            Promise.resolve(rows.map((r) => ({ ...(r as object), ...set }))),
-        }),
+        where: (w: any) => {
+          wheres.push(w);
+          return {
+            returning: () =>
+              Promise.resolve(rows.map((r) => ({ ...(r as object), ...set }))),
+          };
+        },
       };
     },
   }));
-  return { update, sets };
+  return { update, sets, wheres };
 }
 
 /** A workspace the caller owns, with `pending` invitations already out. */
@@ -374,7 +379,7 @@ describe('accept and remove count seats, not people', () => {
   });
 
   function removalDb(role: string) {
-    const { update } = updateChain([{ id: 'm1' }]);
+    const { update } = updateChain([{ id: 'm1', role }]);
     return {
       query: {
         workspace: {
@@ -405,6 +410,48 @@ describe('accept and remove count seats, not people', () => {
     (svc2 as any).notifyMemberRemoved = jest.fn().mockResolvedValue(undefined);
     await svc2.removeMember(WS, 'm1', OWNER);
     expect(memberUsage.decrementMemberCount).toHaveBeenCalledWith(
+      WS,
+      OWNER,
+      MEMBER_USER,
+    );
+  });
+});
+
+describe('remove decides on the role the UPDATE removed, not the pre-read', () => {
+  function removalDb(readRole: string, removedRole: string) {
+    const { update } = updateChain([{ id: 'm1', role: removedRole }]);
+    return {
+      query: {
+        workspace: {
+          findFirst: jest.fn().mockResolvedValue({ id: WS, ownerId: OWNER }),
+        },
+        workspaceInvitation: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 'm1',
+            userId: MEMBER_USER,
+            status: 'ACCEPTED',
+            role: readRole,
+          }),
+        },
+      },
+      update,
+    } as any;
+  }
+
+  it('read MEMBER, demoted to GUEST meanwhile: that demotion already freed the seat, so no second decrement', async () => {
+    const usage = makeUsage(2, 1);
+    const svc = makeService(removalDb('MEMBER', 'GUEST'), usage);
+    (svc as any).notifyMemberRemoved = jest.fn().mockResolvedValue(undefined);
+    await svc.removeMember(WS, 'm1', OWNER);
+    expect(usage.decrementMemberCount).not.toHaveBeenCalled();
+  });
+
+  it('read GUEST, promoted to MEMBER meanwhile: the seat it now holds is freed', async () => {
+    const usage = makeUsage(2, 2);
+    const svc = makeService(removalDb('GUEST', 'MEMBER'), usage);
+    (svc as any).notifyMemberRemoved = jest.fn().mockResolvedValue(undefined);
+    await svc.removeMember(WS, 'm1', OWNER);
+    expect(usage.decrementMemberCount).toHaveBeenCalledWith(
       WS,
       OWNER,
       MEMBER_USER,
@@ -470,7 +517,7 @@ describe('restoring a removed member', () => {
 });
 
 describe('changing a role moves a seat only across the guest line', () => {
-  function roleDb(currentRole: string) {
+  function roleDb(currentRole: string, opts: { updateMatches?: boolean } = {}) {
     const row = {
       id: 'm1',
       workspaceId: WS,
@@ -479,7 +526,12 @@ describe('changing a role moves a seat only across the guest line', () => {
       role: currentRole,
       token: 'secret',
     };
-    const { update, sets } = updateChain([row]);
+    const { update, sets, wheres } = updateChain(
+      opts.updateMatches === false ? [] : [row],
+    );
+    // A transaction that records how it ended: a callback that throws is a
+    // rollback, as in drizzle.
+    const ended = { committed: 0, rolledBack: 0 };
     const db: any = {
       query: {
         workspace: {
@@ -491,8 +543,19 @@ describe('changing a role moves a seat only across the guest line', () => {
         },
       },
       update,
+      execute: jest.fn().mockResolvedValue(undefined),
+      transaction: async (fn: (tx: unknown) => Promise<unknown>) => {
+        try {
+          const out = await fn(db);
+          ended.committed++;
+          return out;
+        } catch (e) {
+          ended.rolledBack++;
+          throw e;
+        }
+      },
     };
-    return { db, sets };
+    return { db, sets, wheres, ended };
   }
 
   it('promoting a guest with no free seat is 403 SEAT_LIMIT_EXCEEDED and nothing changes', async () => {
@@ -573,6 +636,73 @@ describe('changing a role moves a seat only across the guest line', () => {
       );
       expect(usage.incrementMemberCount).not.toHaveBeenCalled();
     }
+  });
+
+  it('the write is conditional on the row still being ACCEPTED with the role that was judged', async () => {
+    const { db, wheres } = roleDb('GUEST');
+    await makeService(db, makeUsage(3, 1)).updateMemberRole(
+      WS,
+      'm1',
+      { role: 'MEMBER' } as any,
+      OWNER,
+    );
+    const where = new PgDialect().sqlToQuery(wheres[0]);
+    expect(where.params).toEqual(
+      expect.arrayContaining(['m1', WS, 'ACCEPTED', 'GUEST']),
+    );
+  });
+
+  it('a row removed (or changed) meanwhile is 409 MEMBER_CHANGED and the counter is not written', async () => {
+    for (const [from, to] of [
+      ['GUEST', 'MEMBER'], // a promotion would count a seat for someone gone
+      ['MEMBER', 'GUEST'], // a demotion would free a seat that leave freed
+    ]) {
+      const { db, ended } = roleDb(from, { updateMatches: false });
+      const usage = makeUsage(5, 1);
+      const err = await rejection(
+        makeService(db, usage).updateMemberRole(
+          WS,
+          'm1',
+          { role: to } as any,
+          OWNER,
+        ),
+      );
+      expect(err).toBeInstanceOf(ConflictException);
+      expect(err.getResponse()).toMatchObject({ code: 'MEMBER_CHANGED' });
+      expect(usage.incrementMemberCount).not.toHaveBeenCalled();
+      expect(usage.decrementMemberCount).not.toHaveBeenCalled();
+      expect(ended).toEqual({ committed: 0, rolledBack: 1 });
+    }
+  });
+
+  it('a promotion whose seat cannot be counted rolls the role change back', async () => {
+    const { db, ended } = roleDb('GUEST');
+    const usage = makeUsage(5, 1);
+    usage.incrementMemberCount.mockRejectedValue(new Error('usage db down'));
+    await expect(
+      makeService(db, usage).updateMemberRole(
+        WS,
+        'm1',
+        { role: 'MEMBER' } as any,
+        OWNER,
+      ),
+    ).rejects.toThrow('usage db down');
+    expect(ended).toEqual({ committed: 0, rolledBack: 1 });
+  });
+
+  it('a demotion whose seat cannot be freed still commits (the count errs high)', async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { db, ended } = roleDb('MEMBER');
+    const usage = makeUsage(5, 2);
+    usage.decrementMemberCount.mockRejectedValue(new Error('usage db down'));
+    const res = await makeService(db, usage).updateMemberRole(
+      WS,
+      'm1',
+      { role: 'GUEST' } as any,
+      OWNER,
+    );
+    expect(res.role).toBe('GUEST');
+    expect(ended).toEqual({ committed: 1, rolledBack: 0 });
   });
 
   it('moving between two seat roles, or guest to guest, touches no counter and checks no seat', async () => {

@@ -1004,30 +1004,53 @@ export class WorkspaceMembersService {
         if (free < 1) throw seatLimitExceeded(free, 1);
       }
 
+      // Conditional on the row still being ACCEPTED with the role judged
+      // above. Removal and leave do not take the seat lock, so one can commit
+      // between the read and this write; the UPDATE then waits on that row
+      // lock, re-checks the condition, and matches nothing. The counter is
+      // moved only for a row this statement really changed, so a removed
+      // member is never promoted or counted twice.
       const [row] = await tx
         .update(workspaceInvitation)
         .set({ role: newRole, updatedAt: new Date() })
-        .where(eq(workspaceInvitation.id, memberId))
+        .where(
+          and(
+            eq(workspaceInvitation.id, memberId),
+            eq(workspaceInvitation.workspaceId, workspaceId),
+            eq(workspaceInvitation.status, 'ACCEPTED'),
+            eq(workspaceInvitation.role, current.role),
+          ),
+        )
         .returning();
+      if (!row) {
+        throw memberConflict(
+          'MEMBER_CHANGED',
+          'This member was changed or removed just now. Refresh and try again.',
+        );
+      }
 
       // Counted before the lock is released, so the next seat check sees it.
-      try {
-        if (seatDelta === 1) {
-          await this.usageService.incrementMemberCount(
-            workspaceId,
-            currentUserId,
-            current.userId || undefined,
-          );
-        } else if (seatDelta === -1) {
+      if (seatDelta === 1) {
+        // The seat is the point of a promotion: if it cannot be counted the
+        // error propagates and the role change rolls back, rather than
+        // committing a seat-holder nobody counted.
+        await this.usageService.incrementMemberCount(
+          workspaceId,
+          currentUserId,
+          current.userId || undefined,
+        );
+      } else if (seatDelta === -1) {
+        try {
           await this.usageService.decrementMemberCount(
             workspaceId,
             currentUserId,
             current.userId || undefined,
           );
+        } catch (error) {
+          // A demotion that fails to free the seat errs high (conservative):
+          // log it and keep the change, as accept and remove do.
+          console.error('Failed to track member role change:', error);
         }
-      } catch (error) {
-        // Log but don't fail if usage tracking fails (as accept and remove do)
-        console.error('Failed to track member role change:', error);
       }
       return row;
     });
@@ -1094,14 +1117,20 @@ export class WorkspaceMembersService {
           eq(workspaceInvitation.status, 'ACCEPTED'),
         ),
       )
-      .returning({ id: workspaceInvitation.id });
+      .returning({
+        id: workspaceInvitation.id,
+        role: workspaceInvitation.role,
+      });
 
     if (!removed) {
       throw new NotFoundException('Member not found in this workspace');
     }
 
-    // Track usage - decrement member count. A guest never took a seat.
-    if (usesSeat(member.role)) {
+    // Track usage - decrement member count. A guest never took a seat. The
+    // role is the one the UPDATE just removed, not the one read earlier: a
+    // role change that committed in between has already moved the counter, and
+    // deciding on the stale role would move it twice (or not at all).
+    if (usesSeat(removed.role)) {
       try {
         await this.usageService.decrementMemberCount(
           workspaceId,
