@@ -39,9 +39,11 @@ export interface PlannerPostTargetDto {
   heldAt?: string;
   /**
    * Why it is held, present with heldAt: 'channel_paused' (resuming sends
-   * it) or 'channel_disconnected' (the undo or a reconnect does).
+   * it), 'channel_disconnected' (the undo or a reconnect does), or
+   * 'rate_limited' (nothing to press — it retries itself when the platform's
+   * window reopens, and is failed if its time passes meanwhile).
    */
-  heldReason?: 'channel_paused' | 'channel_disconnected';
+  heldReason?: 'channel_paused' | 'channel_disconnected' | 'rate_limited';
   /** Non-null only when status === 'failed'. */
   failure: PostFailure | null;
 }

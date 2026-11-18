@@ -76,13 +76,18 @@ import {
 import { channelContent } from '../lib/channel-content';
 import {
   enqueueHeldPost,
+  holdRateLimited,
   holdTarget,
   holdingReasonOf,
   isHeld,
+  isMissedRelease,
   publishRefusalFor,
   releaseTarget,
+  soonestRetry,
   HELD_REASON,
+  HELD_REASON_RATE_LIMITED,
   MISSED_HELD_MESSAGE,
+  PUBLISH_LATE_GRACE_MS,
   type HeldReason,
   type HoldingChannel,
 } from '../lib/held-targets';
@@ -774,6 +779,13 @@ export class PostService {
     let newSuccess = false;
     // Targets held for a paused channel; any keeps the post `scheduled`.
     const heldChannels = new Map<string, string>();
+    // Soonest moment a rate-limited target may be retried, in ms from now;
+    // null when nothing was rate-limited. Tracked separately from
+    // `heldChannels` on purpose: that map drives
+    // `requeueIfResumedMeanwhile`, which asks whether a CHANNEL was resumed —
+    // a question a rate limit never answers. A rate limit releases itself on
+    // a timer, so it needs its own re-enqueue.
+    let rateLimitRetryMs: number | null = null;
     // The targets THIS run tried (published, failed or reminded). A target
     // carried over untouched - live already, held, or an old failure a
     // resume leaves alone - is not in it, so a client tells only the news.
@@ -845,6 +857,48 @@ export class PostService {
         continue;
       }
 
+      // A rate-limit hold whose window reopened, but whose time has long
+      // passed: fail it as missed rather than publish it late.
+      //
+      // This must run BEFORE releaseTarget below, and before the limit checks.
+      // Once the window clears, both checks return `allowed` and the target
+      // publishes — so a grace check placed after the publish can only ever
+      // catch a target that was re-held on the same run, which is to say only
+      // while the limit is still full. That is the one case where lateness
+      // does not matter yet.
+      //
+      // Same reasoning and same message as the `missedHeld` branch above; the
+      // difference is only which hold reason got here.
+      if (
+        storedTarget.heldReason === HELD_REASON_RATE_LIMITED &&
+        isMissedRelease(post.scheduledAt, PUBLISH_LATE_GRACE_MS, now)
+      ) {
+        updatedTargets.push({
+          ...releaseTarget(storedTarget),
+          status: 'failed',
+          errorMessage: MISSED_HELD_MESSAGE,
+          errorCode: 'rate_limited',
+          warnings: undefined,
+        });
+        allSuccess = false;
+        this.logger.warn(
+          `Post ${postId} target ${String(storedTarget.channelId)} was rate-limited and its time has passed; failing it as missed rather than publishing late`,
+        );
+        await this.recordHistory(
+          postId,
+          'rate_limited',
+          'publishing',
+          'failed',
+          storedTarget.channelId,
+          userId,
+          {
+            platform: storedTarget.platform,
+            errorMessage: MISSED_HELD_MESSAGE,
+          },
+        );
+        continue;
+      }
+
       // Attempted now, so no longer held.
       const target = releaseTarget(storedTarget);
       attemptedChannelIds.push(String(target.channelId));
@@ -905,22 +959,28 @@ export class PostService {
           target.platform,
         );
         if (!globalRateLimit.allowed) {
-          this.logger.warn(
-            `Rate limit exceeded for platform ${target.platform}. Retry after ${globalRateLimit.retryAfterMs}ms`,
+          // The app-wide runaway brake, not a customer quota — see
+          // PLATFORM_RATE_LIMITS. Reaching it means something is publishing in
+          // a loop, so it is logged loudly, but the post is still held rather
+          // than failed: the customer did nothing wrong.
+          this.logger.error(
+            `Runaway brake hit for ${target.platform}; holding post ${postId}. Retry after ${globalRateLimit.retryAfterMs}ms`,
           );
-          updatedTargets.push({
-            ...target,
-            status: 'failed',
-            errorMessage: `Rate limit exceeded. Retry after ${Math.ceil((globalRateLimit.retryAfterMs || 0) / 1000 / 60)} minutes`,
-            errorCode: 'rate_limited',
-          });
+          const held = holdRateLimited(target, now);
+          updatedTargets.push(held);
+          if (held.heldReason === HELD_REASON_RATE_LIMITED) {
+            rateLimitRetryMs = soonestRetry(
+              rateLimitRetryMs,
+              globalRateLimit.retryAfterMs,
+            );
+          }
           allSuccess = false;
 
           await this.recordHistory(
             postId,
             'rate_limited',
             'publishing',
-            'failed',
+            'held',
             target.channelId,
             userId,
             {
@@ -940,22 +1000,26 @@ export class PostService {
             target.channelId,
           );
         if (!channelRateLimit.allowed) {
+          // The real limit: this account has published its allowance. Held
+          // until the window reopens, which the limiter states exactly.
           this.logger.warn(
-            `Channel rate limit exceeded for ${target.platform}:${target.channelId}. Retry after ${channelRateLimit.retryAfterMs}ms`,
+            `Channel rate limit reached for ${target.platform}:${target.channelId}; holding post ${postId}. Retry after ${channelRateLimit.retryAfterMs}ms`,
           );
-          updatedTargets.push({
-            ...target,
-            status: 'failed',
-            errorMessage: `Channel rate limit exceeded. Retry after ${Math.ceil((channelRateLimit.retryAfterMs || 0) / 1000 / 60)} minutes`,
-            errorCode: 'rate_limited',
-          });
+          const held = holdRateLimited(target, now);
+          updatedTargets.push(held);
+          if (held.heldReason === HELD_REASON_RATE_LIMITED) {
+            rateLimitRetryMs = soonestRetry(
+              rateLimitRetryMs,
+              channelRateLimit.retryAfterMs,
+            );
+          }
           allSuccess = false;
 
           await this.recordHistory(
             postId,
             'rate_limited',
             'publishing',
-            'failed',
+            'held',
             target.channelId,
             userId,
             {
@@ -1057,12 +1121,19 @@ export class PostService {
       }
     }
 
+    // The grace is enforced before the publish attempt, at the top of the
+    // loop — once a limit window reopens the target simply publishes, so a
+    // check here could only ever catch a target still held by a full limit.
+    const heldForRateLimit = updatedTargets.some(
+      (t) => t.heldReason === HELD_REASON_RATE_LIMITED,
+    );
+
     // Determine final status
     let finalStatus: PostStatus;
-    const anyHeld = heldChannels.size > 0;
+    const anyHeld = heldChannels.size > 0 || heldForRateLimit;
     if (anyHeld) {
-      // Part of the post still waits for a paused channel: it stays
-      // scheduled, and resuming that channel sends the rest.
+      // Part of the post still waits — for a paused channel, or for a rate
+      // limit window to reopen. Either way it stays scheduled.
       finalStatus = 'scheduled';
     } else if (allSuccess) {
       finalStatus = 'published';
@@ -1088,17 +1159,55 @@ export class PostService {
     if (newSuccess && !post.publishedAt) {
       postUpdateData.publishedAt = new Date();
     }
-    postUpdateData.lastError = allSuccess
-      ? null
-      : 'Some channels failed to publish';
+    // `allSuccess` is false for a hold as well as a failure — a rate-limited
+    // target did not publish, so the publish was not wholly successful — but a
+    // post that is merely waiting has no error. Writing one here would be read
+    // back as a failure: present-post uses `lastError` as the fallback text
+    // for a failed target, and emitPostStatusChanged ships it, so a
+    // `scheduled` post would carry "Some channels failed to publish" and could
+    // later surface that against an unrelated failure.
+    //
+    // A paused hold never set this, because it does not touch `allSuccess` at
+    // all; this keeps the two hold kinds the same shape in the row.
+    const nothingFailed = updatedTargets.every((t) => t.status !== 'failed');
+    postUpdateData.lastError =
+      allSuccess || nothingFailed ? null : 'Some channels failed to publish';
     const [updatedPost] = await db
       .update(posts)
       .set(postUpdateData)
       .where(eq(posts.id, postId))
       .returning();
 
-    if (updatedPost && anyHeld) {
+    if (updatedPost && heldChannels.size > 0) {
       await this.requeueIfResumedMeanwhile(updatedPost, heldChannels);
+    }
+
+    // A rate-limited hold releases itself, so it needs a job waiting for the
+    // moment the window reopens. Without this the post would sit `scheduled`
+    // with no job until the reconciler noticed — which it would, but up to 15
+    // minutes later and without knowing when the limit actually lifts.
+    //
+    // The job also keeps the reconciler away: it skips a post whose job is
+    // still pending, so the two never both re-arm the same post.
+    if (updatedPost && heldForRateLimit && rateLimitRetryMs !== null) {
+      try {
+        await enqueueHeldPost(this.publishingQueue, db, updatedPost, now, {
+          delayMs: rateLimitRetryMs,
+        });
+        this.logger.log(
+          `Post ${postId} held for a rate limit; retrying in ${Math.ceil(rateLimitRetryMs / 60_000)} min`,
+        );
+      } catch (error) {
+        // Leaving the post `scheduled` with no job is recoverable — the
+        // reconciler re-arms exactly this shape — so a queue failure must not
+        // throw here and burn a BullMQ retry on work that already published
+        // its other targets.
+        this.logger.error(
+          `Could not re-enqueue rate-limited post ${postId}; the reconciler will pick it up: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
     }
 
     if (!updatedPost) {
