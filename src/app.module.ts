@@ -58,6 +58,7 @@ import { HealthModule } from './health/health.module';
 import { BullBoardModule } from '@bull-board/nestjs';
 import { ExpressAdapter } from '@bull-board/express';
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
+import { MetricsModule } from './common/metrics/metrics.module';
 import { QUEUES } from './queue/queue.module';
 
 @Module({
@@ -71,7 +72,13 @@ import { QUEUES } from './queue/queue.module';
     // explicit @Throttle decorator are limited — turning this on for every
     // endpoint would silently start rejecting normal traffic on a platform
     // that has never had rate limiting and has not been measured for it.
+    //
+    // That measurement is now running: MetricsModule below counts requests per
+    // workspace per minute and refuses nothing. The global guard waits on its
+    // numbers (GET /admin/metrics/request-rate), so the limit is chosen from
+    // this platform's own p99 rather than from a guess.
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
+    MetricsModule,
     ScheduleModule.forRoot(),
     SocialMediaModule,
     DrizzleModule,
