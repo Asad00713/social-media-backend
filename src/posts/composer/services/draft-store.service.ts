@@ -26,6 +26,7 @@ import type {
   PlatformOverrides,
   ScheduleConfig,
 } from '../types/draft.types';
+import { livePosts } from '../../soft-delete/soft-delete';
 
 /**
  * Stores drafts on the server when the user explicitly clicks "Save draft".
@@ -57,7 +58,7 @@ export class DraftStoreService {
     const existing = await this.db
       .select()
       .from(posts)
-      .where(and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId)))
+      .where(and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId), livePosts()))
       .limit(1);
 
     if (existing.length > 0 && isViewer(role)) {
@@ -213,7 +214,7 @@ export class DraftStoreService {
     const rows = await this.db
       .select()
       .from(posts)
-      .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId)))
+      .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId), livePosts()))
       .limit(1);
     if (rows.length === 0)
       throw new NotFoundException(`Draft ${draftId} not found`);
@@ -224,12 +225,10 @@ export class DraftStoreService {
     const rows = await this.db
       .select()
       .from(posts)
-      .where(
-        and(
+      .where(and(and(
           eq(posts.workspaceId, workspaceId),
           inArray(posts.status, ['draft', 'scheduled', 'failed']),
-        ),
-      )
+        ), livePosts()))
       .orderBy(desc(posts.updatedAt))
       .limit(limit);
     const names = await this.namesFor(rows.map((r: any) => r.id as string));
@@ -261,13 +260,26 @@ export class DraftStoreService {
       const rows = await this.db
         .select()
         .from(posts)
-        .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId)))
+        .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId), livePosts()))
         .limit(1);
       if (rows.length > 0) this.assertViewerOwnsDraft(rows[0], userId ?? '');
     }
+    // Soft delete (migration 0088): a discarded draft is recoverable for 30
+    // days. See post.service.deletePost for the same treatment of a post.
     await this.db
-      .delete(posts)
-      .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId)));
+      .update(posts)
+      .set({
+        deletedAt: new Date(),
+        deletedById: userId ?? null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(posts.id, draftId),
+          eq(posts.workspaceId, workspaceId),
+          livePosts(),
+        ),
+      );
     return { success: true };
   }
 

@@ -54,6 +54,7 @@ export function channelTargetsSql(workspaceId: string, channelId: number): SQL {
         )), '') AS post_type
     ) f
     WHERE p.workspace_id = ${workspaceId}::uuid
+      AND p.deleted_at IS NULL
       AND ${hasTargetOnChannelSql(channelId, sql`p.targets`)}
       AND t.e->>'channelId' = ${String(channelId)}
     ORDER BY p.id, t.ord

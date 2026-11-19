@@ -25,6 +25,11 @@ export type PublicWorkspace = Omit<
   | 'utmDefault'
   | 'inviteLinkCode'
   | 'inviteLinkEnabled'
+  // Soft-delete bookkeeping (migration 0088). Every read behind /auth/me
+  // filters deleted workspaces out, so these would always be null here —
+  // and who deleted a workspace is not the client's business.
+  | 'deletedAt'
+  | 'deletedById'
 >;
 
 export type WorkspaceWithRole = PublicWorkspace & { role: WorkspaceRoleLabel };

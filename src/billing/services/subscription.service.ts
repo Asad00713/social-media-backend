@@ -31,6 +31,7 @@ import {
   NewSubscriptionItem,
   NewWorkspaceUsage,
 } from '../../drizzle/schema';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 import type { CancelReason } from '../dto/billing.dto';
 
 /**
@@ -117,12 +118,10 @@ export class SubscriptionService {
     const ws = await db
       .select()
       .from(workspace)
-      .where(
-        and(
+      .where(and(
           eq(workspace.id, dto.workspaceId),
           eq(workspace.ownerId, dto.userId),
-        ),
-      )
+          liveWorkspaces()))
       .limit(1);
 
     if (ws.length === 0) {
@@ -161,7 +160,7 @@ export class SubscriptionService {
       const ownedWorkspaces = await db
         .select({ id: workspace.id, createdAt: workspace.createdAt })
         .from(workspace)
-        .where(eq(workspace.ownerId, dto.userId))
+        .where(and(eq(workspace.ownerId, dto.userId), liveWorkspaces()))
         .orderBy(workspace.createdAt, workspace.id);
 
       return await this.createFreeSubscription(
@@ -251,7 +250,7 @@ export class SubscriptionService {
     const ownedWorkspacesForUsage = await db
       .select({ id: workspace.id, createdAt: workspace.createdAt })
       .from(workspace)
-      .where(eq(workspace.ownerId, dto.userId))
+      .where(and(eq(workspace.ownerId, dto.userId), liveWorkspaces()))
       .orderBy(workspace.createdAt, workspace.id);
 
     const initialUsageRows = buildUsageFanout(
@@ -381,7 +380,7 @@ export class SubscriptionService {
     const ws = await db
       .select()
       .from(workspace)
-      .where(and(eq(workspace.id, workspaceId), eq(workspace.ownerId, userId)))
+      .where(and(eq(workspace.id, workspaceId), eq(workspace.ownerId, userId), liveWorkspaces()))
       .limit(1);
 
     if (ws.length === 0) {
@@ -446,12 +445,10 @@ export class SubscriptionService {
     const ws = await db
       .select()
       .from(workspace)
-      .where(
-        and(
+      .where(and(
           eq(workspace.id, dto.workspaceId),
           eq(workspace.ownerId, dto.userId),
-        ),
-      )
+          liveWorkspaces()))
       .limit(1);
     if (ws.length === 0) {
       throw new NotFoundException(
@@ -515,7 +512,7 @@ export class SubscriptionService {
     const workspaces = await db
       .select({ id: workspace.id, createdAt: workspace.createdAt })
       .from(workspace)
-      .where(eq(workspace.ownerId, input.userId))
+      .where(and(eq(workspace.ownerId, input.userId), liveWorkspaces()))
       .orderBy(workspace.createdAt, workspace.id);
 
     const existingSubForAddons = await this.lookup.findByUserId(input.userId);
@@ -750,7 +747,7 @@ export class SubscriptionService {
     const ws = await db
       .select()
       .from(workspace)
-      .where(and(eq(workspace.id, workspaceId), eq(workspace.ownerId, userId)))
+      .where(and(eq(workspace.id, workspaceId), eq(workspace.ownerId, userId), liveWorkspaces()))
       .limit(1);
 
     if (ws.length === 0) {

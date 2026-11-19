@@ -26,6 +26,7 @@ import { findItem } from './provider-subscription.util';
 import { ProviderRegistryService } from '../providers/provider-registry.service';
 import { isCheckoutRequired } from '../providers/payment-provider.interface';
 import { assertStripeSubscriptionExists } from '../providers/stripe-stale-subscription.util';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 export type AddonType =
   | 'EXTRA_CHANNEL'
@@ -98,7 +99,7 @@ export class AddonService {
     const ws = await db
       .select()
       .from(workspace)
-      .where(eq(workspace.id, workspaceId))
+      .where(and(eq(workspace.id, workspaceId), liveWorkspaces()))
       .limit(1);
 
     if (ws.length === 0) {
@@ -404,7 +405,7 @@ export class AddonService {
     const ws = await db
       .select()
       .from(workspace)
-      .where(eq(workspace.id, workspaceId))
+      .where(and(eq(workspace.id, workspaceId), liveWorkspaces()))
       .limit(1);
 
     if (ws.length === 0) {

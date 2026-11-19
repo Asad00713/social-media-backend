@@ -33,6 +33,7 @@ import {
   linkStatus,
   linkUrl,
 } from './lib/connect-link-rules';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 /**
  * The sender side of channel connect links: create, list, read, resend and
@@ -317,7 +318,7 @@ export class ConnectLinksService {
     const [row] = await this.db
       .select({ name: workspace.name })
       .from(workspace)
-      .where(eq(workspace.id, workspaceId))
+      .where(and(eq(workspace.id, workspaceId), liveWorkspaces()))
       .limit(1);
     return row?.name ?? 'a workspace';
   }

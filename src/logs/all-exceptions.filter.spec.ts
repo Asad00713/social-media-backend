@@ -1,3 +1,8 @@
+jest.mock('@sentry/nestjs', () => ({
+  captureException: jest.fn(),
+  withScope: jest.fn((fn) => fn({ setUser: jest.fn(), setTag: jest.fn() })),
+}));
+
 import {
   type ArgumentsHost,
   BadRequestException,
@@ -215,5 +220,78 @@ describe('AllExceptionsFilter: connect links', () => {
       expect(json.mock.calls[0][0]).not.toHaveProperty('requestId');
       expect(write.mock.calls[0][0].requestId).toBeNull();
     });
+  });
+});
+
+/**
+ * Sentry reporting. The filter is the single place errors reach Sentry, so
+ * these assert the two rules that keep that signal usable: only 5xx, and
+ * never anything the response itself would not already carry.
+ */
+describe('AllExceptionsFilter → Sentry', () => {
+  const captureException = jest.fn();
+  const withScope = jest.fn((fn: (scope: unknown) => void) =>
+    fn({
+      setUser: jest.fn(),
+      setTag: jest.fn(),
+    }),
+  );
+
+  beforeEach(() => {
+    captureException.mockClear();
+    withScope.mockClear();
+  });
+
+  function run(exception: unknown, user?: Record<string, string>) {
+    const sentry = jest.requireMock('@sentry/nestjs') as {
+      captureException: jest.Mock;
+      withScope: jest.Mock;
+    };
+    sentry.captureException = captureException;
+    sentry.withScope = withScope;
+
+    const json = jest.fn();
+    const response = { status: jest.fn(() => ({ json })) };
+    const host = {
+      switchToHttp: () => ({
+        getResponse: () => response,
+        getRequest: () => ({ url: '/x', method: 'POST', user }),
+      }),
+    } as unknown as ArgumentsHost;
+
+    new AllExceptionsFilter({
+      write: jest.fn(),
+    } as unknown as LogWriterService).catch(exception, host);
+
+    return { json, response };
+  }
+
+  it('reports a 500 to Sentry', () => {
+    run(new Error('boom'));
+    expect(captureException).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * A 4xx is the client being wrong — a bad payload, a missing resource, an
+   * expired token. Alerting on those buries the failures that are ours under
+   * noise nobody can act on. They stay in error_logs, which is the record.
+   */
+  it('does NOT report a 404 to Sentry', () => {
+    run(new NotFoundException('nope'));
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  it('does NOT report a 400 to Sentry', () => {
+    run(new BadRequestException('bad'));
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  /** Sentry failing must never change what the client gets. */
+  it('still answers the client when Sentry throws', () => {
+    captureException.mockImplementationOnce(() => {
+      throw new Error('sentry transport exploded');
+    });
+    const { response } = run(new Error('boom'));
+    expect(response.status).toHaveBeenCalledWith(500);
   });
 });

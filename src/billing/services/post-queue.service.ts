@@ -4,6 +4,7 @@ import { db } from '../../drizzle/db';
 import { posts } from '../../drizzle/schema';
 import { SubscriptionLookupService } from './subscription-lookup.service';
 import { canQueuePost, UNLIMITED } from './limit-resolver.util';
+import { livePosts } from '../../posts/soft-delete/soft-delete';
 
 /**
  * Build the jsonb containment probe for one channel.
@@ -42,13 +43,11 @@ export class PostQueueService {
     const [row] = await db
       .select({ n: count() })
       .from(posts)
-      .where(
-        and(
+      .where(and(and(
           eq(posts.workspaceId, workspaceId),
           eq(posts.status, 'scheduled'),
           sql`${posts.targets} @> ${buildQueuedTargetJson(channelId)}::jsonb`,
-        ),
-      );
+        ), livePosts()));
 
     return Number(row?.n ?? 0);
   }

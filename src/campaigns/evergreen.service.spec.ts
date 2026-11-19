@@ -215,6 +215,13 @@ function buildFakeDb(fixture: {
       return occurrenceRows as unknown as Record<string, unknown>[];
     if (name === 'social_media_channels')
       return channelRows as unknown as Record<string, unknown>[];
+    // A LIVE workspace. `fireOccurrence` and `reconcile` now check this
+    // before they do anything: an evergreen campaign in a soft-deleted
+    // workspace used to arm and fire daily, materialising `posts` rows and
+    // marking occurrences `published`, for the whole 30-day window. Without
+    // this row every fire test reads as "workspace deleted" and returns
+    // early - which is itself proof the guard works.
+    if (name === 'workspace') return [{ id: WORKSPACE_ID }];
     return [];
   }
 

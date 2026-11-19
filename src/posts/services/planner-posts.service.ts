@@ -13,6 +13,7 @@ import type {
 } from '../dto/planner-post.dto';
 import { bucketByDate, presentPost, type PostRow } from '../lib/present-post';
 import { calendarRangeWhere, plannerAtSql } from '../lib/post-status.sql';
+import { livePosts } from '../soft-delete/soft-delete';
 
 @Injectable()
 export class PlannerPostsService {
@@ -69,7 +70,7 @@ export class PlannerPostsService {
     const rows = await this.db
       .select()
       .from(posts)
-      .where(calendarRangeWhere(workspaceId, from, to))
+      .where(and(calendarRangeWhere(workspaceId, from, to), livePosts()))
       .orderBy(plannerAtSql);
     const list = await this.present(rows);
     return {
@@ -84,7 +85,7 @@ export class PlannerPostsService {
     const [row] = await this.db
       .select()
       .from(posts)
-      .where(and(eq(posts.id, postId), eq(posts.workspaceId, workspaceId)));
+      .where(and(eq(posts.id, postId), eq(posts.workspaceId, workspaceId), livePosts()));
     if (!row) throw new NotFoundException('Post not found');
     const [dto] = await this.present([row]);
     return dto;

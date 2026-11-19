@@ -114,8 +114,14 @@ export interface PostTarget {
    * is next attempted. Kept in the existing `targets` jsonb, no migration.
    */
   heldAt?: string;
-  // Paused by the user, or disconnected (channel soft disconnect, 0081).
-  heldReason?: 'channel_paused' | 'channel_disconnected';
+  /**
+   * Why the target did not go: paused by the user, disconnected (channel soft
+   * disconnect, 0081), or the platform's per-account rate limit was full.
+   *
+   * The first two are released by a user action; `rate_limited` releases
+   * itself when the window reopens. See `posts/lib/held-targets.ts`.
+   */
+  heldReason?: 'channel_paused' | 'channel_disconnected' | 'rate_limited';
   contentOverride?: PlatformContent;
   /**
    * Sub-destination for chat/messaging platforms (Slack/Discord): which
@@ -215,6 +221,13 @@ export const posts = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true })
       .notNull()
       .defaultNow(),
+
+    // Soft delete (migration 0088). A deleted post is kept for 30 days so a
+    // mistake can be undone, then purged. Every read of this table must
+    // filter `deletedAt IS NULL` — see posts-reads-filter-deleted.spec.ts,
+    // which discovers the read sites from disk and fails on a new one.
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    deletedById: uuid('deleted_by_id'),
   },
   (table) => [
     index('posts_workspace_id_idx').on(table.workspaceId),
@@ -229,6 +242,13 @@ export const posts = pgTable(
       .on(table.workspaceId, table.updatedAt.desc())
       .where(sql`${table.status} = 'draft'`),
     // Migration 0045: serves the `targets @> ...` lookup in findOurPostId.
+    // Migration 0088: the live-row index every ordinary read uses.
+    index('posts_live_idx')
+      .on(table.workspaceId)
+      .where(sql`${table.deletedAt} IS NULL`),
+    index('posts_deleted_at_idx')
+      .on(table.deletedAt)
+      .where(sql`${table.deletedAt} IS NOT NULL`),
     index('posts_targets_gin_idx').using(
       'gin',
       sql`${table.targets} jsonb_path_ops`,

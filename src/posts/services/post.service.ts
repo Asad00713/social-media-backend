@@ -67,6 +67,7 @@ import { CalendarPushSyncService } from '../../calendar-sync/services/calendar-p
 import { CampaignStatusSyncListener } from '../../campaigns/campaign-status-sync.listener';
 import { PostQueueService } from '../../billing/services/post-queue.service';
 import { PostReminderService } from './post-reminder.service';
+import { StrandedPostSweeperService } from './stranded-post-sweeper.service';
 import { PublishFailureNotifier } from './publish-failure-notifier.service';
 import { withSharedThumbnail } from '../lib/shared-thumbnail';
 import { sharedMetadataFor } from '../lib/publish-metadata';
@@ -79,13 +80,18 @@ import {
 import { channelContent } from '../lib/channel-content';
 import {
   enqueueHeldPost,
+  holdRateLimited,
   holdTarget,
   holdingReasonOf,
   isHeld,
+  isMissedRelease,
   publishRefusalFor,
   releaseTarget,
+  soonestRetry,
   HELD_REASON,
+  HELD_REASON_RATE_LIMITED,
   MISSED_HELD_MESSAGE,
+  PUBLISH_LATE_GRACE_MS,
   type HeldReason,
   type HoldingChannel,
 } from '../lib/held-targets';
@@ -100,6 +106,7 @@ import {
   classifyPublishError,
 } from '../composer/services/composer-error-mapper.service';
 import { REMINDER_FAILURE_PREFIX } from '../lib/post-failure';
+import { livePosts, liveWorkspacePosts } from '../soft-delete/soft-delete';
 
 export interface CreatePostDto {
   content?: string;
@@ -138,6 +145,10 @@ export class PostService {
     private readonly postQueue: PostQueueService,
     private readonly reminders: PostReminderService,
     private readonly failureNotifier: PublishFailureNotifier,
+    // Appended deliberately: several specs construct this service with
+    // positional arguments, so inserting a parameter mid-list silently
+    // shifts every one after it.
+    private readonly sweeper: StrandedPostSweeperService,
     // Not @Optional: PostsModule provides it. Optional in the type only so the
     // many unit specs that build PostService positionally need not pass it.
     private readonly approvalPolicy?: ApprovalPolicyService,
@@ -281,25 +292,50 @@ export class PostService {
       );
     }
 
-    const [post] = await db
-      .insert(posts)
-      .values({
-        workspaceId,
-        createdById: userId,
-        content: dto.content,
-        mediaItems: dto.mediaItems || [],
-        targets,
-        status,
-        scheduledAt: dto.scheduledAt,
-        platformContent: dto.platformContent || {},
-        // An approval is only ever asked for and granted through its own
-        // routes; a client cannot hand one in.
-        metadata: withoutApproval(dto.metadata) ?? {},
-      })
-      .returning();
+    // The post and the record of its creation commit together.
+    //
+    // They were two statements on the pool: a crash or a connection drop
+    // between them left a post whose `post_history` had no `created` row. That
+    // matters beyond tidiness - the stranded-post sweeper reconstructs what
+    // actually happened to a post FROM `post_history`, so a post with a
+    // missing history is a post it can reason about incorrectly.
+    //
+    // The queue is deliberately NOT in here. BullMQ writes to Redis, which no
+    // Postgres transaction can roll back, so enqueueing inside would risk a
+    // job for a post that never committed - the worse failure, since the job
+    // would fire and find nothing. It is enqueued after the commit instead,
+    // and the reconciler re-arms a post whose job never made it.
+    const post = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .insert(posts)
+        .values({
+          workspaceId,
+          createdById: userId,
+          content: dto.content,
+          mediaItems: dto.mediaItems || [],
+          targets,
+          status,
+          scheduledAt: dto.scheduledAt,
+          platformContent: dto.platformContent || {},
+          // An approval is only ever asked for and granted through its own
+          // routes; a client cannot hand one in.
+          metadata: withoutApproval(dto.metadata) ?? {},
+        })
+        .returning();
 
-    // Record history
-    await this.recordHistory(post.id, 'created', null, status, null, userId);
+      await this.recordHistory(
+        row.id,
+        'created',
+        null,
+        status,
+        null,
+        userId,
+        undefined,
+        tx,
+      );
+
+      return row;
+    });
 
     // Schedule job if post is scheduled
     if (dto.scheduledAt) {
@@ -311,7 +347,7 @@ export class PostService {
       const [updatedPost] = await db
         .select()
         .from(posts)
-        .where(eq(posts.id, post.id));
+        .where(and(eq(posts.id, post.id), livePosts()));
 
       this.logger.log(
         `Post ${post.id} created with status ${status}, jobId: ${jobId}`,
@@ -329,6 +365,25 @@ export class PostService {
   /**
    * Get a post by ID
    */
+  /**
+   * One post, or a 404.
+   *
+   * `liveWorkspacePosts()` matters here more than anywhere else: this is the
+   * ONLY read `publishPost` performs to load the row, and the direct-publish
+   * callers do not go through `PostPublishProcessor`, so its own guard is not
+   * in their path. The drip processor calls `publishPost` straight
+   * (`drips/processors/drip.processor.ts`), and a drip post in a soft-deleted
+   * workspace published to the platform for real.
+   *
+   * So this is the chokepoint rather than one more guarded read: every caller
+   * that publishes without the processor funnels through here. Guarding each
+   * background read one at a time structurally cannot reach `src/campaigns` or
+   * `src/drips`.
+   *
+   * Safe for the user-facing callers: they all pass a `workspaceId` the
+   * request is already scoped to, and a deleted workspace is unreachable by
+   * routing, so this can only ever reject a post nobody could have asked for.
+   */
   async getPost(
     postId: string,
     workspaceId: string,
@@ -336,7 +391,14 @@ export class PostService {
     const [post] = await db
       .select()
       .from(posts)
-      .where(and(eq(posts.id, postId), eq(posts.workspaceId, workspaceId)));
+      .where(
+        and(
+          eq(posts.id, postId),
+          eq(posts.workspaceId, workspaceId),
+          livePosts(),
+          liveWorkspacePosts(),
+        ),
+      );
 
     if (!post) {
       throw new NotFoundException('Post not found');
@@ -543,7 +605,7 @@ export class PostService {
       const [refetched] = await db
         .select()
         .from(posts)
-        .where(eq(posts.id, postId));
+        .where(and(eq(posts.id, postId), livePosts()));
       updatedPost = refetched;
     } else {
       const [result] = await db
@@ -636,7 +698,22 @@ export class PostService {
       );
     }
 
-    await db.delete(posts).where(eq(posts.id, postId));
+    // Soft delete (migration 0088). The row is kept for 30 days so a mistake
+    // can be undone, then PostPurgeService removes it for good. Everything
+    // below still runs — the calendar event is deleted, the queue job is
+    // cancelled — so to the user and to every other part of the system the
+    // post is gone the moment this returns.
+    //
+    // Guarded on livePosts() so deleting twice cannot overwrite the first
+    // deletion's timestamp and silently extend the retention window.
+    await db
+      .update(posts)
+      .set({
+        deletedAt: new Date(),
+        deletedById: userId,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(posts.id, postId), livePosts()));
 
     // Fire-and-forget the provider-side event deletes using the in-memory link
     // data (rows are already cascade-gone). Never awaited — the user's delete
@@ -703,14 +780,33 @@ export class PostService {
     const missedHeld = heldOnly && options?.missedHeld === true;
     const onPaused =
       options?.onPaused ?? (triggeredBy === 'scheduler' ? 'hold' : 'refuse');
-    const post = await this.getPost(postId, workspaceId);
+    let post = await this.getPost(postId, workspaceId);
 
     if (post.status === 'published') {
       throw new BadRequestException('Post is already published');
     }
 
     if (post.status === 'publishing') {
-      throw new BadRequestException('Post is currently being published');
+      // A row that has sat in `publishing` past the sweeper's threshold was
+      // abandoned by a process that is no longer alive (see
+      // StrandedPostSweeperService). Refusing it outright left those posts
+      // unrecoverable by hand — the author was told "currently being
+      // published" indefinitely. Resolve it from what actually happened,
+      // then let this attempt proceed against the repaired row.
+      //
+      // Still refused inside the window: a publish really can be running,
+      // and a second one would double-post.
+      const repaired = await this.sweeper.resolveIfStranded(postId);
+      if (!repaired) {
+        throw new BadRequestException('Post is currently being published');
+      }
+      // Re-read rather than recurse: the repaired row drives the rest of this
+      // method, and a recursive call could loop if the repair ever failed to
+      // move the status.
+      post = await this.getPost(postId, workspaceId);
+      if (post.status === 'publishing') {
+        throw new BadRequestException('Post is currently being published');
+      }
     }
 
     if (!post.targets || post.targets.length === 0) {
@@ -750,7 +846,13 @@ export class PostService {
     // `publishing`, no retry burned.
     const pending = post.targets.filter((t) => t.status !== 'published');
     if (pending.length > 0 && pending.every(isPausedTarget)) {
-      return this.holdPausedTargets(post, isPausedTarget, holdReasonOf, userId, trigger);
+      return this.holdPausedTargets(
+        post,
+        isPausedTarget,
+        holdReasonOf,
+        userId,
+        trigger,
+      );
     }
 
     const previousStatus = post.status;
@@ -793,6 +895,13 @@ export class PostService {
     let newSuccess = false;
     // Targets held for a paused channel; any keeps the post `scheduled`.
     const heldChannels = new Map<string, string>();
+    // Soonest moment a rate-limited target may be retried, in ms from now;
+    // null when nothing was rate-limited. Tracked separately from
+    // `heldChannels` on purpose: that map drives
+    // `requeueIfResumedMeanwhile`, which asks whether a CHANNEL was resumed —
+    // a question a rate limit never answers. A rate limit releases itself on
+    // a timer, so it needs its own re-enqueue.
+    let rateLimitRetryMs: number | null = null;
     // The targets THIS run tried (published, failed or reminded). A target
     // carried over untouched - live already, held, or an old failure a
     // resume leaves alone - is not in it, so a client tells only the news.
@@ -864,6 +973,48 @@ export class PostService {
         continue;
       }
 
+      // A rate-limit hold whose window reopened, but whose time has long
+      // passed: fail it as missed rather than publish it late.
+      //
+      // This must run BEFORE releaseTarget below, and before the limit checks.
+      // Once the window clears, both checks return `allowed` and the target
+      // publishes — so a grace check placed after the publish can only ever
+      // catch a target that was re-held on the same run, which is to say only
+      // while the limit is still full. That is the one case where lateness
+      // does not matter yet.
+      //
+      // Same reasoning and same message as the `missedHeld` branch above; the
+      // difference is only which hold reason got here.
+      if (
+        storedTarget.heldReason === HELD_REASON_RATE_LIMITED &&
+        isMissedRelease(post.scheduledAt, PUBLISH_LATE_GRACE_MS, now)
+      ) {
+        updatedTargets.push({
+          ...releaseTarget(storedTarget),
+          status: 'failed',
+          errorMessage: MISSED_HELD_MESSAGE,
+          errorCode: 'rate_limited',
+          warnings: undefined,
+        });
+        allSuccess = false;
+        this.logger.warn(
+          `Post ${postId} target ${String(storedTarget.channelId)} was rate-limited and its time has passed; failing it as missed rather than publishing late`,
+        );
+        await this.recordHistory(
+          postId,
+          'rate_limited',
+          'publishing',
+          'failed',
+          storedTarget.channelId,
+          userId,
+          {
+            platform: storedTarget.platform,
+            errorMessage: MISSED_HELD_MESSAGE,
+          },
+        );
+        continue;
+      }
+
       // Attempted now, so no longer held.
       const target = releaseTarget(storedTarget);
       attemptedChannelIds.push(String(target.channelId));
@@ -924,22 +1075,28 @@ export class PostService {
           target.platform,
         );
         if (!globalRateLimit.allowed) {
-          this.logger.warn(
-            `Rate limit exceeded for platform ${target.platform}. Retry after ${globalRateLimit.retryAfterMs}ms`,
+          // The app-wide runaway brake, not a customer quota — see
+          // PLATFORM_RATE_LIMITS. Reaching it means something is publishing in
+          // a loop, so it is logged loudly, but the post is still held rather
+          // than failed: the customer did nothing wrong.
+          this.logger.error(
+            `Runaway brake hit for ${target.platform}; holding post ${postId}. Retry after ${globalRateLimit.retryAfterMs}ms`,
           );
-          updatedTargets.push({
-            ...target,
-            status: 'failed',
-            errorMessage: `Rate limit exceeded. Retry after ${Math.ceil((globalRateLimit.retryAfterMs || 0) / 1000 / 60)} minutes`,
-            errorCode: 'rate_limited',
-          });
+          const held = holdRateLimited(target, now);
+          updatedTargets.push(held);
+          if (held.heldReason === HELD_REASON_RATE_LIMITED) {
+            rateLimitRetryMs = soonestRetry(
+              rateLimitRetryMs,
+              globalRateLimit.retryAfterMs,
+            );
+          }
           allSuccess = false;
 
           await this.recordHistory(
             postId,
             'rate_limited',
             'publishing',
-            'failed',
+            'held',
             target.channelId,
             userId,
             {
@@ -959,22 +1116,26 @@ export class PostService {
             target.channelId,
           );
         if (!channelRateLimit.allowed) {
+          // The real limit: this account has published its allowance. Held
+          // until the window reopens, which the limiter states exactly.
           this.logger.warn(
-            `Channel rate limit exceeded for ${target.platform}:${target.channelId}. Retry after ${channelRateLimit.retryAfterMs}ms`,
+            `Channel rate limit reached for ${target.platform}:${target.channelId}; holding post ${postId}. Retry after ${channelRateLimit.retryAfterMs}ms`,
           );
-          updatedTargets.push({
-            ...target,
-            status: 'failed',
-            errorMessage: `Channel rate limit exceeded. Retry after ${Math.ceil((channelRateLimit.retryAfterMs || 0) / 1000 / 60)} minutes`,
-            errorCode: 'rate_limited',
-          });
+          const held = holdRateLimited(target, now);
+          updatedTargets.push(held);
+          if (held.heldReason === HELD_REASON_RATE_LIMITED) {
+            rateLimitRetryMs = soonestRetry(
+              rateLimitRetryMs,
+              channelRateLimit.retryAfterMs,
+            );
+          }
           allSuccess = false;
 
           await this.recordHistory(
             postId,
             'rate_limited',
             'publishing',
-            'failed',
+            'held',
             target.channelId,
             userId,
             {
@@ -1076,12 +1237,19 @@ export class PostService {
       }
     }
 
+    // The grace is enforced before the publish attempt, at the top of the
+    // loop — once a limit window reopens the target simply publishes, so a
+    // check here could only ever catch a target still held by a full limit.
+    const heldForRateLimit = updatedTargets.some(
+      (t) => t.heldReason === HELD_REASON_RATE_LIMITED,
+    );
+
     // Determine final status
     let finalStatus: PostStatus;
-    const anyHeld = heldChannels.size > 0;
+    const anyHeld = heldChannels.size > 0 || heldForRateLimit;
     if (anyHeld) {
-      // Part of the post still waits for a paused channel: it stays
-      // scheduled, and resuming that channel sends the rest.
+      // Part of the post still waits — for a paused channel, or for a rate
+      // limit window to reopen. Either way it stays scheduled.
       finalStatus = 'scheduled';
     } else if (allSuccess) {
       finalStatus = 'published';
@@ -1107,17 +1275,55 @@ export class PostService {
     if (newSuccess && !post.publishedAt) {
       postUpdateData.publishedAt = new Date();
     }
-    postUpdateData.lastError = allSuccess
-      ? null
-      : 'Some channels failed to publish';
+    // `allSuccess` is false for a hold as well as a failure — a rate-limited
+    // target did not publish, so the publish was not wholly successful — but a
+    // post that is merely waiting has no error. Writing one here would be read
+    // back as a failure: present-post uses `lastError` as the fallback text
+    // for a failed target, and emitPostStatusChanged ships it, so a
+    // `scheduled` post would carry "Some channels failed to publish" and could
+    // later surface that against an unrelated failure.
+    //
+    // A paused hold never set this, because it does not touch `allSuccess` at
+    // all; this keeps the two hold kinds the same shape in the row.
+    const nothingFailed = updatedTargets.every((t) => t.status !== 'failed');
+    postUpdateData.lastError =
+      allSuccess || nothingFailed ? null : 'Some channels failed to publish';
     const [updatedPost] = await db
       .update(posts)
       .set(postUpdateData)
       .where(eq(posts.id, postId))
       .returning();
 
-    if (updatedPost && anyHeld) {
+    if (updatedPost && heldChannels.size > 0) {
       await this.requeueIfResumedMeanwhile(updatedPost, heldChannels);
+    }
+
+    // A rate-limited hold releases itself, so it needs a job waiting for the
+    // moment the window reopens. Without this the post would sit `scheduled`
+    // with no job until the reconciler noticed — which it would, but up to 15
+    // minutes later and without knowing when the limit actually lifts.
+    //
+    // The job also keeps the reconciler away: it skips a post whose job is
+    // still pending, so the two never both re-arm the same post.
+    if (updatedPost && heldForRateLimit && rateLimitRetryMs !== null) {
+      try {
+        await enqueueHeldPost(this.publishingQueue, db, updatedPost, now, {
+          delayMs: rateLimitRetryMs,
+        });
+        this.logger.log(
+          `Post ${postId} held for a rate limit; retrying in ${Math.ceil(rateLimitRetryMs / 60_000)} min`,
+        );
+      } catch (error) {
+        // Leaving the post `scheduled` with no job is recoverable — the
+        // reconciler re-arms exactly this shape — so a queue failure must not
+        // throw here and burn a BullMQ retry on work that already published
+        // its other targets.
+        this.logger.error(
+          `Could not re-enqueue rate-limited post ${postId}; the reconciler will pick it up: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
     }
 
     if (!updatedPost) {
@@ -1534,6 +1740,14 @@ export class PostService {
   /**
    * Record post history
    */
+  /**
+   * One `post_history` row.
+   *
+   * `executor` lets a caller inside a transaction write the history on the
+   * SAME connection, so the post and the record of its creation commit
+   * together. It defaults to the pool, so the eleven callers that are not in a
+   * transaction are unchanged.
+   */
   private async recordHistory(
     postId: string,
     action: string,
@@ -1542,8 +1756,9 @@ export class PostService {
     channelId: string | null,
     performedById: string,
     details?: Record<string, any>,
+    executor: Pick<typeof db, 'insert'> = db,
   ): Promise<void> {
-    await db.insert(postHistory).values({
+    await executor.insert(postHistory).values({
       postId,
       action,
       previousStatus,
@@ -1680,10 +1895,13 @@ export class PostService {
       .from(posts)
       .where(
         and(
-          eq(posts.workspaceId, workspaceId),
-          eq(posts.status, 'scheduled'),
-          gte(posts.scheduledAt, fromDate),
-          lte(posts.scheduledAt, toDate),
+          and(
+            eq(posts.workspaceId, workspaceId),
+            eq(posts.status, 'scheduled'),
+            gte(posts.scheduledAt, fromDate),
+            lte(posts.scheduledAt, toDate),
+          ),
+          livePosts(),
         ),
       )
       .orderBy(posts.scheduledAt);
@@ -1719,7 +1937,9 @@ export class PostService {
     return await db
       .select()
       .from(posts)
-      .where(calendarRangeWhere(workspaceId, fromDate, toDate))
+      .where(
+        and(calendarRangeWhere(workspaceId, fromDate, toDate), livePosts()),
+      )
       .orderBy(occurredAtSql);
   }
 

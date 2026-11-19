@@ -1,3 +1,6 @@
+// MUST be first: Sentry instruments libraries as they load, so anything
+// imported before this is captured by reference and never traced.
+import './instrument';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
@@ -25,11 +28,26 @@ async function bootstrap() {
   // AsyncLocalStorage scope opens later, in LogsModule. See request-context.ts.
   app.use(requestIdMiddleware);
 
-  // Shutdown hooks stay off on purpose. Nest runs onModuleDestroy (which
-  // quits our Redis clients) before onApplicationShutdown (which closes the
-  // BullMQ workers), so workers would keep taking jobs on closed clients: a
-  // publish could succeed, be marked failed, and double-post on retry.
-  // Railway drains for 0 s by default, so the hooks would buy nothing.
+  // Without this, SIGTERM kills the process mid-job on every deploy: a post
+  // being published is left stranded in `publishing` forever, because the
+  // processor skips non-`scheduled` rows and manual retry refuses that state.
+  //
+  // These hooks were enabled once before and reverted the same day, because
+  // Nest runs the hooks *within* a shutdown phase through Promise.all — so
+  // closing Redis in the same phase that BullMQ closes its workers was a race.
+  // The phases themselves are sequential and awaited, so the ordering now
+  // comes from the phase split instead:
+  //
+  //   onModuleDestroy → beforeApplicationShutdown → dispose → onApplicationShutdown
+  //                     └ WorkerDrainService:               └ Redis .quit(),
+  //                       every BullMQ worker closed          Postgres pool.end()
+  //
+  // By the time any connection closes, no job is still running.
+  //
+  // How much of that drain actually completes is Railway's call: its draining
+  // window is what decides when SIGKILL lands. See
+  // docs/graceful-shutdown-and-health.md.
+  app.enableShutdownHooks();
 
   app.enableCors({
     origin: [

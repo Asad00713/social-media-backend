@@ -58,6 +58,7 @@ import {
   mustDeleteOnDisconnect,
 } from '../lib/disconnect-policy';
 import { ChannelPauseService } from './channel-pause.service';
+import { livePosts } from '../../posts/soft-delete/soft-delete';
 
 /**
  * Shared "is this channel usable right now" predicate. A channel counts as
@@ -194,7 +195,8 @@ export class ChannelService {
       // A re-added Telegram bot gets a fresh webhook route (the connect flow
       // already pointed the bot at it); keeping the old id would orphan it.
       if (dto.telegramWebhookRouteId !== undefined) {
-        reconnectData.telegramWebhookRouteId = dto.telegramWebhookRouteId ?? null;
+        reconnectData.telegramWebhookRouteId =
+          dto.telegramWebhookRouteId ?? null;
       }
 
       // A channel the user disconnected (soft disconnect) comes back with its
@@ -399,13 +401,27 @@ export class ChannelService {
         await this.accountChannels.enforceWithinTransaction(tx, ownerId);
       }
 
-      return tx.insert(socialMediaChannels).values(newChannel).returning();
-    });
+      const rows = await tx
+        .insert(socialMediaChannels)
+        .values(newChannel)
+        .returning();
 
-    // Update workspace usage count — billable platforms only.
-    if (billable) {
-      await this.incrementChannelCount(workspaceId);
-    }
+      // Counted INSIDE the transaction, and so under the advisory lock the
+      // `enforceWithinTransaction` above holds for the rest of it. Billable
+      // platforms only.
+      //
+      // It used to run after the commit, on the pool: a crash in between left
+      // a connected channel that `channels_count` did not know about, so the
+      // customer got a free slot and the limit check that reads this column
+      // was wrong until something recalculated it. The revival path a hundred
+      // lines up already passed its `tx` for exactly this reason - this was
+      // the one site that did not.
+      if (billable) {
+        await this.incrementChannelCount(workspaceId, tx);
+      }
+
+      return rows;
+    });
 
     // Initialize sync state and enqueue initial backfill
     await this.syncLifecycle.onChannelConnected(inserted[0].id, workspaceId);
@@ -512,11 +528,14 @@ export class ChannelService {
       .from(posts)
       .where(
         and(
-          eq(posts.workspaceId, workspaceId),
-          // jsonb-contains: at least one target on this platform
-          sql`${posts.targets} @> ${JSON.stringify([{ platform }])}::jsonb`,
-          // limit to posts published in window
-          sql`(${posts.publishedAt} IS NULL OR ${posts.publishedAt} >= ${sixtyDaysAgo})`,
+          and(
+            eq(posts.workspaceId, workspaceId),
+            // jsonb-contains: at least one target on this platform
+            sql`${posts.targets} @> ${JSON.stringify([{ platform }])}::jsonb`,
+            // limit to posts published in window
+            sql`(${posts.publishedAt} IS NULL OR ${posts.publishedAt} >= ${sixtyDaysAgo})`,
+          ),
+          livePosts(),
         ),
       );
 
@@ -827,7 +846,9 @@ export class ChannelService {
       .where(and(eq(socialMediaChannels.id, channelId), liveChannel()))
       .returning({ id: socialMediaChannels.id });
     if (reset.length === 0) {
-      throw new ConflictException('This channel is disconnected. Reconnect it.');
+      throw new ConflictException(
+        'This channel is disconnected. Reconnect it.',
+      );
     }
 
     await db
@@ -970,7 +991,9 @@ export class ChannelService {
    * `getAccessToken` refuses. Null once the finalize job cleared it. Never
    * refreshes.
    */
-  readStoredAccessToken(channel: { accessToken: string | null }): string | null {
+  readStoredAccessToken(channel: {
+    accessToken: string | null;
+  }): string | null {
     if (!channel.accessToken) return null;
     try {
       return decrypt(channel.accessToken);

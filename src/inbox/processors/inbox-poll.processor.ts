@@ -17,6 +17,7 @@ import { InboxDispatcher } from '../services/inbox-dispatcher.service';
 import { InboxService } from '../inbox.service';
 import type { ResolvedChannel } from '../adapters/inbox-adapter.interface';
 import { YoutubeInboxBudgetService } from '../services/youtube-inbox-budget.service';
+import { livePosts } from '../../posts/soft-delete/soft-delete';
 
 export interface InboxPollJob {
   channelId: number;
@@ -175,8 +176,7 @@ export class InboxPollProcessor extends WorkerHost {
         mediaItems: posts.mediaItems,
       })
       .from(posts)
-      .where(
-        and(
+      .where(and(and(
           eq(posts.workspaceId, channelRow.workspaceId),
           eq(posts.status, 'published'),
           gte(posts.publishedAt, windowStart),
@@ -184,8 +184,7 @@ export class InboxPollProcessor extends WorkerHost {
           sql`${posts.targets} @> ${JSON.stringify([
             { channelId: String(channelId) },
           ])}::jsonb`,
-        ),
-      )
+        ), livePosts()))
       .orderBy(desc(posts.publishedAt))
       .limit(MAX_POSTS_PER_RUN);
 

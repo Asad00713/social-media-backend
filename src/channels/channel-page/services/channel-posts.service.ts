@@ -31,6 +31,7 @@ import {
   encodeChannelPostsCursor,
 } from '../lib/channel-posts-cursor';
 import { channelTargetsSql, tabSql } from '../lib/channel-targets.sql';
+import { livePosts } from '../../../posts/soft-delete/soft-delete';
 
 type Row = Record<string, unknown>;
 
@@ -314,7 +315,7 @@ export class ChannelPostsService {
     const found = await this.db
       .select()
       .from(posts)
-      .where(inArray(posts.id, ids));
+      .where(and(inArray(posts.id, ids), livePosts()));
     const presented = new Map(
       (await this.planner.present(found)).map((p) => [p.id, p]),
     );

@@ -47,6 +47,7 @@ import {
 import { QUEUES } from '../queue/queue.module';
 
 export type { TimezoneMoveResult };
+import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 type GetAllREsponse = {
   // Omits the Maestro BYOK credential — it must never reach a client.
@@ -265,7 +266,7 @@ export class WorkspaceService {
       const [ownedCount] = await this.db
         .select({ n: count() })
         .from(workspace)
-        .where(eq(workspace.ownerId, userId));
+        .where(and(eq(workspace.ownerId, userId), liveWorkspaces()));
       const isFirst = Number(ownedCount?.n ?? 0) === 1;
 
       const limits = resolveWorkspaceLimits(plan, addons, isFirst);
@@ -341,7 +342,7 @@ export class WorkspaceService {
     const [{ count }] = await this.db
       .select({ count: sql<number>`count(*)` })
       .from(workspace)
-      .where(and(...conditions));
+      .where(and(...conditions, liveWorkspaces()));
 
     return {
       data: workspaces,
@@ -957,7 +958,13 @@ export class WorkspaceService {
     const [row] = await this.db
       .select({ n: count() })
       .from(workspace)
-      .where(and(eq(workspace.ownerId, userId), ne(workspace.id, excludingId)));
+      .where(
+        and(
+          eq(workspace.ownerId, userId),
+          ne(workspace.id, excludingId),
+          liveWorkspaces(),
+        ),
+      );
     return Number(row?.n ?? 0);
   }
 

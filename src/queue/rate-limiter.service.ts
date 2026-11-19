@@ -1,129 +1,179 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationShutdown } from '@nestjs/common';
 import Redis from 'ioredis';
 import { ConfigService } from '@nestjs/config';
 import { SupportedPlatform } from '../drizzle/schema/channels.schema';
 
 /**
- * Platform rate limits based on official API documentation
- * These are conservative estimates to stay well within limits
+ * The app-wide brake on a runaway publish loop — NOT a customer quota.
+ *
+ * This table used to hold the platforms' own published numbers, and its
+ * comments said so ("Instagram is very strict: 25 per 24 hours"). Those
+ * numbers are per CONNECTED ACCOUNT, and they were counted in a single Redis
+ * key (`ratelimit:global:<platform>`) shared by every customer. So Instagram's
+ * per-account allowance of 25 was enforced as 20 posts per day across all of
+ * Schedura: fifty customers shared one customer's budget, and each was refused
+ * for traffic none of them sent. No scheduling tool works this way — Buffer
+ * publishes per-channel daily caps, and Publer's documentation states its
+ * limits are "applied per user account" — because no platform imposes an
+ * app-wide posting cap.
+ *
+ * The per-account denominator lives in {@link PER_CHANNEL_LIMITS}, which is
+ * the real limit. What remains here is the one genuinely app-wide concern: a
+ * bug that publishes in a loop could get the whole app's API access revoked,
+ * which would hit every customer at once. A single high ceiling stops that
+ * without standing in any customer's way.
+ *
+ * Every entry is {@link RUNAWAY_LIMIT_PER_WINDOW}; the windows differ only so
+ * each platform's brake is measured over a period that resembles its own
+ * limit. A per-account number appearing here again is the regression, and
+ * rate-limiter.service.spec.ts fails on it.
  */
+export const RUNAWAY_LIMIT_PER_WINDOW = 2000;
+
 export const PLATFORM_RATE_LIMITS: Record<
   SupportedPlatform,
   { maxRequests: number; windowMs: number; description: string }
 > = {
   twitter: {
-    maxRequests: 200, // Twitter allows 300 tweets per 3 hours, we use 200 for safety
+    maxRequests: RUNAWAY_LIMIT_PER_WINDOW,
     windowMs: 3 * 60 * 60 * 1000, // 3 hours
-    description: '200 tweets per 3 hours',
+    description: `runaway brake: ${RUNAWAY_LIMIT_PER_WINDOW} app-wide per 3 hours`,
   },
   facebook: {
-    maxRequests: 150, // Facebook allows ~200 per hour, we use 150
+    maxRequests: RUNAWAY_LIMIT_PER_WINDOW,
     windowMs: 60 * 60 * 1000, // 1 hour
-    description: '150 posts per hour',
+    description: `runaway brake: ${RUNAWAY_LIMIT_PER_WINDOW} app-wide per 1 hour`,
   },
   instagram: {
-    maxRequests: 20, // Instagram is very strict: 25 per 24 hours
+    maxRequests: RUNAWAY_LIMIT_PER_WINDOW,
     windowMs: 24 * 60 * 60 * 1000, // 24 hours
-    description: '20 posts per 24 hours',
+    description: `runaway brake: ${RUNAWAY_LIMIT_PER_WINDOW} app-wide per 24 hours`,
   },
   linkedin: {
-    maxRequests: 80, // LinkedIn allows ~100 per day
+    maxRequests: RUNAWAY_LIMIT_PER_WINDOW,
     windowMs: 24 * 60 * 60 * 1000, // 24 hours
-    description: '80 posts per 24 hours',
+    description: `runaway brake: ${RUNAWAY_LIMIT_PER_WINDOW} app-wide per 24 hours`,
   },
   pinterest: {
-    maxRequests: 50, // Pinterest is relatively generous
+    maxRequests: RUNAWAY_LIMIT_PER_WINDOW,
     windowMs: 60 * 60 * 1000, // 1 hour
-    description: '50 pins per hour',
+    description: `runaway brake: ${RUNAWAY_LIMIT_PER_WINDOW} app-wide per 1 hour`,
   },
   tiktok: {
-    maxRequests: 8, // TikTok is very strict: ~10 videos per day
+    maxRequests: RUNAWAY_LIMIT_PER_WINDOW,
     windowMs: 24 * 60 * 60 * 1000, // 24 hours
-    description: '8 videos per 24 hours',
+    description: `runaway brake: ${RUNAWAY_LIMIT_PER_WINDOW} app-wide per 24 hours`,
   },
   youtube: {
-    maxRequests: 50, // YouTube daily upload limit varies
+    maxRequests: RUNAWAY_LIMIT_PER_WINDOW,
     windowMs: 24 * 60 * 60 * 1000, // 24 hours
-    description: '50 videos per 24 hours',
+    description: `runaway brake: ${RUNAWAY_LIMIT_PER_WINDOW} app-wide per 24 hours`,
   },
   threads: {
-    maxRequests: 20, // Similar to Instagram
+    maxRequests: RUNAWAY_LIMIT_PER_WINDOW,
     windowMs: 24 * 60 * 60 * 1000, // 24 hours
-    description: '20 posts per 24 hours',
+    description: `runaway brake: ${RUNAWAY_LIMIT_PER_WINDOW} app-wide per 24 hours`,
   },
   bluesky: {
-    maxRequests: 100, // Bluesky has relatively generous rate limits
+    maxRequests: RUNAWAY_LIMIT_PER_WINDOW,
     windowMs: 60 * 60 * 1000, // 1 hour
-    description: '100 posts per hour',
+    description: `runaway brake: ${RUNAWAY_LIMIT_PER_WINDOW} app-wide per 1 hour`,
   },
   mastodon: {
-    maxRequests: 300, // Mastodon default is 300 requests per 5 minutes
+    maxRequests: RUNAWAY_LIMIT_PER_WINDOW,
     windowMs: 5 * 60 * 1000, // 5 minutes
-    description: '300 requests per 5 minutes',
+    description: `runaway brake: ${RUNAWAY_LIMIT_PER_WINDOW} app-wide per 5 minutes`,
   },
   google_business: {
-    maxRequests: 100, // Google Business Profile API conservative limit
+    maxRequests: RUNAWAY_LIMIT_PER_WINDOW,
     windowMs: 60 * 60 * 1000, // 1 hour
-    description: '100 requests per hour',
+    description: `runaway brake: ${RUNAWAY_LIMIT_PER_WINDOW} app-wide per 1 hour`,
   },
   google_drive: {
-    maxRequests: 1000, // Google Drive has generous read limits
+    maxRequests: RUNAWAY_LIMIT_PER_WINDOW,
     windowMs: 60 * 60 * 1000, // 1 hour
-    description: '1000 requests per hour',
+    description: `runaway brake: ${RUNAWAY_LIMIT_PER_WINDOW} app-wide per 1 hour`,
   },
   google_photos: {
-    maxRequests: 1000, // Google Photos has generous read limits
+    maxRequests: RUNAWAY_LIMIT_PER_WINDOW,
     windowMs: 60 * 60 * 1000, // 1 hour
-    description: '1000 requests per hour',
+    description: `runaway brake: ${RUNAWAY_LIMIT_PER_WINDOW} app-wide per 1 hour`,
   },
   google_calendar: {
-    maxRequests: 1000, // Google Calendar has generous limits
+    maxRequests: RUNAWAY_LIMIT_PER_WINDOW,
     windowMs: 60 * 60 * 1000, // 1 hour
-    description: '1000 requests per hour',
+    description: `runaway brake: ${RUNAWAY_LIMIT_PER_WINDOW} app-wide per 1 hour`,
   },
   outlook_calendar: {
-    maxRequests: 1000, // Outlook Calendar (Microsoft Graph) has generous limits
+    maxRequests: RUNAWAY_LIMIT_PER_WINDOW,
     windowMs: 60 * 60 * 1000, // 1 hour
-    description: '1000 requests per hour',
+    description: `runaway brake: ${RUNAWAY_LIMIT_PER_WINDOW} app-wide per 1 hour`,
   },
   onedrive: {
-    maxRequests: 10000, // Microsoft Graph has generous limits
+    maxRequests: RUNAWAY_LIMIT_PER_WINDOW,
     windowMs: 10 * 60 * 1000, // 10 minutes
-    description: '10000 requests per 10 minutes',
+    description: `runaway brake: ${RUNAWAY_LIMIT_PER_WINDOW} app-wide per 10 minutes`,
   },
   dropbox: {
-    maxRequests: 1000, // Dropbox rate limits vary by endpoint
+    maxRequests: RUNAWAY_LIMIT_PER_WINDOW,
     windowMs: 60 * 60 * 1000, // 1 hour
-    description: '1000 requests per hour',
+    description: `runaway brake: ${RUNAWAY_LIMIT_PER_WINDOW} app-wide per 1 hour`,
   },
   reddit: {
-    maxRequests: 60, // Reddit OAuth limit is 60 requests/min per client
+    maxRequests: RUNAWAY_LIMIT_PER_WINDOW,
     windowMs: 60 * 1000, // 1 minute
-    description: '60 requests per minute',
+    description: `runaway brake: ${RUNAWAY_LIMIT_PER_WINDOW} app-wide per 1 minute`,
   },
   slack: {
-    maxRequests: 50, // Slack Tier 2 methods: 20+/min; conservative global limit
+    maxRequests: RUNAWAY_LIMIT_PER_WINDOW,
     windowMs: 60 * 1000, // 1 minute
-    description: '50 requests per minute',
+    description: `runaway brake: ${RUNAWAY_LIMIT_PER_WINDOW} app-wide per 1 minute`,
   },
   telegram: {
-    maxRequests: 30, // Telegram Bot API: 30 messages/sec to different chats
+    maxRequests: RUNAWAY_LIMIT_PER_WINDOW,
     windowMs: 1000, // 1 second
-    description: '30 requests per second',
+    description: `runaway brake: ${RUNAWAY_LIMIT_PER_WINDOW} app-wide per 1 second`,
   },
   discord: {
-    maxRequests: 50, // Discord global rate limit: 50 requests per second
+    maxRequests: RUNAWAY_LIMIT_PER_WINDOW,
     windowMs: 1000, // 1 second
-    description: '50 requests per second',
+    description: `runaway brake: ${RUNAWAY_LIMIT_PER_WINDOW} app-wide per 1 second`,
   },
   whatsapp: {
     // Placeholder. Real WhatsApp Cloud API limits are tier/day-based (1k/10k/100k
     // messages per day by phone-number tier), not a fixed per-second rate. Revisit
     // when outbound volume matters (Phase 2 templates/notifications).
-    maxRequests: 80,
+    maxRequests: RUNAWAY_LIMIT_PER_WINDOW,
     windowMs: 1000, // 1 second
-    description: 'placeholder ~80 req/s (real limits are day/tier-based)',
+    description: `runaway brake: ${RUNAWAY_LIMIT_PER_WINDOW} app-wide per 1 second`,
   },
+};
+
+/**
+ * The real limit: what one connected account may publish.
+ *
+ * This is the denominator the platforms actually use, so it is the one that
+ * decides whether a post may go. Keyed by channel
+ * (`ratelimit:channel:<platform>:<channelId>`), which is why it is correct
+ * where the app-wide counter above was not.
+ *
+ * The numbers match what the platforms allow, taken from Buffer's published
+ * per-channel caps (Instagram 50/day, TikTok 25/day). They used to read 10 and
+ * 5, which throttled customers well before any platform would have — so a
+ * customer was stopped twice: once by a cap that was not theirs, and once
+ * early by this one.
+ *
+ * A platform absent from this map is NOT rate-limited here. Only the three
+ * that already restricted are listed: adding a fourth would newly cap
+ * customers who are not capped today, which is a product decision rather than
+ * a bug fix.
+ */
+export const PER_CHANNEL_LIMITS: Partial<
+  Record<SupportedPlatform, { maxRequests: number; windowMs: number }>
+> = {
+  instagram: { maxRequests: 50, windowMs: 24 * 60 * 60 * 1000 },
+  tiktok: { maxRequests: 25, windowMs: 24 * 60 * 60 * 1000 },
+  twitter: { maxRequests: 50, windowMs: 60 * 60 * 1000 },
 };
 
 export interface RateLimitResult {
@@ -134,7 +184,7 @@ export interface RateLimitResult {
 }
 
 @Injectable()
-export class RateLimiterService {
+export class RateLimiterService implements OnApplicationShutdown {
   private readonly logger = new Logger(RateLimiterService.name);
   private redis: Redis;
 
@@ -150,8 +200,17 @@ export class RateLimiterService {
   }
 
   /**
-   * Check if we can make a request for a platform (global limit)
-   * Uses sliding window algorithm
+   * Check the app-wide runaway brake for a platform (sliding window).
+   *
+   * See {@link PLATFORM_RATE_LIMITS}: this is not a customer quota, so a
+   * refusal here means something is publishing in a loop, not that a customer
+   * has posted too much.
+   *
+   * Unreachable Redis is treated as allowed. Refusing would turn a Redis blip
+   * into failed posts for everyone, and the thing being guarded against — a
+   * runaway loop — is far rarer than a brief connection problem.
+   * `getRateLimitStatus` already degrades this way; this matches it rather
+   * than inventing a second policy.
    */
   async checkRateLimit(platform: SupportedPlatform): Promise<RateLimitResult> {
     const limit = PLATFORM_RATE_LIMITS[platform];
@@ -163,22 +222,48 @@ export class RateLimiterService {
     const now = Date.now();
     const windowStart = now - limit.windowMs;
 
-    // Remove old entries outside the window
-    await this.redis.zremrangebyscore(key, 0, windowStart);
+    let currentCount: number;
+    try {
+      // Remove old entries outside the window
+      await this.redis.zremrangebyscore(key, 0, windowStart);
 
-    // Count current requests in window
-    const currentCount = await this.redis.zcard(key);
+      // Count current requests in window
+      currentCount = await this.redis.zcard(key);
+    } catch (error) {
+      this.logger.warn(
+        `Runaway brake unavailable for ${platform} (Redis unreachable), ` +
+          `allowing the publish: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+      );
+      return {
+        allowed: true,
+        remaining: limit.maxRequests,
+        resetAt: new Date(now + limit.windowMs),
+      };
+    }
 
     if (currentCount >= limit.maxRequests) {
-      // Get the oldest entry to calculate when it expires
-      const oldestEntries = await this.redis.zrange(key, 0, 0, 'WITHSCORES');
-      const oldestTimestamp =
-        oldestEntries.length >= 2 ? parseInt(oldestEntries[1], 10) : now;
+      // When the window reopens: the oldest entry in it, plus the window.
+      // A missing or unparseable score falls back to a full window from now —
+      // `retryAfterMs` is used as a delay by the publish path, so NaN there
+      // would become an invalid job delay rather than a late retry.
+      let oldestTimestamp = now;
+      try {
+        const oldestEntries = await this.redis.zrange(key, 0, 0, 'WITHSCORES');
+        const parsed =
+          oldestEntries.length >= 2 ? Number(oldestEntries[1]) : Number.NaN;
+        if (Number.isFinite(parsed)) oldestTimestamp = parsed;
+      } catch {
+        // Already past the point of refusing; the fallback above is enough.
+      }
       const resetAt = new Date(oldestTimestamp + limit.windowMs);
-      const retryAfterMs = resetAt.getTime() - now;
+      const retryAfterMs = Math.max(0, resetAt.getTime() - now);
 
-      this.logger.warn(
-        `Rate limit reached for ${platform}: ${currentCount}/${limit.maxRequests}. Retry after ${Math.ceil(retryAfterMs / 1000)}s`,
+      this.logger.error(
+        `RUNAWAY BRAKE hit for ${platform}: ${currentCount}/${limit.maxRequests} ` +
+          `app-wide in ${limit.windowMs}ms. This is not a customer quota — ` +
+          `something is publishing in a loop. Retry after ${Math.ceil(retryAfterMs / 1000)}s`,
       );
 
       return {
@@ -215,23 +300,18 @@ export class RateLimiterService {
   }
 
   /**
-   * Check rate limit for a specific channel (per-account limit)
-   * Some platforms have per-account limits in addition to global
+   * Check what this one connected account may publish — the real limit.
+   *
+   * See {@link PER_CHANNEL_LIMITS}. A refusal here IS a customer-visible
+   * limit, and the publish path holds the post until `retryAfterMs` rather
+   * than failing it. Unreachable Redis is allowed through, for the same reason
+   * as {@link checkRateLimit}.
    */
   async checkChannelRateLimit(
     platform: SupportedPlatform,
     channelId: string,
   ): Promise<RateLimitResult> {
-    // Per-channel limits (more restrictive for individual accounts)
-    const perChannelLimits: Partial<
-      Record<SupportedPlatform, { maxRequests: number; windowMs: number }>
-    > = {
-      instagram: { maxRequests: 10, windowMs: 24 * 60 * 60 * 1000 }, // 10 per day per account
-      tiktok: { maxRequests: 5, windowMs: 24 * 60 * 60 * 1000 }, // 5 per day per account
-      twitter: { maxRequests: 50, windowMs: 60 * 60 * 1000 }, // 50 per hour per account
-    };
-
-    const limit = perChannelLimits[platform];
+    const limit = PER_CHANNEL_LIMITS[platform];
     if (!limit) {
       return { allowed: true, remaining: 999, resetAt: new Date() };
     }
@@ -240,20 +320,42 @@ export class RateLimiterService {
     const now = Date.now();
     const windowStart = now - limit.windowMs;
 
-    await this.redis.zremrangebyscore(key, 0, windowStart);
-    const currentCount = await this.redis.zcard(key);
+    let currentCount: number;
+    try {
+      await this.redis.zremrangebyscore(key, 0, windowStart);
+      currentCount = await this.redis.zcard(key);
+    } catch (error) {
+      this.logger.warn(
+        `Channel rate limit unavailable for ${platform}:${channelId} ` +
+          `(Redis unreachable), allowing the publish: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+      );
+      return {
+        allowed: true,
+        remaining: limit.maxRequests,
+        resetAt: new Date(now + limit.windowMs),
+      };
+    }
 
     if (currentCount >= limit.maxRequests) {
-      const oldestEntries = await this.redis.zrange(key, 0, 0, 'WITHSCORES');
-      const oldestTimestamp =
-        oldestEntries.length >= 2 ? parseInt(oldestEntries[1], 10) : now;
+      // Same NaN guard as checkRateLimit: retryAfterMs becomes a job delay.
+      let oldestTimestamp = now;
+      try {
+        const oldestEntries = await this.redis.zrange(key, 0, 0, 'WITHSCORES');
+        const parsed =
+          oldestEntries.length >= 2 ? Number(oldestEntries[1]) : Number.NaN;
+        if (Number.isFinite(parsed)) oldestTimestamp = parsed;
+      } catch {
+        // Already refusing; the fallback above is enough.
+      }
       const resetAt = new Date(oldestTimestamp + limit.windowMs);
 
       return {
         allowed: false,
         remaining: 0,
         resetAt,
-        retryAfterMs: resetAt.getTime() - now,
+        retryAfterMs: Math.max(0, resetAt.getTime() - now),
       };
     }
 
@@ -409,11 +511,20 @@ export class RateLimiterService {
   }
 
   /**
-   * Clean up on module destroy. A connection that is not ready is dropped:
-   * QUIT would sit in ioredis's offline queue and hold the shutdown up. A
-   * failed QUIT drops it too.
+   * Closes on application shutdown, deliberately NOT on module destroy.
+   *
+   * This client serves the publish path's rate-limit checks, and
+   * `@nestjs/bullmq` closes its workers in `onApplicationShutdown` — which
+   * Nest runs *after* every `onModuleDestroy`. Cleaning up in the earlier
+   * hook would cut this connection while workers were still taking jobs: a
+   * publish could reach the platform, fail its own bookkeeping against a
+   * closed client, be marked failed, and double-post on retry.
+   *
+   * A connection that is not ready is dropped rather than quit: QUIT would
+   * sit in ioredis's offline queue and hold shutdown up. A failed QUIT drops
+   * it too, so this never rejects and never blocks the shutdown sequence.
    */
-  async onModuleDestroy() {
+  async onApplicationShutdown() {
     if (this.redis.status !== 'ready') {
       this.redis.disconnect();
       return;

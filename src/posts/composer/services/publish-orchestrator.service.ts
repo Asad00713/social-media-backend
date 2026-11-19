@@ -39,6 +39,7 @@ import { resolveOrganise, type OrganiseInput } from '../lib/draft-organise';
 import { PostLabelsService } from '../../../labels/post-labels.service';
 import { assertNoOpenBlanks } from '../lib/template-blanks';
 import { warningsField } from '../../lib/publish-warnings';
+import { livePosts } from '../../soft-delete/soft-delete';
 
 export const CHANNEL_CREDENTIALS_LOOKUP = 'CHANNEL_CREDENTIALS_LOOKUP';
 
@@ -388,7 +389,7 @@ export class PublishOrchestratorService {
       const rows = (await this.db
         .select({ targets: posts.targets })
         .from(posts)
-        .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId)))
+        .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId), livePosts()))
         .limit(1)) as { targets: unknown }[];
       const targets = Array.isArray(rows?.[0]?.targets)
         ? (rows[0].targets as ChannelTarget[])
@@ -452,7 +453,7 @@ export class PublishOrchestratorService {
     const [existing] = await this.db
       .select({ metadata: posts.metadata })
       .from(posts)
-      .where(and(eq(posts.id, draft.id), eq(posts.workspaceId, workspaceId)))
+      .where(and(eq(posts.id, draft.id), eq(posts.workspaceId, workspaceId), livePosts()))
       .limit(1);
     const outgoing: ApprovableContent = {
       content: draft.base.text,
@@ -483,7 +484,7 @@ export class PublishOrchestratorService {
     const [existing] = await this.db
       .select({ metadata: posts.metadata })
       .from(posts)
-      .where(and(eq(posts.id, draft.id), eq(posts.workspaceId, workspaceId)))
+      .where(and(eq(posts.id, draft.id), eq(posts.workspaceId, workspaceId), livePosts()))
       .limit(1);
 
     // Project to legacy PostTarget shape (with `status` field).

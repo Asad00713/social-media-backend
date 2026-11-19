@@ -2,6 +2,9 @@ import { Module, forwardRef } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { PostsController } from './posts.controller';
 import { PostService } from './services/post.service';
+import { StrandedPostSweeperService } from './services/stranded-post-sweeper.service';
+import { PostPurgeService } from './services/post-purge.service';
+import { ScheduledPostReconcilerService } from './services/scheduled-post-reconciler.service';
 import { PostDraftsService } from './services/post-drafts.service';
 import { PlannerPostsService } from './services/planner-posts.service';
 import { ChannelsModule } from '../channels/channels.module';
@@ -72,6 +75,9 @@ import { ApprovalPolicyService } from './composer/services/approval-policy.servi
   controllers: [PostsController],
   providers: [
     PostService,
+    StrandedPostSweeperService,
+    PostPurgeService,
+    ScheduledPostReconcilerService,
     PlannerPostsService,
     PostDraftsService,
     PublisherFactory,

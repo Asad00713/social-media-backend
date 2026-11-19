@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  NotFoundException,
   CanActivate,
   ExecutionContext,
   ForbiddenException,
@@ -8,11 +9,12 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { isUUID } from 'class-validator';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import { subscriptions, workspace } from '../../drizzle/schema';
 import { SKIP_SUSPEND_CHECK } from '../decorators/skip-suspend-check.decorator';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 /**
  * Stripe statuses that HARD-suspend a workspace: billing has failed terminally
@@ -92,12 +94,27 @@ export class WorkspaceSuspendedGuard implements CanActivate {
         isActive: workspace.isActive,
         reason: workspace.suspendedReason,
         ownerId: workspace.ownerId,
+        deletedAt: workspace.deletedAt,
       })
       .from(workspace)
       .where(eq(workspace.id, workspaceId))
       .limit(1);
 
     const ws = wsRows[0];
+
+    // A soft-deleted workspace is gone as far as anyone outside the purge job
+    // is concerned (migration 0088). Filtering it out of this query instead
+    // would be worse than useless: no row means "nothing to enforce", so the
+    // guard would wave the request through and every membership-based access
+    // check downstream — which reads workspaceInvitation, not workspace —
+    // would admit a member to a workspace its owner had deleted.
+    //
+    // Answering 404 here closes that in one place, for every workspace-scoped
+    // route, rather than asking ten callers to remember.
+    if (ws?.deletedAt) {
+      throw new NotFoundException('Workspace not found');
+    }
+
     if (ws && ws.isActive === false) {
       throw new ForbiddenException({
         statusCode: 403,

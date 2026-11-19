@@ -1,5 +1,5 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { eq, desc } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import {
   invoices,
@@ -10,6 +10,7 @@ import {
 } from '../../drizzle/schema';
 import { StripeService } from '../../stripe/stripe.service';
 import { SubscriptionLookupService } from './subscription-lookup.service';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 export interface InvoiceDetails {
   id: number;
@@ -216,7 +217,7 @@ export class InvoiceService {
     const workspaces = await db
       .select()
       .from(workspace)
-      .where(eq(workspace.ownerId, userId))
+      .where(and(eq(workspace.ownerId, userId), liveWorkspaces()))
       .orderBy(workspace.createdAt, workspace.id);
 
     if (workspaces.length === 0) {
@@ -379,7 +380,7 @@ export class InvoiceService {
     const ws = await db
       .select()
       .from(workspace)
-      .where(eq(workspace.id, workspaceId))
+      .where(and(eq(workspace.id, workspaceId), liveWorkspaces()))
       .limit(1);
 
     if (ws.length === 0) {

@@ -3,6 +3,8 @@ import { Cron } from '@nestjs/schedule';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../drizzle/db';
 import { campaigns } from '../drizzle/schema/campaigns.schema';
+import { workspace } from '../drizzle/schema/workspace.schema';
+import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 import {
   evergreenCategories,
   evergreenOccurrences,
@@ -98,7 +100,9 @@ export class EvergreenScoringService {
     }
 
     const allPostsRowIds = Array.from(
-      new Set(occurrenceRows.map((o) => o.postsRowId).filter((v): v is string => !!v)),
+      new Set(
+        occurrenceRows.map((o) => o.postsRowId).filter((v): v is string => !!v),
+      ),
     );
 
     const snapshotRows =
@@ -116,7 +120,10 @@ export class EvergreenScoringService {
     >();
     for (const snap of snapshotRows) {
       const existing = latestSnapshotByPostsRowId.get(snap.postId);
-      if (!existing || snap.snapshotAt.getTime() > existing.snapshotAt.getTime()) {
+      if (
+        !existing ||
+        snap.snapshotAt.getTime() > existing.snapshotAt.getTime()
+      ) {
         latestSnapshotByPostsRowId.set(snap.postId, snap);
       }
     }
@@ -193,9 +200,20 @@ export class EvergreenScoringService {
    */
   @Cron('0 4 * * 0', { timeZone: 'UTC', name: 'evergreenScoring' })
   async recomputeAllActiveScores(): Promise<void> {
-    const activeCampaigns = (await db.select().from(campaigns)).filter(
-      (c) => c.type === 'evergreen' && c.status === 'active',
-    );
+    // Live workspaces only. This sweep does not publish - it recomputes
+    // scores - so a deleted workspace here is wasted work rather than a
+    // customer-visible bug. Scoped anyway, for the same reason `reconcile()`
+    // is: an unscoped `select().from(campaigns)` is how a deleted workspace
+    // stays on every cron's books for 30 days.
+    const activeCampaigns = (
+      await db
+        .select({ campaign: campaigns })
+        .from(campaigns)
+        .innerJoin(workspace, eq(workspace.id, campaigns.workspaceId))
+        .where(liveWorkspaces())
+    )
+      .map((r) => r.campaign)
+      .filter((c) => c.type === 'evergreen' && c.status === 'active');
 
     if (activeCampaigns.length === 0) {
       this.logger.verbose('evergreenScoring: no active evergreen campaigns');
@@ -249,7 +267,10 @@ export class EvergreenScoringService {
       .select()
       .from(campaigns)
       .where(
-        and(eq(campaigns.id, campaignId), eq(campaigns.workspaceId, workspaceId)),
+        and(
+          eq(campaigns.id, campaignId),
+          eq(campaigns.workspaceId, workspaceId),
+        ),
       );
     if (!row) {
       throw new NotFoundException('Campaign not found');

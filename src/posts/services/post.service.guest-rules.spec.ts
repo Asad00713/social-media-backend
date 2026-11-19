@@ -9,15 +9,22 @@ jest.mock('../../drizzle/db', () => {
           ? (resolve: (v: unknown) => void) => resolve(rows)
           : () => mkChain(rows),
     });
-  return {
-    db: {
-      insert: () => mkChain([{ id: 'p-new', status: 'draft' }]),
-      select: () => mkChain([{ id: 'p1', status: 'draft' }]),
-      update: () => mkChain([{ id: 'p1', status: 'draft' }]),
-      delete: () => mkChain([]),
-      execute: () => mkChain([]),
-    },
+  const dbFake: Record<string, unknown> = {
+    insert: () => mkChain([{ id: 'p-new', status: 'draft' }]),
+    select: () => mkChain([{ id: 'p1', status: 'draft' }]),
+    update: () => mkChain([{ id: 'p1', status: 'draft' }]),
+    delete: () => mkChain([]),
+    /**
+     * `createPost` writes the post and its `post_history` row in one
+     * transaction, so the fake has to offer one. It runs the callback with
+     * ITSELF as `tx`, so writes inside land in the same `writes` capture the
+     * assertions read - a `tx` that swallowed them would make this spec
+     * green while the post was never recorded.
+     */
+    transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(dbFake),
+    execute: () => mkChain([]),
   };
+  return { db: dbFake };
 });
 
 import { PostService } from './post.service';

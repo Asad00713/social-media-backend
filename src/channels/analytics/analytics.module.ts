@@ -5,7 +5,11 @@ import { QuotaTrackerService } from './services/quota-tracker.service';
 import { AnalyticsService } from './services/analytics.service';
 import { AnalyticsController } from './analytics.controller';
 import { ChannelRefreshController } from './channel-refresh.controller';
-import { REDIS_CLIENT, RedisClientProvider } from './redis-client.provider';
+import {
+  REDIS_CLIENT,
+  RedisClientProvider,
+  RedisClientCloser,
+} from './redis-client.provider';
 import { ChannelLookupRepoProvider } from './guards/channel-ownership.guard';
 import { QUEUES } from '../../queue/queue.module';
 import { WorkspaceRoleModule } from '../../workspace-members/workspace-role.module';
@@ -65,6 +69,7 @@ import { TwitterAnalyticsAdapter } from './adapters/twitter/twitter-analytics.ad
     QuotaTrackerService,
     AnalyticsService,
     RedisClientProvider,
+    RedisClientCloser,
     ChannelLookupRepoProvider,
     ChannelProfileSnapshotHandler,
     PostMetricSnapshotHandler,

@@ -32,6 +32,10 @@ import { formatWhen, usableZone } from '../../email/links/format-when';
 import { networkName } from '../../email/render/components/post-card';
 import { dripReview } from '../../email/templates/publishing/drip-review';
 import { NotifyService } from '../../notifications/notify.service';
+import {
+  isWorkspaceLive,
+  liveWorkspaces,
+} from '../../posts/soft-delete/soft-delete';
 
 interface DripJobData {
   dripPostId: string;
@@ -323,7 +327,7 @@ export class DripProcessor extends WorkerHost {
       const [ws] = await db
         .select({ timezone: workspace.timezone })
         .from(workspace)
-        .where(eq(workspace.id, campaign.workspaceId));
+        .where(and(eq(workspace.id, campaign.workspaceId), liveWorkspaces()));
       timezone = ws?.timezone || 'UTC';
     } catch (err) {
       this.logger.warn(
@@ -422,6 +426,25 @@ export class DripProcessor extends WorkerHost {
     if (campaign.status !== 'active') {
       this.logger.log(`Campaign ${campaignId} is not active, skipping publish`);
       return { skipped: true, reason: `Campaign status is ${campaign.status}` };
+    }
+
+    // A deleted workspace publishes nothing.
+    //
+    // Checked BEFORE the `posts` row is created below, not only at publish
+    // time: `PostService.getPost` now carries the same guard, which is what
+    // actually stops the send, but without this the row and the
+    // `dripPosts.postId` link are written first and the publish then fails
+    // with a 404 - a confusing failure for a workspace that is simply gone.
+    //
+    // This path does NOT go through PostPublishProcessor (it calls
+    // `publishPost` directly), so the processor's own guard never saw it:
+    // before this, a drip post in a soft-deleted workspace published to the
+    // platform for real.
+    if (!(await isWorkspaceLive(db, campaign.workspaceId))) {
+      this.logger.log(
+        `Drip post ${dripPostId}: workspace ${campaign.workspaceId} is deleted, skipping publish`,
+      );
+      return { skipped: true, reason: 'Workspace is deleted' };
     }
 
     // Update status to publishing

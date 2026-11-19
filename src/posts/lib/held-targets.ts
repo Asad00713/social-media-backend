@@ -19,7 +19,45 @@ import { refusal } from './refusal';
 export const HELD_REASON = 'channel_paused' as const;
 /** Held because the user disconnected the channel (soft disconnect). */
 export const HELD_REASON_DISCONNECTED = 'channel_disconnected' as const;
-export type HeldReason = typeof HELD_REASON | typeof HELD_REASON_DISCONNECTED;
+/**
+ * Held because the platform's per-account rate limit is full.
+ *
+ * The odd one out: the other two reasons are released by a user action
+ * (resuming, reconnecting), while this one releases itself at a time the
+ * limiter states exactly. So a rate-limited post is enqueued for that moment
+ * rather than waiting to be let go — see `holdRateLimited` and the `delayMs`
+ * option on `enqueueHeldPost`.
+ */
+export const HELD_REASON_RATE_LIMITED = 'rate_limited' as const;
+export type HeldReason =
+  | typeof HELD_REASON
+  | typeof HELD_REASON_DISCONNECTED
+  | typeof HELD_REASON_RATE_LIMITED;
+
+/**
+ * Floor for a rate-limit retry delay.
+ *
+ * `retryAfterMs` can legitimately be 0 — a window that reopened between the
+ * check and the hold — and retrying at once would hit the same limit and hold
+ * again, in a tight loop. A minute costs nothing against windows measured in
+ * hours.
+ */
+export const RATE_LIMIT_MIN_DELAY_MS = 60_000;
+
+/**
+ * How late a post may still publish unannounced.
+ *
+ * One question with one answer, asked in two places: the reconciler deciding
+ * whether a post whose job vanished should still go, and the publish path
+ * deciding whether to wait out a rate limit. Beyond this the post is stale —
+ * publishing it would surprise the author more than skipping it — so it is
+ * failed and they are told.
+ *
+ * It lives here, with the hold logic, rather than in either service: a
+ * constant imported from a service makes the importer depend on that
+ * service's whole module graph for a number.
+ */
+export const PUBLISH_LATE_GRACE_MS = 6 * 60 * 60 * 1000;
 
 /**
  * Why a target that was held is failed instead of sent when its channel comes
@@ -71,6 +109,62 @@ export function holdTarget<T extends PostTarget>(
   };
 }
 
+/**
+ * True when the target is held for a reason only a person can clear — a
+ * paused or disconnected channel.
+ *
+ * The distinction matters wherever code decides whether it may send a held
+ * post. A user-caused hold must be left alone: re-arming it would publish to
+ * a channel someone deliberately paused. A `rate_limited` hold is the
+ * opposite — nothing but time releases it, so leaving it alone forever is the
+ * failure mode, and anything that recovers lost jobs has to be allowed to
+ * rebuild its retry.
+ */
+export function isHeldByUserAction(
+  target: Pick<PostTarget, 'heldAt' | 'heldReason'>,
+): boolean {
+  return isHeld(target) && target.heldReason !== HELD_REASON_RATE_LIMITED;
+}
+
+/**
+ * The target, held because its platform rate limit is full.
+ *
+ * Deliberately NOT `holdTarget(t, now, HELD_REASON_RATE_LIMITED)`:
+ * `holdTarget` rewrites the reason, and the two user-caused reasons must
+ * survive. A paused channel downgraded to `rate_limited` would release itself
+ * on a timer and publish to a channel the user had deliberately paused — and
+ * a disconnected one would publish through a channel that is gone.
+ *
+ * So an already-held target is returned untouched, whatever its reason. The
+ * rate limit will still be there when the user resumes; this only declines to
+ * take ownership of a hold it did not create.
+ */
+export function holdRateLimited<T extends PostTarget>(target: T, now: Date): T {
+  if (isHeld(target)) return target;
+  return holdTarget(target, now, HELD_REASON_RATE_LIMITED);
+}
+
+/**
+ * The soonest of two retry delays, ignoring absent or nonsensical ones.
+ *
+ * A post can be rate-limited on several targets at once, by different limits
+ * with different windows. One re-enqueue serves them all, so it goes at the
+ * earliest reopening: a later target is simply held again, which is correct,
+ * while going at the latest would hold the earlier ones needlessly.
+ *
+ * `undefined` and non-finite values are skipped rather than treated as 0 —
+ * `retryAfterMs` is optional on a RateLimitResult, and reading a missing one
+ * as "retry immediately" would spin.
+ */
+export function soonestRetry(
+  current: number | null,
+  candidate: number | undefined,
+): number | null {
+  if (candidate === undefined || !Number.isFinite(candidate)) return current;
+  const next = Math.max(0, candidate);
+  return current === null ? next : Math.min(current, next);
+}
+
 /** The target without its hold markers, for the attempt that releases it. */
 export function releaseTarget<T extends PostTarget>(target: T): T {
   if (!('heldAt' in target) && !('heldReason' in target)) return target;
@@ -110,15 +204,22 @@ export async function enqueueHeldPost(
   db: Pick<DbType, 'update'>,
   post: { id: string; scheduledAt: Date | string | null },
   now: Date = new Date(),
-  opts: { missed?: boolean } = {},
+  opts: { missed?: boolean; delayMs?: number } = {},
 ): Promise<string> {
   const jobId = `post-${post.id}-resume-${now.getTime()}`;
   const data: PublishJobData = opts.missed
     ? { postId: post.id, heldOnly: true, missedHeld: true }
     : { postId: post.id, heldOnly: true };
   const job = await queue.add('publish-post', data, {
-    // A missed post is failed at once; the others go at their own time.
-    delay: opts.missed ? 0 : resumeDelayMs(post.scheduledAt, now),
+    // A missed post is failed at once. `delayMs` is the rate-limit case: the
+    // limiter knows when the window reopens, which is not the post's own
+    // time — every other caller omits it and goes at the post's time, as
+    // before.
+    delay: opts.missed
+      ? 0
+      : opts.delayMs !== undefined
+        ? Math.max(opts.delayMs, RATE_LIMIT_MIN_DELAY_MS)
+        : resumeDelayMs(post.scheduledAt, now),
     jobId,
     attempts: 3,
     backoff: { type: 'exponential', delay: 5000 },

@@ -124,6 +124,7 @@ import {
   type TimelineSnap,
 } from './lib/timeline';
 import type { SnapshotWithinRow } from '../post-performance/post-performance.repository';
+import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 /** "Your best post this month" looks at this many days of the workspace. */
 const RANK_DAYS = 30;
@@ -709,7 +710,7 @@ export class InsightsService {
     const rows = await this.db
       .select({ timezone: workspace.timezone })
       .from(workspace)
-      .where(eq(workspace.id, workspaceId));
+      .where(and(eq(workspace.id, workspaceId), liveWorkspaces()));
     return safeTimeZone(rows[0]?.timezone);
   }
 

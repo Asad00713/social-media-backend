@@ -7,6 +7,7 @@ import { workspace } from '../../drizzle/schema/workspace.schema';
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 import { LLMMessage } from '../llm/llm-provider.interface';
 import { ChatMessage } from '../../drizzle/schema/chatbot.schema';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 /** Storage/cloud platforms — everything else is a social media channel. */
 const INTEGRATION_PLATFORMS = new Set([
@@ -38,7 +39,7 @@ export class ContextBuilderService {
         where: eq(users.id, userId),
       }),
       this.db.query.workspace.findFirst({
-        where: eq(workspace.id, workspaceId),
+        where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
       }),
       this.db
         .select()

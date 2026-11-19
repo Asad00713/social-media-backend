@@ -1,5 +1,5 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { eq, desc } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import {
   subscriptions,
@@ -14,6 +14,7 @@ import {
 } from '../../drizzle/schema';
 import { SubscriptionLookupService } from './subscription-lookup.service';
 import { AccountChannelsService } from './account-channels.service';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 export interface BillingDashboard {
   subscription: {
@@ -102,7 +103,7 @@ export class DashboardService {
     const ws = await db
       .select()
       .from(workspace)
-      .where(eq(workspace.id, workspaceId))
+      .where(and(eq(workspace.id, workspaceId), liveWorkspaces()))
       .limit(1);
 
     if (ws.length === 0) {
@@ -278,7 +279,7 @@ export class DashboardService {
     const workspaces = await db
       .select()
       .from(workspace)
-      .where(eq(workspace.ownerId, userId))
+      .where(and(eq(workspace.ownerId, userId), liveWorkspaces()))
       .orderBy(workspace.createdAt, workspace.id);
 
     // Get Stripe customer

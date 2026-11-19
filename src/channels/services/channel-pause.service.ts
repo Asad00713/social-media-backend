@@ -15,6 +15,7 @@ import { QUEUES } from '../../queue/queue.module';
 import {
   enqueueHeldPost,
   HELD_REASON,
+  HELD_REASON_RATE_LIMITED,
   holdTarget,
   isHeld,
   isJobPending,
@@ -27,6 +28,7 @@ import type {
   ResumeChannelResponse,
 } from '../dto/channel-hub.dto';
 import { loadPeople, personOf } from '../lib/people';
+import { livePosts } from '../../posts/soft-delete/soft-delete';
 
 type Row = Record<string, unknown>;
 
@@ -259,15 +261,24 @@ export class ChannelPauseService {
       if (isPaused || jobWaits) {
         // Rewrite this channel's markers: a pause keeps the hold (as a
         // pause); a waiting job sends the post itself, so no hold remains.
+        //
+        // A rate-limit hold is left exactly as it is. It is not this
+        // channel's to release: relabelling it `channel_paused` would stop it
+        // releasing itself on its own timer and make it wait for a resume the
+        // user has no reason to expect, while its retry job fires into a
+        // paused target and holds it again — the post would never publish.
+        // Stripping it would be no better: the limit is still full.
         await this.db.transaction(async (tx) => {
           const [row] = await tx
             .select({ targets: posts.targets })
             .from(posts)
-            .where(eq(posts.id, post.id))
+            .where(and(eq(posts.id, post.id), livePosts()))
             .for('update');
           if (!row) return;
           const targets = (row.targets ?? []).map((t: PostTarget) =>
-            String(t.channelId) === id && isHeld(t)
+            String(t.channelId) === id &&
+            isHeld(t) &&
+            t.heldReason !== HELD_REASON_RATE_LIMITED
               ? isPaused
                 ? holdTarget(t, now, HELD_REASON)
                 : releaseTarget(t)

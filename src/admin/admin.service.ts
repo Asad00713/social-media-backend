@@ -52,6 +52,7 @@ import {
 } from '../drizzle/schema';
 import { POST_STATUSES, type PostStatus } from '../drizzle/schema';
 import { AdminAuditService } from './admin-audit.service';
+import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 // Suspension reasons
 export const SUSPENSION_REASONS = [
@@ -258,7 +259,7 @@ export class AdminService {
       this.db
         .select({ count: count() })
         .from(workspace)
-        .where(eq(workspace.isActive, true)),
+        .where(and(eq(workspace.isActive, true), liveWorkspaces())),
       // Total channels
       this.db.select({ count: count() }).from(socialMediaChannels),
       // Connected channels
@@ -450,7 +451,7 @@ export class AdminService {
         createdAt: workspace.createdAt,
       })
       .from(workspace)
-      .where(eq(workspace.ownerId, userId));
+      .where(and(eq(workspace.ownerId, userId), liveWorkspaces()));
 
     return {
       ...user,
@@ -2553,20 +2554,18 @@ export class AdminService {
       this.db
         .select({ count: count() })
         .from(workspace)
-        .where(eq(workspace.isActive, true)),
+        .where(and(eq(workspace.isActive, true), liveWorkspaces())),
       this.db
         .select({ count: count() })
         .from(workspace)
-        .where(gte(workspace.createdAt, periodStart)),
+        .where(and(gte(workspace.createdAt, periodStart), liveWorkspaces())),
       this.db
         .select({ count: count() })
         .from(workspace)
-        .where(
-          and(
+        .where(and(
             gte(workspace.createdAt, prevPeriodStart),
             lte(workspace.createdAt, periodStart),
-          ),
-        ),
+          liveWorkspaces())),
 
       this.db.select({ count: count() }).from(socialMediaChannels).where(notIntegration),
       this.db
@@ -2652,7 +2651,7 @@ export class AdminService {
           count: count(),
         })
         .from(workspace)
-        .where(gte(workspace.createdAt, periodStart))
+        .where(and(gte(workspace.createdAt, periodStart), liveWorkspaces()))
         .groupBy(sql`DATE(${workspace.createdAt})`)
         .orderBy(sql`DATE(${workspace.createdAt})`),
 

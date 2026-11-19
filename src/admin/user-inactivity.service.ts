@@ -30,6 +30,7 @@ import { pausingSoon } from '../email/templates/lifecycle/pausing-soon';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RecipientsService } from '../notifications/recipients.service';
 import { NotificationType } from '../drizzle/schema';
+import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 const DAY_MS = 86_400_000;
 
@@ -689,7 +690,8 @@ export class UserInactivityService {
         workspaceName: workspace.name,
         ownerId: workspace.ownerId,
       })
-      .from(workspace);
+      .from(workspace)
+      .where(liveWorkspaces());
 
     // Get workspace memberships
     const memberships = await this.db

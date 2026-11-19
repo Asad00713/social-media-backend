@@ -1,8 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray, notInArray } from 'drizzle-orm';
 import { liveChannel } from '../../channels/lib/live-channel';
 import { db } from '../../drizzle/db';
-import { and, inArray, notInArray } from 'drizzle-orm';
 import {
   subscriptions,
   subscriptionItems,
@@ -25,6 +24,7 @@ import {
   LockableChannel,
 } from './channel-lock.util';
 import { FREE_STORAGE_BYTES } from '../plan-storage';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 /** Limits every account falls back to when it has no subscription row. */
 const FREE_FALLBACK: PlanLimits = {
@@ -65,7 +65,7 @@ export class SubscriptionLookupService {
     const rows = await db
       .select({ ownerId: workspace.ownerId })
       .from(workspace)
-      .where(eq(workspace.id, workspaceId))
+      .where(and(eq(workspace.id, workspaceId), liveWorkspaces()))
       .limit(1);
     return rows[0]?.ownerId ?? null;
   }
@@ -163,7 +163,7 @@ export class SubscriptionLookupService {
     return db
       .select({ id: workspace.id, createdAt: workspace.createdAt })
       .from(workspace)
-      .where(eq(workspace.ownerId, userId))
+      .where(and(eq(workspace.ownerId, userId), liveWorkspaces()))
       .orderBy(workspace.createdAt, workspace.id);
   }
 

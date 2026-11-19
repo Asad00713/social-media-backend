@@ -6,6 +6,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import * as Sentry from '@sentry/nestjs';
 import { LogWriterService } from './log-writer.service';
 import { redactTokenUrls } from './redact-token-urls';
 import { redactSensitivePath } from './redact-path';
@@ -71,6 +72,38 @@ export class AllExceptionsFilter implements ExceptionFilter {
       });
     } catch {
       // ignore — logging must not break the response
+    }
+
+    // Report to Sentry — 5xx only. A 4xx is the client being wrong (a bad
+    // payload, a missing resource, an expired token); alerting on those buries
+    // the failures that are ours under noise we cannot act on. They are still
+    // written to error_logs above, which stays the system of record.
+    if (status >= 500) {
+      try {
+        const user = (
+          request as unknown as {
+            user?: { userId?: string; workspaceId?: string };
+          }
+        ).user;
+
+        Sentry.withScope((scope) => {
+          if (user?.userId) scope.setUser({ id: user.userId });
+          if (user?.workspaceId) scope.setTag('workspace', user.workspaceId);
+          if (requestId) scope.setTag('request_id', requestId);
+          // The path is a tag rather than part of the message so Sentry groups
+          // by the thrown error, not by every distinct URL that produced it.
+          if (request?.url) {
+            scope.setTag(
+              'path',
+              redactTokenUrls(redactSensitivePath(request.url)),
+            );
+          }
+          Sentry.captureException(exception);
+        });
+      } catch {
+        // Same contract as the DB write above: observability must never be
+        // able to change or break the response.
+      }
     }
 
     // Reproduce Nest's default response shape (BaseExceptionFilter: an object

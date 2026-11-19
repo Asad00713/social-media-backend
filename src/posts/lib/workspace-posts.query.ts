@@ -1,6 +1,7 @@
 import { and, desc, eq, sql, type SQL } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { posts, type PostStatus } from '../../drizzle/schema/posts.schema';
+import { livePosts } from '../soft-delete/soft-delete';
 
 export interface WorkspacePostsOptions {
   status?: PostStatus;
@@ -61,11 +62,11 @@ export async function listWorkspacePosts(
     db
       .select({ count: sql<string>`count(*)` })
       .from(posts)
-      .where(where),
+      .where(and(where, livePosts())),
     db
       .select()
       .from(posts)
-      .where(where)
+      .where(and(where, livePosts()))
       .orderBy(desc(posts.createdAt), desc(posts.id))
       .limit(options.limit || DEFAULT_WORKSPACE_POSTS_LIMIT)
       .offset(options.offset || 0),

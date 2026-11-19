@@ -34,6 +34,7 @@ import { RecipientsService } from 'src/notifications/recipients.service';
 import { UsersService } from 'src/users/users.service';
 import { WorkspaceRoleService } from './workspace-role.service';
 import { normalizeEmail } from 'src/users/normalize-email';
+import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -180,7 +181,7 @@ export class WorkspaceMembersService {
   ) {
     // 1. Check workspace exists and user has permission
     const workspaceData = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
     });
 
     if (!workspaceData) {
@@ -320,7 +321,7 @@ export class WorkspaceMembersService {
   ) {
     // permission: owner or admin (same check as inviteMember)
     const workspaceData = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
     });
     if (!workspaceData) throw new NotFoundException('Workspace not found');
     const isOwner = workspaceData.ownerId === currentUserId;
@@ -490,14 +491,17 @@ export class WorkspaceMembersService {
         throw new BadRequestException('This invitation is no longer pending');
       }
 
-      // Counted before the lock is released, so the next seat check sees it.
-      // A guest holds no seat, so the seat counter is left alone.
+      // Counted on `tx`, so it is inside the transaction that holds the seat
+      // lock: the next seat check really does see it, and a rollback takes the
+      // count with it. A guest holds no seat, so the seat counter is left
+      // alone.
       if (usesSeat(accepted.role)) {
         try {
           await this.usageService.incrementMemberCount(
             invitation.workspaceId,
             currentUserId,
             currentUserId,
+            tx,
           );
         } catch (error) {
           // Log but don't fail if usage tracking fails
@@ -578,7 +582,7 @@ export class WorkspaceMembersService {
   // Get pending invitations for a workspace
   async getPendingInvitations(workspaceId: string, currentUserId: string) {
     const workspaceData = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
     });
 
     if (!workspaceData) {
@@ -839,7 +843,7 @@ export class WorkspaceMembersService {
     }
 
     const workspaceData = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
     });
 
     if (!workspaceData) {
@@ -869,7 +873,7 @@ export class WorkspaceMembersService {
   // Get all members (only ACCEPTED invitations)
   async getMembers(workspaceId: string, currentUserId: string) {
     const workspaceData = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
     });
 
     if (!workspaceData) {
@@ -943,7 +947,7 @@ export class WorkspaceMembersService {
     currentUserId: string,
   ) {
     const workspaceData = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
     });
 
     if (!workspaceData) {
@@ -1065,7 +1069,7 @@ export class WorkspaceMembersService {
     currentUserId: string,
   ) {
     const workspaceData = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
     });
 
     if (!workspaceData) {
@@ -1129,7 +1133,9 @@ export class WorkspaceMembersService {
     // Track usage - decrement member count. A guest never took a seat. The
     // role is the one the UPDATE just removed, not the one read earlier: a
     // role change that committed in between has already moved the counter, and
-    // deciding on the stale role would move it twice (or not at all).
+    // deciding on the stale role would move it twice (or not at all). No
+    // transaction here, so no `tx`: the decrement is a single atomic
+    // statement, and removing a member never contends for a free seat.
     if (usesSeat(removed.role)) {
       try {
         await this.usageService.decrementMemberCount(
@@ -1219,7 +1225,7 @@ export class WorkspaceMembersService {
     currentUserId: string,
   ) {
     const workspaceData = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
     });
     if (!workspaceData) {
       throw new NotFoundException('Workspace not found');
@@ -1347,13 +1353,14 @@ export class WorkspaceMembersService {
           role: workspaceInvitation.role,
         });
 
-      // Counted before the lock is released, so the next seat check sees it.
+      // On `tx`, inside the seat lock — same reasoning as accept above.
       if (usesSeat(restoredRow.role)) {
         try {
           await this.usageService.incrementMemberCount(
             workspaceId,
             currentUserId,
             userId,
+            tx,
           );
         } catch (error) {
           // Log but don't fail if usage tracking fails (as accept and remove do)

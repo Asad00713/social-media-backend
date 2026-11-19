@@ -48,6 +48,7 @@ import {
   MAX_CODE_ATTEMPTS,
   verificationCodeError,
 } from './verification-code-error';
+import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 // Columns returned to the client for any workspace row reachable from
 // /auth/me. Deliberately excludes `suspensionNote` (admin-only note) and
@@ -282,7 +283,7 @@ export class AuthService {
 
     // Get all workspaces for the user
     const workspaces = await this.db.query.workspace.findMany({
-      where: eq(workspace.ownerId, userId),
+      where: and(eq(workspace.ownerId, userId), liveWorkspaces()),
       orderBy: (workspace, { desc }) => [desc(workspace.createdAt)],
       columns: PUBLIC_WORKSPACE_COLUMNS,
     });
@@ -307,7 +308,10 @@ export class AuthService {
     let lastAccessedWorkspace: PublicWorkspace | null = null;
     if (user.lastAccessedWorkspaceId) {
       const foundWorkspace = await this.db.query.workspace.findFirst({
-        where: eq(workspace.id, user.lastAccessedWorkspaceId),
+        where: and(
+          eq(workspace.id, user.lastAccessedWorkspaceId),
+          liveWorkspaces(),
+        ),
         columns: PUBLIC_WORKSPACE_COLUMNS,
       });
       lastAccessedWorkspace = foundWorkspace || null;

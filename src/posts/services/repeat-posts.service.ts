@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import { posts } from '../../drizzle/schema/posts.schema';
@@ -12,6 +12,7 @@ import { buildDuplicate } from '../lib/duplicate-post';
 import type { PostRow } from '../lib/present-post';
 import { nextPost, parseStored, seriesPostId } from '../lib/recurrence';
 import { applyVariationSources } from '../lib/rotating-variations';
+import { isWorkspaceLive, livePosts } from '../soft-delete/soft-delete';
 
 /** Job options the composer's own schedule endpoint uses. */
 const JOB_ATTEMPTS = 3;
@@ -52,6 +53,25 @@ export class RepeatPostsService {
     };
     const current = parseStored(metadata.schedule?.recurrence);
     if (!current || !post.scheduledAt) return null;
+
+    // A deleted workspace's series stops here.
+    //
+    // This has to be a return, not a filter on a read: the work below INSERTS
+    // the next post and enqueues it, so a filter on a later read cannot
+    // prevent either. (The first version of this guard sat on the read inside
+    // the `inserted.length === 0` branch, which is the conflict-retry path --
+    // never entered on a normal run, so it stopped nothing while looking like
+    // a fix.)
+    //
+    // Deleting a workspace is a soft delete that marks only the `workspace`
+    // row, so every post in it still reads as live and the series would go on
+    // spawning rows and jobs until the purge 30 days later.
+    if (!(await isWorkspaceLive(this.db, post.workspaceId))) {
+      this.logger.log(
+        `Series ${current.seriesId} stops at post ${post.id}: its workspace is deleted.`,
+      );
+      return null;
+    }
 
     const timezone = await loadWorkspaceTimezone(this.db, post.workspaceId);
     const next = nextPost(current, new Date(post.scheduledAt), timezone, now);
@@ -95,7 +115,7 @@ export class RepeatPostsService {
       const [row] = await this.db
         .select({ status: posts.status, jobId: posts.jobId })
         .from(posts)
-        .where(eq(posts.id, id))
+        .where(and(eq(posts.id, id), livePosts()))
         .limit(1);
       if (!row || row.status !== 'scheduled' || row.jobId !== jobId) {
         return id;

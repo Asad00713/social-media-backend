@@ -14,6 +14,7 @@ import { users } from '../drizzle/schema/users.schema';
 import type { CallerRole } from '../posts/guest-rules';
 import { roleCan } from '../workspace-members/role-capabilities';
 import type { PostCommentDto } from './dto/post-comments.dto';
+import { livePosts } from '../posts/soft-delete/soft-delete';
 
 /**
  * True when Postgres says the table does not exist (42P01): the code is
@@ -169,7 +170,7 @@ export class PostCommentsService {
     const [post] = await this.db
       .select({ id: posts.id })
       .from(posts)
-      .where(and(eq(posts.id, postId), eq(posts.workspaceId, workspaceId)));
+      .where(and(eq(posts.id, postId), eq(posts.workspaceId, workspaceId), livePosts()));
     if (!post) throw new NotFoundException('Post not found');
   }
 

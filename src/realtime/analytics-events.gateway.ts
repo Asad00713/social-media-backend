@@ -32,6 +32,7 @@ import type {
   UserEventName,
   UserEventPayloadMap,
 } from './types/user-events.types';
+import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 interface CachedRole {
   role: WorkspaceRole | null;
@@ -257,7 +258,7 @@ export class AnalyticsEventsGateway
         where: and(
           eq(workspace.id, workspaceId),
           eq(workspace.ownerId, userId),
-        ),
+          liveWorkspaces()),
         columns: { id: true },
       });
       if (owned) return true;

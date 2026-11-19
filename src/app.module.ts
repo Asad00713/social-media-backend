@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
+import { SentryModule } from '@sentry/nestjs/setup';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -54,6 +55,7 @@ import { ShortLinksModule } from './short-links/short-links.module';
 import { NotificationPreferencesModule } from './notification-preferences/notification-preferences.module';
 import { PlatformStatusModule } from './platform-status/platform-status.module';
 import { LabelsModule } from './labels/labels.module';
+import { HealthModule } from './health/health.module';
 import { BullBoardModule } from '@bull-board/nestjs';
 import { ExpressAdapter } from '@bull-board/express';
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
@@ -61,6 +63,8 @@ import { QUEUES } from './queue/queue.module';
 
 @Module({
   imports: [
+    // First import: Sentry's Nest integration wraps the modules that follow.
+    SentryModule.forRoot(),
     ConfigModule.forRoot({
       isGlobal: true,
     }),
@@ -117,6 +121,7 @@ import { QUEUES } from './queue/queue.module';
     NotificationPreferencesModule,
     PlatformStatusModule,
     LabelsModule,
+    HealthModule,
     BullBoardModule.forRoot({
       // Moved off '/admin/queues' so it stops swallowing the admin queue API,
       // which lives under that same prefix. Bull Board keeps its full job

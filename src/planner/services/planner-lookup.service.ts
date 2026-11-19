@@ -23,6 +23,7 @@ import type {
   NextPostDto,
 } from '../dto/planner-list.dto';
 import { loadWorkspaceTimezone, wallClockToUtc } from '../lib/workspace-time';
+import { livePosts } from '../../posts/soft-delete/soft-delete';
 
 /**
  * Next post and last post time read `occurredAtSql` (COALESCE(published_at,
@@ -85,7 +86,7 @@ export class PlannerLookupService {
     const [row] = await this.db
       .select({ at: sql<string | null>`min(${occurredAtSql})` })
       .from(posts)
-      .where(and(this.nonDraft(workspaceId), gt(occurredAtSql, after)));
+      .where(and(this.nonDraft(workspaceId), gt(occurredAtSql, after), livePosts()));
     return { scheduledAt: row?.at ? new Date(row.at).toISOString() : null };
   }
 
@@ -101,8 +102,7 @@ export class PlannerLookupService {
     const [row] = await this.db
       .select({ at: sql<string>`${occurredAtSql}` })
       .from(posts)
-      .where(
-        and(
+      .where(and(and(
           this.nonDraft(workspaceId),
           isNotNull(occurredAtSql),
           sql`jsonb_typeof(${posts.targets}) = 'array'`,
@@ -113,8 +113,7 @@ export class PlannerLookupService {
               sql`, `,
             )})
           )`,
-        ),
-      )
+        ), livePosts()))
       .orderBy(desc(posts.createdAt), desc(posts.id))
       .limit(1);
     return { at: row?.at ? new Date(row.at).toISOString() : null };
