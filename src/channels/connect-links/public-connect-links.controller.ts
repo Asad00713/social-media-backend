@@ -13,7 +13,7 @@ import { Throttle } from '@nestjs/throttler';
 import { SkipLaunchGate } from '../../auth/decorators/skip-launch-gate.decorator';
 import { ConnectLinkAccessService } from './connect-link-access.service';
 import { ConnectLinkConnectService } from './connect-link-connect.service';
-import { ClientIpThrottlerGuard } from './client-ip-throttler.guard';
+import { ClientIpThrottlerGuard } from '../../common/guards/client-ip-throttler.guard';
 import { ConnectLinkFacebookConnectBody } from './dto/connect-link.dto';
 
 /**

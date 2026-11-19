@@ -13,6 +13,12 @@ import {
   Get,
 } from '@nestjs/common';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
+import { ClientIpThrottlerGuard } from '../common/guards/client-ip-throttler.guard';
+import {
+  LOGIN_THROTTLE,
+  RECOVERY_MAIL_THROTTLE,
+  REGISTER_THROTTLE,
+} from './auth-throttle';
 import type { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import {
@@ -114,6 +120,11 @@ export class AuthController {
 
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
+  // Per-IP ceiling. See auth-throttle.ts for why these four routes and no
+  // others: the rest of this controller is bounded by an atomic attempt
+  // counter, a 256-bit token, or a JWT.
+  @UseGuards(ClientIpThrottlerGuard)
+  @Throttle(REGISTER_THROTTLE)
   async register(
     @Body() createUserDto: CreateUserDto,
     @Ip() ip: string,
@@ -121,8 +132,10 @@ export class AuthController {
     @Headers('user-agent') userAgent: string | undefined,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const { accessToken, user, message } =
-      await this.authService.register(createUserDto, ip);
+    const { accessToken, user, message } = await this.authService.register(
+      createUserDto,
+      ip,
+    );
 
     const refreshToken = await this.authService.generateRefreshToken(
       user.id,
@@ -155,6 +168,8 @@ export class AuthController {
 
   @Post('login')
   @HttpCode(HttpStatus.OK)
+  @UseGuards(ClientIpThrottlerGuard)
+  @Throttle(LOGIN_THROTTLE)
   async login(
     @Body() loginDto: LoginDto,
     @Ip() ip: string,
@@ -286,6 +301,10 @@ export class AuthController {
   @Post('resend-verification')
   @HttpCode(HttpStatus.OK)
   @SkipLaunchGate()
+  // Caps fan-out across addresses; the per-account cooldown in AuthService
+  // (60s) still caps repeats to one address.
+  @UseGuards(ClientIpThrottlerGuard)
+  @Throttle(RECOVERY_MAIL_THROTTLE)
   async resendVerification(@Body() dto: ResendVerificationDto) {
     return this.authService.resendVerificationEmail(dto.email);
   }
@@ -299,6 +318,9 @@ export class AuthController {
   @Post('forgot-password')
   @HttpCode(HttpStatus.OK)
   @SkipLaunchGate()
+  // Same fan-out cap; AuthService keeps its 5-minute per-account cooldown.
+  @UseGuards(ClientIpThrottlerGuard)
+  @Throttle(RECOVERY_MAIL_THROTTLE)
   async forgotPassword(@Body() dto: ForgotPasswordDto) {
     return this.authService.forgotPassword(dto.email);
   }

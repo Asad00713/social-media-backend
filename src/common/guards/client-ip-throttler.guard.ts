@@ -33,8 +33,16 @@ function lastEntry(header: HeaderValue): string | undefined {
  *   2. the RIGHTMOST non-empty `X-Forwarded-For` entry: the edge appends the
  *      address it saw, so only the last hop is not client-controlled.
  *   3. `req.ip`.
- * Scoped to the public connect-link controller on purpose; the app-wide
- * setting is not changed here.
+ *
+ * Applied per controller, never as an APP_GUARD: the app-wide
+ * `ThrottlerModule.forRoot` default stays off on purpose (see the comment at
+ * its registration in `app.module.ts`), so only a route carrying an explicit
+ * `@Throttle` is limited.
+ *
+ * It lives in `common/` because two unrelated surfaces need the same tracker:
+ * the public connect-link controller and the unauthenticated auth routes.
+ * Both face the open internet with no JWT to bucket by, which is exactly when
+ * the proxy problem above bites.
  */
 @Injectable()
 export class ClientIpThrottlerGuard extends ThrottlerGuard {

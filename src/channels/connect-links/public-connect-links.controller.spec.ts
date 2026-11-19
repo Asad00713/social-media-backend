@@ -7,7 +7,7 @@ import {
   PATH_METADATA,
 } from '@nestjs/common/constants';
 import { SKIP_LAUNCH_GATE } from '../../auth/decorators/skip-launch-gate.decorator';
-import { ClientIpThrottlerGuard } from './client-ip-throttler.guard';
+import { ClientIpThrottlerGuard } from '../../common/guards/client-ip-throttler.guard';
 import type { ConnectLinkConnectService } from './connect-link-connect.service';
 import type { ConnectLinkAccessService } from './connect-link-access.service';
 import { PublicConnectLinksController } from './public-connect-links.controller';
