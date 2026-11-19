@@ -1033,7 +1033,8 @@ export class WorkspaceMembersService {
         );
       }
 
-      // Counted before the lock is released, so the next seat check sees it.
+      // Counted on `tx`, inside the seat lock (as accept does, #245): the
+      // next seat check sees it and a rollback takes the count with it.
       if (seatDelta === 1) {
         // The seat is the point of a promotion: if it cannot be counted the
         // error propagates and the role change rolls back, rather than
@@ -1042,6 +1043,7 @@ export class WorkspaceMembersService {
           workspaceId,
           currentUserId,
           current.userId || undefined,
+          tx,
         );
       } else if (seatDelta === -1) {
         try {
@@ -1051,8 +1053,9 @@ export class WorkspaceMembersService {
             current.userId || undefined,
           );
         } catch (error) {
-          // A demotion that fails to free the seat errs high (conservative):
-          // log it and keep the change, as accept and remove do.
+          // On the pool, not `tx`, as remove does: a failed statement on `tx`
+          // would abort the role change. A demotion that fails to free the
+          // seat errs high (conservative): log it and keep the change.
           console.error('Failed to track member role change:', error);
         }
       }

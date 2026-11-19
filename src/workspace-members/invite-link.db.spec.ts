@@ -360,6 +360,8 @@ describeDb('InviteLinkService (database)', () => {
           ws,
           joiner.id,
           joiner.id,
+          // The transaction holding the seat lock (#245).
+          expect.objectContaining({ update: expect.any(Function) }),
         );
         expect(notify).toHaveBeenCalledTimes(1);
         expect(notify.mock.calls[0][0]).toMatchObject({

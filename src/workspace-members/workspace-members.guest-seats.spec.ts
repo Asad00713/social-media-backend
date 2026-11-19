@@ -375,6 +375,8 @@ describe('accept and remove count seats, not people', () => {
       WS,
       MEMBER_USER,
       MEMBER_USER,
+      // The transaction holding the seat lock (#245).
+      expect.objectContaining({ update: expect.any(Function) }),
     );
   });
 
@@ -613,6 +615,8 @@ describe('changing a role moves a seat only across the guest line', () => {
       WS,
       OWNER,
       MEMBER_USER,
+      // The transaction holding the seat lock (#245).
+      expect.objectContaining({ update: expect.any(Function) }),
     );
     expect(usage.decrementMemberCount).not.toHaveBeenCalled();
     expect(res).not.toHaveProperty('token');

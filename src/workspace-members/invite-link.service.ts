@@ -247,9 +247,10 @@ export class InviteLinkService {
         })
         .returning();
 
-      // Counted before the lock is released, so the next seat check sees it.
+      // Counted on `tx`, inside the seat lock (as accept does, #245): the
+      // next seat check sees it and a rollback takes the count with it.
       try {
-        await this.usageService.incrementMemberCount(ws.id, userId, userId);
+        await this.usageService.incrementMemberCount(ws.id, userId, userId, tx);
       } catch (error) {
         // Log but don't fail if usage tracking fails (as accept does)
         this.logger.error(

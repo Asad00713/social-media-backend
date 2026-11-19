@@ -9,15 +9,16 @@ jest.mock('../../drizzle/db', () => {
           ? (resolve: (v: unknown) => void) => resolve(rows)
           : () => mkChain(rows),
     });
-  return {
-    db: {
-      insert: () => mkChain([{ id: 'p-new', status: 'draft' }]),
-      select: () => mkChain([{ id: 'p1', status: 'draft' }]),
-      update: () => mkChain([{ id: 'p1', status: 'draft' }]),
-      delete: () => mkChain([]),
-      execute: () => mkChain([]),
-    },
+  const db: Record<string, unknown> = {
+    insert: () => mkChain([{ id: 'p-new', status: 'draft' }]),
+    select: () => mkChain([{ id: 'p1', status: 'draft' }]),
+    update: () => mkChain([{ id: 'p1', status: 'draft' }]),
+    delete: () => mkChain([]),
+    execute: () => mkChain([]),
   };
+  // createPost writes the post and its history in one transaction (#248).
+  db.transaction = (fn: (tx: unknown) => unknown) => fn(db);
+  return { db };
 });
 
 import { PostService } from '../../posts/services/post.service';
@@ -44,6 +45,7 @@ function realPostService(
     { enforceQueueLimit: noop } as any,
     { send: jest.fn() } as any, // PostReminderService
     { onPublishOutcome: jest.fn(async () => undefined) } as any, // PublishFailureNotifier
+    {} as any, // StrandedPostSweeperService (main, #234)
     { coversAuthor: jest.fn(async () => policyCovers) } as any, // ApprovalPolicyService
   );
   jest.spyOn(svc, 'getPost').mockResolvedValue(existing as any);

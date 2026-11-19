@@ -60,6 +60,7 @@ function makeService(existing: Record<string, unknown>, policyCovers = false) {
     { enforceQueueLimit: noop } as any,
     { send: jest.fn() } as any, // PostReminderService
     { onPublishOutcome: jest.fn(async () => undefined) } as any, // PublishFailureNotifier
+    {} as any, // StrandedPostSweeperService (main, #234)
     { coversAuthor: jest.fn(async () => policyCovers) } as any, // ApprovalPolicyService
   );
   jest.spyOn(svc, 'getPost').mockResolvedValue(existing as any);
