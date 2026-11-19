@@ -1,4 +1,14 @@
-import { Controller, Post, Patch, Delete, Body, Param, UseGuards, HttpCode, HttpStatus } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Patch,
+  Delete,
+  Body,
+  Param,
+  UseGuards,
+  HttpCode,
+  HttpStatus,
+} from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
@@ -79,8 +89,15 @@ export class EvergreenController {
     @Param('id') id: string,
     @Param('catId') catId: string,
     @Body() dto: SetCategoryActiveDto,
+    @CurrentUser() user: { userId: string; email: string },
   ) {
-    return this.evergreen.setCategoryActive(workspaceId, id, catId, dto.isActive);
+    return this.evergreen.setCategoryActive(
+      workspaceId,
+      id,
+      catId,
+      dto.isActive,
+      user.userId,
+    );
   }
 
   @RequireCapability('posts:publish')
@@ -116,7 +133,9 @@ export class EvergreenController {
   // `:catId` even though the design doc's flatter `.../posts/:postId` shape
   // does not. See task-5-report.md for the full rationale.
   @RequireCapability('posts:publish')
-  @Patch('workspaces/:workspaceId/evergreen/:id/categories/:catId/posts/:postId')
+  @Patch(
+    'workspaces/:workspaceId/evergreen/:id/categories/:catId/posts/:postId',
+  )
   async updatePost(
     @Param('workspaceId') workspaceId: string,
     @Param('id') id: string,
@@ -136,7 +155,9 @@ export class EvergreenController {
   }
 
   @RequireCapability('posts:publish')
-  @Delete('workspaces/:workspaceId/evergreen/:id/categories/:catId/posts/:postId')
+  @Delete(
+    'workspaces/:workspaceId/evergreen/:id/categories/:catId/posts/:postId',
+  )
   @HttpCode(HttpStatus.OK)
   async removePost(
     @Param('workspaceId') workspaceId: string,
@@ -180,7 +201,9 @@ export class EvergreenController {
   }
 
   @RequireCapability('posts:publish')
-  @Post('workspaces/:workspaceId/evergreen/:id/categories/:catId/posts/:postId/variations')
+  @Post(
+    'workspaces/:workspaceId/evergreen/:id/categories/:catId/posts/:postId/variations',
+  )
   @HttpCode(HttpStatus.OK)
   async addVariation(
     @Param('workspaceId') workspaceId: string,
@@ -212,7 +235,13 @@ export class EvergreenController {
     @Param('postId') postId: string,
     @Param('variationId') variationId: string,
   ) {
-    return this.evergreen.removeVariation(workspaceId, id, catId, postId, variationId);
+    return this.evergreen.removeVariation(
+      workspaceId,
+      id,
+      catId,
+      postId,
+      variationId,
+    );
   }
 
   // ==========================================================================
@@ -237,7 +266,13 @@ export class EvergreenController {
     @Param('postId') postId: string,
     @CurrentUser() user: { userId: string; email: string },
   ) {
-    await this.scoring.checkFreshness(workspaceId, user.userId, id, catId, postId);
+    await this.scoring.checkFreshness(
+      workspaceId,
+      user.userId,
+      id,
+      catId,
+      postId,
+    );
     return this.evergreen.assembleEvergreen(id);
   }
 }

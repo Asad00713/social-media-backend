@@ -299,6 +299,28 @@ describe('EvergreenService and the workspace approval policy', () => {
     expect(writes).toEqual(['update']);
   });
 
+  it('refuses a covered person switching a category back ON in an ACTIVE campaign; switching it off stays free', async () => {
+    const { svc, pol } = build(true, 'active');
+    selectRow = { id: 'k1', isActive: false };
+    expectPolicy403(
+      await errorOf(svc.setCategoryActive(WS, 'c1', 'k1', true, ACTOR)),
+    );
+    expect(writes).toEqual([]);
+
+    selectRow = { id: 'k1', isActive: true };
+    pol.coversAuthor.mockClear();
+    await svc.setCategoryActive(WS, 'c1', 'k1', false, ACTOR);
+    expect(pol.coversAuthor).not.toHaveBeenCalled();
+    expect(writes).toEqual(['update']);
+  });
+
+  it('lets a covered person switch a category on in a draft campaign', async () => {
+    const { svc } = build(true, 'draft');
+    selectRow = { id: 'k1', isActive: false };
+    await svc.setCategoryActive(WS, 'c1', 'k1', true, ACTOR);
+    expect(writes).toEqual(['update']);
+  });
+
   it('lets an uncovered person add to a live pool', async () => {
     const { svc } = build(false, 'active');
     await svc.addPost(WS, 'c1', 'k1', { content } as any, ACTOR);

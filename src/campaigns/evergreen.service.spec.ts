@@ -545,7 +545,8 @@ describe('EvergreenService.updateCategory', () => {
       CATEGORY_ID,
       {
         name: 'Tips & Tricks',
-      }, 'actor-1',
+      },
+      'actor-1',
     );
 
     expect(dto.categories[0].name).toBe('Tips & Tricks');
@@ -565,6 +566,7 @@ describe('EvergreenService.setCategoryActive', () => {
       CAMPAIGN_ID,
       CATEGORY_ID,
       false,
+      'actor-1',
     );
 
     expect(dto.categories[0].isActive).toBe(false);
@@ -601,16 +603,22 @@ describe('EvergreenService.addPost', () => {
     });
     const service = loadServiceWithFakeDb(db);
 
-    const dto = await service.addPost(WORKSPACE_ID, CAMPAIGN_ID, CATEGORY_ID, {
-      content: {
-        mode: 'manual',
-        postType: 'text',
-        caption: 'Hello',
-        media: [],
-        threadParts: [],
-        templateIds: [],
+    const dto = await service.addPost(
+      WORKSPACE_ID,
+      CAMPAIGN_ID,
+      CATEGORY_ID,
+      {
+        content: {
+          mode: 'manual',
+          postType: 'text',
+          caption: 'Hello',
+          media: [],
+          threadParts: [],
+          templateIds: [],
+        },
       },
-    }, 'actor-1');
+      'actor-1',
+    );
 
     expect(inserts.posts).toHaveLength(1);
     const inserted = inserts.posts[0] as {
@@ -635,17 +643,23 @@ describe('EvergreenService.addPost', () => {
     });
     const service = loadServiceWithFakeDb(db);
 
-    await service.addPost(WORKSPACE_ID, CAMPAIGN_ID, CATEGORY_ID, {
-      content: {
-        mode: 'manual',
-        postType: 'text',
-        caption: 'Hello',
-        media: [],
-        threadParts: [],
-        templateIds: [],
+    await service.addPost(
+      WORKSPACE_ID,
+      CAMPAIGN_ID,
+      CATEGORY_ID,
+      {
+        content: {
+          mode: 'manual',
+          postType: 'text',
+          caption: 'Hello',
+          media: [],
+          threadParts: [],
+          templateIds: [],
+        },
+        recyclePolicy: { mode: 'maxCount', maxCount: 5 },
       },
-      recyclePolicy: { mode: 'maxCount', maxCount: 5 },
-    }, 'actor-1');
+      'actor-1',
+    );
 
     const inserted = inserts.posts[0] as {
       recyclePolicy: { mode: string; maxCount?: number };
@@ -670,7 +684,8 @@ describe('EvergreenService.updatePost', () => {
       POST_ID,
       {
         minGapHours: 12,
-      }, 'actor-1',
+      },
+      'actor-1',
     );
 
     expect(dto.categories[0].posts[0].minGapHours).toBe(12);

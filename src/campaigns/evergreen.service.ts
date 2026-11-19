@@ -452,11 +452,15 @@ export class EvergreenService {
     campaignId: string,
     categoryId: string,
     isActive: boolean,
+    actorId: string,
   ): Promise<EvergreenCampaignDto> {
-    await this.loadOwnedCampaign(workspaceId, campaignId);
+    const campaign = await this.loadOwnedCampaign(workspaceId, campaignId);
 
     const [existing] = await db
-      .select({ id: evergreenCategories.id })
+      .select({
+        id: evergreenCategories.id,
+        isActive: evergreenCategories.isActive,
+      })
       .from(evergreenCategories)
       .where(
         and(
@@ -466,6 +470,13 @@ export class EvergreenService {
       );
     if (!existing) {
       throw new NotFoundException('Category not found');
+    }
+
+    // Switching a category ON in an ACTIVE campaign puts its pool back into
+    // rotation with no per-post approval: gated like any live-pool change.
+    // Switching one off sends nothing new and stays free.
+    if (isActive && !existing.isActive) {
+      await this.assertMayChangeLivePool(workspaceId, campaign, actorId);
     }
 
     await db
