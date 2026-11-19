@@ -10,11 +10,13 @@ import { WorkspaceService } from './workspace.service';
 
 // 0091 adds the workspace columns `findFirst` reads; 0080 the membership
 // columns seedMember writes; 0081 the channel disconnect columns the seed
-// sets on the disconnected channel. The harness applies each file twice, so both
-// must stay idempotent.
+// sets on the disconnected channel; 0088 (main) the soft-delete columns the
+// delete now sets. The harness applies each file twice, so all must stay
+// idempotent.
 const MIGRATIONS = [
   '0080_member_soft_removal.sql',
   '0081_channel_soft_disconnect.sql',
+  '0088_soft_delete_posts_workspaces.sql',
   '0091_workspace_settings.sql',
 ];
 
@@ -175,9 +177,21 @@ async function seedSecondOwned(
   );
 }
 
+/** Live = not soft-deleted. The delete marks the row; it never removes it. */
 async function workspaceExists(client: PoolClient, ws: string) {
-  const r = await client.query(`SELECT 1 FROM workspace WHERE id = $1`, [ws]);
+  const r = await client.query(
+    `SELECT 1 FROM workspace WHERE id = $1 AND deleted_at IS NULL`,
+    [ws],
+  );
   return r.rowCount === 1;
+}
+
+async function softDeleteMark(client: PoolClient, ws: string) {
+  const r = await client.query<{
+    deleted_at: Date | null;
+    deleted_by_id: string | null;
+  }>(`SELECT deleted_at, deleted_by_id FROM workspace WHERE id = $1`, [ws]);
+  return r.rows[0];
 }
 
 async function codeOf(p: Promise<unknown>) {
@@ -294,6 +308,15 @@ describeDb('WorkspaceService delete (database)', () => {
       await service.remove(ws, ownerId, ' Acme ');
 
       expect(await workspaceExists(client, ws)).toBe(false);
+      // A soft delete: the row and its posts survive, marked, for the purge.
+      const mark = await softDeleteMark(client, ws);
+      expect(mark.deleted_at).toBeInstanceOf(Date);
+      expect(mark.deleted_by_id).toBe(ownerId);
+      const left = await client.query(
+        `SELECT count(*)::int AS n FROM posts WHERE workspace_id = $1`,
+        [ws],
+      );
+      expect(left.rows[0].n).toBe(6);
       const expected = [
         ...scheduled.map((id) => `composer-publish-${id}`),
         'post-legacy-1',
@@ -354,6 +377,73 @@ describeDb('WorkspaceService delete (database)', () => {
       await service.remove(ws, ownerId, 'Acme');
 
       expect(await workspaceExists(client, ws)).toBe(false);
+      expect(subscriptionService.cancelForAccount).not.toHaveBeenCalled();
+    });
+  });
+
+  it('a soft-deleted second workspace is not counted: preview says last, and remove cancels the plan', async () => {
+    await withRollbackDb(MIGRATIONS, async (db, client) => {
+      await ensurePlan(client, 'PRO');
+      const { ws, ownerId } = await seedAcme(client);
+      await seedSecondOwned(client, ownerId);
+      await client.query(
+        `UPDATE workspace SET deleted_at = now(), deleted_by_id = owner_id
+          WHERE owner_id = $1 AND id <> $2`,
+        [ownerId, ws],
+      );
+      await seedSubscription(client, ownerId, 'PRO', 'active');
+      const { service, subscriptionService } = makeService(db as never, {
+        planCode: 'PRO',
+        status: 'active',
+      });
+
+      const preview = await service.deletionPreview(ws);
+      expect(preview.isLastOwnedWorkspace).toBe(true);
+      expect(preview.cancelsPlan).toBe(true);
+
+      await service.remove(ws, ownerId, 'Acme');
+      expect(subscriptionService.cancelForAccount).toHaveBeenCalledWith(
+        ownerId,
+        true,
+        expect.objectContaining({ changedByUserId: ownerId }),
+      );
+    });
+  });
+
+  it('the preview does not count a soft-deleted scheduled post', async () => {
+    await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const { ws, scheduled } = await seedAcme(client);
+      await client.query(
+        `UPDATE posts SET deleted_at = now() WHERE id = $1`,
+        [scheduled[0]],
+      );
+      const { service } = makeService(db as never, null);
+
+      expect((await service.deletionPreview(ws)).scheduledPosts).toBe(3);
+    });
+  });
+
+  it('deleting an already soft-deleted workspace answers 404, keeps the first mark and removes no jobs', async () => {
+    await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const { ws, ownerId } = await seedAcme(client);
+      await client.query(
+        `UPDATE workspace
+            SET deleted_at = '2026-11-01T00:00:00Z', deleted_by_id = owner_id
+          WHERE id = $1`,
+        [ws],
+      );
+      const { service, removed, subscriptionService } = makeService(
+        db as never,
+        { planCode: 'PRO', status: 'active' },
+      );
+
+      expect((await codeOf(service.remove(ws, ownerId, 'Acme')))?.status).toBe(
+        404,
+      );
+      expect(
+        (await softDeleteMark(client, ws)).deleted_at?.toISOString(),
+      ).toBe('2026-11-01T00:00:00.000Z');
+      expect(removed).toEqual([]);
       expect(subscriptionService.cancelForAccount).not.toHaveBeenCalled();
     });
   });

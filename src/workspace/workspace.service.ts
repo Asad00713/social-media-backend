@@ -47,7 +47,7 @@ import {
 import { QUEUES } from '../queue/queue.module';
 
 export type { TimezoneMoveResult };
-import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
+import { livePosts, liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 type GetAllREsponse = {
   // Omits the Maestro BYOK credential — it must never reach a client.
@@ -423,7 +423,7 @@ export class WorkspaceService {
    */
   async findDetail(workspaceId: string): Promise<WorkspaceDetail> {
     const result = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
       columns: { maestroAnthropicKey: false, inviteLinkCode: false },
       with: {
         owner: { columns: { id: true, name: true, email: true } },
@@ -450,7 +450,7 @@ export class WorkspaceService {
     workspaceId: string,
   ): Promise<PublishingDefaults> {
     const row = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
       columns: {
         approvalPolicy: true,
         shortenLinksDefault: true,
@@ -501,7 +501,7 @@ export class WorkspaceService {
     }
 
     const existingWorkspace = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
     });
 
     if (!existingWorkspace) {
@@ -619,7 +619,7 @@ export class WorkspaceService {
    */
   async deletionPreview(workspaceId: string): Promise<DeletionPreview> {
     const existing = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
       columns: { id: true, ownerId: true },
     });
     if (!existing) {
@@ -646,6 +646,7 @@ export class WorkspaceService {
             and(
               eq(posts.workspaceId, workspaceId),
               eq(posts.status, 'scheduled'),
+              livePosts(),
             ),
           ),
         this.db
@@ -700,10 +701,11 @@ export class WorkspaceService {
   }
 
   /**
-   * Permanently deletes a workspace. `workspace:delete` (OWNER, or a
-   * platform super admin through the guard) is the authorisation; the typed
-   * name is the confirmation. Everything after the DELETE is best effort and
-   * logged: the workspace is already gone, so nothing there may fail it.
+   * Deletes a workspace: a soft delete (deleteLocked), purged for good after
+   * 30 days. `workspace:delete` (OWNER, or a platform super admin through the
+   * guard) is the authorisation; the typed name is the confirmation.
+   * Everything after the mark is best effort and logged: the workspace is
+   * already gone, so nothing there may fail it.
    *
    * Billing is the OWNER's account, never the caller's: a super admin who
    * deletes someone's workspace releases the owner's slot.
@@ -714,7 +716,7 @@ export class WorkspaceService {
     confirmName: string,
   ): Promise<{ message: string }> {
     const existingWorkspace = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
     });
 
     if (!existingWorkspace) {
@@ -771,7 +773,7 @@ export class WorkspaceService {
       );
     }
 
-    const deleted = await this.deleteLocked(workspaceId, ownerId);
+    const deleted = await this.deleteLocked(workspaceId, ownerId, userId);
     if (!deleted) {
       // Deleted by a parallel request while this one released the slot.
       throw new NotFoundException(
@@ -780,9 +782,14 @@ export class WorkspaceService {
     }
     const { scheduledPosts, ownedAfter } = deleted;
 
+    // Belt and braces. The soft-deleted workspace's posts stay 'scheduled'
+    // (so a restore brings them back intact); what keeps them from going out
+    // is the liveWorkspacePosts() guard on the publish processor, the
+    // reconciler and PostService.getPost (docs/deleted-workspace-publishing.md).
+    // Removing the jobs as well leaves nothing in Redis to fire.
     await this.cancelPublishJobs(workspaceId, scheduledPosts);
     // A pending "Also move existing" would otherwise re-arm jobs for posts
-    // that no longer exist.
+    // of a workspace that is gone.
     await this.timezoneMove.cancelPendingMove(workspaceId);
 
     if (ownedAfter === 0) {
@@ -823,19 +830,23 @@ export class WorkspaceService {
   }
 
   /**
-   * The DELETE, with the owner's workspace rows locked (FOR UPDATE, in id
-   * order so two deletes never deadlock) while it counts what is left. Two
-   * parallel deletes of an owner's last two workspaces then run one after
+   * The soft delete (migration 0088, main's convention: set `deleted_at` and
+   * `deleted_by_id`, remove nothing; WorkspacePurgeService hard-deletes 30
+   * days later), with the owner's live workspace rows locked (FOR UPDATE, in
+   * id order so two deletes never deadlock) while it counts what is left.
+   * Two parallel deletes of an owner's last two workspaces then run one after
    * the other, and the second sees zero left and cancels the plan; unlocked,
    * each counted the other and neither cancelled. The lock is held for this
    * one short transaction only: no provider or Redis call runs inside it.
    *
-   * The scheduled posts are read here too, before the cascade takes them
-   * and the job ids recorded on them. null: the workspace is already gone.
+   * Already soft-deleted workspaces are neither locked nor counted: they are
+   * gone. The scheduled posts and their job ids are read here too, for the
+   * job cleanup after commit. null: the workspace is already gone.
    */
   private async deleteLocked(
     workspaceId: string,
     ownerId: string,
+    userId: string,
   ): Promise<{
     scheduledPosts: { id: string; jobId: string | null }[];
     ownedAfter: number;
@@ -844,7 +855,7 @@ export class WorkspaceService {
       const owned = await tx
         .select({ id: workspace.id })
         .from(workspace)
-        .where(eq(workspace.ownerId, ownerId))
+        .where(and(eq(workspace.ownerId, ownerId), liveWorkspaces()))
         .orderBy(workspace.id)
         .for('update');
       if (!owned.some((w) => w.id === workspaceId)) return null;
@@ -856,10 +867,18 @@ export class WorkspaceService {
           and(
             eq(posts.workspaceId, workspaceId),
             eq(posts.status, 'scheduled'),
+            livePosts(),
           ),
         );
 
-      await tx.delete(workspace).where(eq(workspace.id, workspaceId));
+      // Soft delete (migration 0088). A hard DELETE here cascaded to 50
+      // foreign-keyed tables (channels, campaigns, inbox, analytics, billing)
+      // with no undo. The row is marked instead, inside this lock, so the
+      // count above and the mark agree.
+      await tx
+        .update(workspace)
+        .set({ deletedAt: new Date(), deletedById: userId })
+        .where(and(eq(workspace.id, workspaceId), liveWorkspaces()));
       return { scheduledPosts, ownedAfter: owned.length - 1 };
     });
   }
@@ -867,8 +886,9 @@ export class WorkspaceService {
   /**
    * Both job ids a scheduled post can have (PostService.cancelPublishJobs):
    * the composer's `composer-publish-<id>` and whatever `posts.job_id`
-   * names. A job left behind finds its post gone and does nothing, so a
-   * failure is only logged.
+   * names. A job left behind finds its workspace deleted (the processor's
+   * liveWorkspacePosts() guard) and does nothing, so a failure is only
+   * logged.
    */
   private async cancelPublishJobs(
     workspaceId: string,

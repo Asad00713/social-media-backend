@@ -6,6 +6,7 @@ import { DRIZZLE } from '../../drizzle/drizzle.module';
 import type { DbType } from '../../drizzle/db';
 import { posts } from '../../drizzle/schema/posts.schema';
 import { QUEUES } from '../../queue/queue.module';
+import { livePosts, liveWorkspacePosts } from '../soft-delete/soft-delete';
 
 /** What moveTo did: re-armed the post, or found it no longer movable. */
 export type RescheduleOutcome = 'moved' | 'not-movable';
@@ -81,14 +82,18 @@ export class PostRescheduleService {
             eq(posts.id, postId),
             eq(posts.workspaceId, workspaceId),
             eq(posts.status, 'scheduled'),
+            // Never re-arm a deleted post, or a post of a deleted workspace:
+            // this is the read that decides whether a publish job is added.
+            livePosts(),
+            liveWorkspacePosts(),
             options.ifScheduledAt
               ? sql`date_trunc('milliseconds', ${posts.scheduledAt}) = ${options.ifScheduledAt.toISOString()}::timestamptz`
               : undefined,
           ),
         )
         .for('update');
-      // Published, cancelled, deleted or re-timed in the meantime: whoever did
-      // that owns its job, which is left alone.
+      // Published, cancelled, deleted (or its workspace deleted) or re-timed
+      // in the meantime: whoever did that owns its job, which is left alone.
       if (!row) {
         this.logger.log(`Post ${postId} is no longer movable; not re-armed`);
         return 'not-movable';

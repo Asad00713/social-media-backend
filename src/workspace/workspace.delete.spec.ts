@@ -49,6 +49,7 @@ function make(
   } = {},
 ) {
   const calls: string[] = [];
+  const marked: Record<string, unknown>[] = [];
   const scheduled = [
     { id: 'p1', jobId: 'post-legacy-1' },
     { id: 'p2', jobId: 'composer-publish-p2' },
@@ -71,10 +72,16 @@ function make(
       },
     },
     select: jest.fn(() => selectChain(selects.shift() ?? [])),
-    delete: jest.fn(() => ({
-      where: jest.fn(() => {
-        calls.push('delete');
-        return Promise.resolve();
+    // The soft delete: UPDATE workspace SET deleted_at, deleted_by_id.
+    update: jest.fn(() => ({
+      set: jest.fn((values: Record<string, unknown>) => {
+        marked.push(values);
+        return {
+          where: jest.fn(() => {
+            calls.push('soft-delete');
+            return Promise.resolve();
+          }),
+        };
       }),
     })),
   };
@@ -146,6 +153,7 @@ function make(
     service,
     db,
     calls,
+    marked,
     subscriptionService,
     lookup,
     addonService,
@@ -172,8 +180,8 @@ describe('WorkspaceService.remove', () => {
     jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
   });
 
-  it('runs release, locked delete, job removal, tz-move cancel, plan cancel, limits in that order', async () => {
-    const { service, calls, subscriptionService } = make();
+  it('runs release, locked soft delete, job removal, tz-move cancel, plan cancel, limits in that order', async () => {
+    const { service, calls, subscriptionService, marked } = make();
 
     await expect(service.remove(WS, OWNER, ' Acme ')).resolves.toEqual({
       message: 'Workspace permanently deleted',
@@ -182,7 +190,7 @@ describe('WorkspaceService.remove', () => {
     expect(calls).toEqual([
       'release',
       'lock',
-      'delete',
+      'soft-delete',
       'remove:composer-publish-p1',
       'remove:post-legacy-1',
       'remove:composer-publish-p2',
@@ -197,6 +205,10 @@ describe('WorkspaceService.remove', () => {
     );
     // The owner's rows are locked before the count the cancel decides on.
     expect(locks).toEqual(['update']);
+    // Marked, not removed: who and when (main's soft-delete convention).
+    expect(marked).toEqual([
+      { deletedAt: expect.any(Date), deletedById: OWNER },
+    ]);
   });
 
   it.each(['acme', 'Acme Inc', '', 'ACME'])(
@@ -214,7 +226,7 @@ describe('WorkspaceService.remove', () => {
         },
       });
       expect(calls).toEqual([]);
-      expect(db.delete).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
     },
   );
 
@@ -224,7 +236,7 @@ describe('WorkspaceService.remove', () => {
       const { service, db } = make({ name: '  Acme ' });
 
       await service.remove(WS, OWNER, typed);
-      expect(db.delete).toHaveBeenCalledTimes(1);
+      expect(db.update).toHaveBeenCalledTimes(1);
     },
   );
 
@@ -232,7 +244,7 @@ describe('WorkspaceService.remove', () => {
     const { service, db } = make({ name: ' Acme ' });
 
     expect((await failure(service.remove(WS, OWNER, 'acme'))).status).toBe(400);
-    expect(db.delete).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
   });
 
   it('two parallel deletes of the last two workspaces: the second, counting under the lock, cancels', async () => {
@@ -255,7 +267,7 @@ describe('WorkspaceService.remove', () => {
     const { service, calls, db } = make({ goneBeforeLock: true });
 
     expect((await failure(service.remove(WS, OWNER, 'Acme'))).status).toBe(404);
-    expect(db.delete).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
     expect(calls.some((c) => c.startsWith('remove:'))).toBe(false);
     expect(calls).not.toContain('cancel');
   });
@@ -282,10 +294,14 @@ describe('WorkspaceService.remove', () => {
     expect(subscriptionService.cancelForAccount).not.toHaveBeenCalled();
   });
 
-  it('a super admin deleting bills the OWNER, and is recorded as the one who cancelled', async () => {
-    const { service, subscriptionService, addonService, lookup } = make();
+  it('a super admin deleting bills the OWNER, and is recorded as the one who cancelled and deleted', async () => {
+    const { service, subscriptionService, addonService, lookup, marked } =
+      make();
 
     await service.remove(WS, 'super-admin', 'Acme');
+    expect(marked).toEqual([
+      { deletedAt: expect.any(Date), deletedById: 'super-admin' },
+    ]);
     expect(addonService.removeAddon).toHaveBeenCalledWith(
       WS,
       OWNER,

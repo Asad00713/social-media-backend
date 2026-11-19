@@ -10,6 +10,10 @@ import { QUEUES } from '../queue/queue.module';
 import { utcToWallClock, wallClockToUtc } from '../common/utils/wall-clock';
 import { isHeld, isJobPending } from '../posts/lib/held-targets';
 import { PostRescheduleService } from '../posts/services/post-reschedule.service';
+import {
+  livePosts,
+  liveWorkspacePosts,
+} from '../posts/soft-delete/soft-delete';
 
 /** The root db or a transaction on it. */
 export type Executor = Pick<DbType, 'select' | 'update' | 'execute'>;
@@ -267,7 +271,15 @@ export class WorkspaceTimezoneMoveService {
           status: posts.status,
         })
         .from(posts)
-        .where(and(eq(posts.workspaceId, workspaceId), inArray(posts.id, ids)));
+        .where(
+          and(
+            eq(posts.workspaceId, workspaceId),
+            inArray(posts.id, ids),
+            // A post deleted since, or a workspace deleted since: left alone.
+            livePosts(),
+            liveWorkspacePosts(),
+          ),
+        );
       for (const row of rows) current.set(row.id, row);
     }
 
@@ -367,7 +379,8 @@ export class WorkspaceTimezoneMoveService {
   /**
    * Drops a queued move of a workspace being deleted. Best effort: a move
    * already running cannot be removed, and finds no posts once the workspace
-   * is gone (processQueued then only logs them as left alone).
+   * is soft-deleted (processQueued reads through liveWorkspacePosts(), and
+   * then only logs them as left alone).
    */
   async cancelPendingMove(workspaceId: string): Promise<void> {
     const id = moveJobId(workspaceId);
@@ -431,6 +444,8 @@ export class WorkspaceTimezoneMoveService {
           eq(posts.workspaceId, workspaceId),
           eq(posts.status, 'scheduled'),
           isNotNull(posts.scheduledAt),
+          livePosts(),
+          liveWorkspacePosts(),
           sql`NOT EXISTS (SELECT 1 FROM campaign_slot_content c WHERE c.post_id = ${posts.id})`,
           sql`(${posts.metadata} -> 'campaignSlot') IS NULL`,
         ),
