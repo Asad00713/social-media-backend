@@ -37,12 +37,14 @@ export class InstagramDmAdapter implements PlatformDmAdapter {
     channel: ResolvedChannel,
     conversationId: string,
     since?: Date,
+    knownThreadId?: string,
   ): Promise<FetchedDm[]> {
     return this.instagramService.fetchDmThread(
       channel.platformAccountId,
       channel.accessToken,
       conversationId,
       since,
+      knownThreadId,
     );
   }
 

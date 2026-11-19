@@ -240,6 +240,14 @@ export const socialMediaChannels = pgTable(
     // Used by INBOX_POLLING worker for YT/Bluesky/Mastodon (no webhooks).
     lastInboxPollAt: timestamp('last_inbox_poll_at'),
 
+    // Last time the DM poller fetched EVERY conversation on this channel,
+    // however quiet it looked. Quiet conversations are normally skipped (one
+    // IG conversation burned 2,115 rate-limit errors in seven days being
+    // re-fetched every 30s), but skipping forever would trust the platform to
+    // always advance a conversation's last-message time. NULL = never swept,
+    // which makes a sweep due -- the safe direction.
+    lastDmSweepAt: timestamp('last_dm_sweep_at'),
+
     // Platform-specific metadata (flexible JSON)
     metadata: jsonb('metadata').$type<Record<string, any>>().default({}),
 
