@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { PoolClient } from 'pg';
@@ -582,6 +583,47 @@ describeDb('migration 0092 workspace labels', () => {
     expect(result.labels).toEqual([{ name: 'Kept', color: 'blue' }]);
     expect(result.join[result.live]).toEqual(['Kept']);
     expect(result.join[result.gone]).toBeUndefined();
+  });
+
+  it('0092 skips posts whose WORKSPACE is soft-deleted: a purge could hard-delete them before the foreign keys exist', async () => {
+    const result = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const userId = await seedUser(client);
+      const live = await seedWorkspace(client, userId);
+      const doomed = await seedWorkspace(client, userId);
+      const livePost = await seedPost(
+        client,
+        live,
+        userId,
+        { labels: ['Kept'] },
+        '2026-01-01T00:00:00Z',
+      );
+      const doomedPost = await seedPost(
+        client,
+        doomed,
+        userId,
+        { labels: ['Kept', 'OnlyInDoomed'] },
+        '2026-01-02T00:00:00Z',
+      );
+      // The post itself is live; only its workspace is deleted.
+      await client.query(
+        `UPDATE workspace SET deleted_at = now() WHERE id = $1`,
+        [doomed],
+      );
+      await rerun0092(client);
+      return {
+        liveLabels: await cataloguePairs(client, live),
+        doomedLabels: await cataloguePairs(client, doomed),
+        join: await labelNamesByPost(client, live),
+        doomedJoin: await labelNamesByPost(client, doomed),
+        livePost,
+        doomedPost,
+      };
+    });
+
+    expect(result.liveLabels).toEqual([{ name: 'Kept', color: 'blue' }]);
+    expect(result.join[result.livePost]).toEqual(['Kept']);
+    expect(result.doomedLabels).toEqual([]);
+    expect(result.doomedJoin[result.doomedPost]).toBeUndefined();
   });
 
   it('0092 adds its foreign keys NOT VALID (no scan under the lock), and they already refuse a bad row', async () => {
@@ -1228,28 +1270,183 @@ describeDb(
       }
     });
 
-    it('0098 fails loudly, naming the constraint, on a row that breaks a key, and changes nothing', async () => {
+    /**
+     * Seeds rows that predate the label foreign keys (written while they were
+     * absent): the keys are dropped, orphans inserted, the keys re-added NOT
+     * VALID exactly as 0092 leaves them.
+     */
+    async function seedLabelOrphans(client: PoolClient) {
+      await client.query(
+        `ALTER TABLE post_labels DROP CONSTRAINT post_labels_post_id_fkey,
+                                 DROP CONSTRAINT post_labels_label_id_fkey`,
+      );
+      await client.query(
+        `ALTER TABLE workspace_labels
+           DROP CONSTRAINT workspace_labels_workspace_id_fkey,
+           DROP CONSTRAINT workspace_labels_created_by_fkey`,
+      );
+      const userId = await seedUser(client);
+      const w = await seedWorkspace(client, userId);
+      const post = await seedPost(
+        client,
+        w,
+        userId,
+        {},
+        '2026-01-01T00:00:00Z',
+      );
+      const insertLabel = async (
+        workspaceId: string,
+        name: string,
+        createdBy: string | null,
+      ) =>
+        (
+          await client.query<{ id: string }>(
+            `INSERT INTO workspace_labels (workspace_id, name, color, created_by)
+             VALUES ($1, $2, 'blue', $3) RETURNING id`,
+            [workspaceId, name, createdBy],
+          )
+        ).rows[0].id;
+      const goodLabel = await insertLabel(w, 'good', userId);
+      // created_by names a user that is gone: SET NULL semantics.
+      const orphanCreator = await insertLabel(w, 'ghost-author', randomUUID());
+      // A label whose workspace was purged, with a join row on it.
+      const orphanWorkspaceLabel = await insertLabel(
+        randomUUID(),
+        'ghost-workspace',
+        null,
+      );
+      await client.query(
+        `INSERT INTO post_labels (post_id, label_id) VALUES ($1, $2), ($1, $3)`,
+        [post, goodLabel, orphanCreator],
+      );
+      // A join row whose post is gone, one whose label is gone, and one on
+      // the purged workspace's label.
+      await client.query(
+        `INSERT INTO post_labels (post_id, label_id)
+         VALUES (gen_random_uuid(), $1), ($2, gen_random_uuid()),
+                (gen_random_uuid(), $3)`,
+        [goodLabel, post, orphanWorkspaceLabel],
+      );
+      await client.query(
+        `ALTER TABLE workspace_labels
+           ADD CONSTRAINT workspace_labels_workspace_id_fkey
+             FOREIGN KEY (workspace_id) REFERENCES workspace (id)
+             ON DELETE CASCADE NOT VALID,
+           ADD CONSTRAINT workspace_labels_created_by_fkey
+             FOREIGN KEY (created_by) REFERENCES users (id)
+             ON DELETE SET NULL NOT VALID`,
+      );
+      await client.query(
+        `ALTER TABLE post_labels
+           ADD CONSTRAINT post_labels_post_id_fkey
+             FOREIGN KEY (post_id) REFERENCES posts (id)
+             ON DELETE CASCADE NOT VALID,
+           ADD CONSTRAINT post_labels_label_id_fkey
+             FOREIGN KEY (label_id) REFERENCES workspace_labels (id)
+             ON DELETE CASCADE NOT VALID`,
+      );
+      return { userId, w, post, goodLabel, orphanCreator };
+    }
+
+    it('0098 removes orphan label rows (a purge between the 0092 backfill and its keys), then validates', async () => {
+      const result = await withRollbackDb(
+        [FILE_0088, FILE_0092, FILE_0093],
+        async (_db, client) => {
+          const seeded = await seedLabelOrphans(client);
+          const before = await fkValidity(client, LABEL_FKS);
+          await client.query(
+            readFileSync(join(MIGRATIONS_DIR, FILE_0098), 'utf8'),
+          );
+          const labels = await client.query<{
+            id: string;
+            created_by: string | null;
+          }>(`SELECT id, created_by FROM workspace_labels ORDER BY name`);
+          const joins = await client.query<{
+            post_id: string;
+            label_id: string;
+          }>(`SELECT post_id, label_id FROM post_labels ORDER BY label_id`);
+          return {
+            seeded,
+            before,
+            after: await fkValidity(client, LABEL_FKS),
+            labels: labels.rows,
+            joins: joins.rows,
+          };
+        },
+      );
+
+      expect(result.before).toEqual(
+        Object.fromEntries(LABEL_FKS.map((n) => [n, false])),
+      );
+      expect(result.after).toEqual(
+        Object.fromEntries(LABEL_FKS.map((n) => [n, true])),
+      );
+      const { goodLabel, orphanCreator, post, userId } = result.seeded;
+      // The label of a purged workspace is gone; the other two stay, the
+      // ghost author's created_by cleared (ON DELETE SET NULL), the real
+      // one's kept.
+      expect(result.labels).toHaveLength(2);
+      expect(result.labels).toEqual(
+        expect.arrayContaining([
+          { id: goodLabel, created_by: userId },
+          { id: orphanCreator, created_by: null },
+        ]),
+      );
+      // Only the two join rows that point at a live post AND a live label.
+      expect(result.joins).toHaveLength(2);
+      expect(result.joins.every((j) => j.post_id === post)).toBe(true);
+      expect(result.joins.map((j) => j.label_id).sort()).toEqual(
+        [goodLabel, orphanCreator].sort(),
+      );
+    });
+
+    it('0098 leaves clean label tables untouched', async () => {
+      const result = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+        const userId = await seedUser(client);
+        const w = await seedWorkspace(client, userId);
+        await seedPost(
+          client,
+          w,
+          userId,
+          { labels: ['A'] },
+          '2026-01-01T00:00:00Z',
+        );
+        await rerun0092(client);
+        // MIGRATIONS ran 0098 before the post existed; run it again now.
+        await client.query(
+          readFileSync(join(MIGRATIONS_DIR, FILE_0098), 'utf8'),
+        );
+        return {
+          labels: await countRows(client, 'workspace_labels'),
+          joins: await countRows(client, 'post_labels'),
+        };
+      });
+      expect(result.labels).toBe(1);
+      expect(result.joins).toBe(1);
+    });
+
+    it('0098 still fails loudly, naming the constraint, on a USER key violation it does not repair, and changes nothing', async () => {
       const result = await withRollbackDb(
         [FILE_0088, FILE_0092, FILE_0093],
         async (_db, client) => {
           // A row that predates the constraint: written while it was absent.
           await client.query(
-            `ALTER TABLE post_labels DROP CONSTRAINT post_labels_post_id_fkey`,
+            `ALTER TABLE workspace_invitations
+               DROP CONSTRAINT workspace_invitations_invited_by_fkey`,
           );
           const userId = await seedUser(client);
           const w = await seedWorkspace(client, userId);
-          const label = await client.query<{ id: string }>(
-            `INSERT INTO workspace_labels (workspace_id, name, color)
-           VALUES ($1, 'x', 'blue') RETURNING id`,
-            [w],
+          await client.query(
+            `INSERT INTO workspace_invitations
+               (workspace_id, email, invited_by, token, expires_at)
+             VALUES ($1, $2, gen_random_uuid(), $3, now() + interval '7 days')`,
+            [w, `${rand()}@example.test`, rand() + rand()],
           );
           await client.query(
-            `INSERT INTO post_labels (post_id, label_id) VALUES (gen_random_uuid(), $1)`,
-            [label.rows[0].id],
-          );
-          await client.query(
-            `ALTER TABLE post_labels ADD CONSTRAINT post_labels_post_id_fkey
-             FOREIGN KEY (post_id) REFERENCES posts (id) ON DELETE CASCADE NOT VALID`,
+            `ALTER TABLE workspace_invitations
+               ADD CONSTRAINT workspace_invitations_invited_by_fkey
+               FOREIGN KEY (invited_by) REFERENCES users (id)
+               ON DELETE SET NULL NOT VALID`,
           );
           await client.query('SAVEPOINT v');
           let error: { code?: string; constraint?: string } | null = null;
@@ -1261,15 +1458,20 @@ describeDb(
             error = err as { code?: string; constraint?: string };
           }
           await client.query('ROLLBACK TO SAVEPOINT v');
-          return { error, validity: await fkValidity(client, LABEL_FKS) };
+          return {
+            error,
+            validity: await fkValidity(client, [
+              'workspace_invitations_invited_by_fkey',
+            ]),
+          };
         },
       );
 
       expect(result.error).toMatchObject({
         code: '23503',
-        constraint: 'post_labels_post_id_fkey',
+        constraint: 'workspace_invitations_invited_by_fkey',
       });
-      expect(result.validity.post_labels_post_id_fkey).toBe(false);
+      expect(result.validity.workspace_invitations_invited_by_fkey).toBe(false);
     });
   },
 );

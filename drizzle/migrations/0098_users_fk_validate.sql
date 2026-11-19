@@ -21,10 +21,24 @@
 --      constraints stay NOT VALID (still enforced for new rows) and the next
 --      boot tries again.
 --   2. Each scan only reads. The rows already satisfied a constraint on the
---      same column before 0093 replaced it (0093's tables), or were written
---      by 0092's backfill from rows that exist (the label tables), so no
---      violation is expected; one would fail the boot loudly, naming the
+--      same column before 0093 replaced it (0093's tables), so no violation
+--      is expected there; one would fail the boot loudly, naming the
 --      constraint, with nothing changed.
+--      The LABEL tables are the exception: 0092 adds their keys NOT VALID
+--      after its backfill, and the workspace purge may hard-delete a post, a
+--      workspace or a label in that gap (nothing yet cascaded to the label
+--      rows, because no key existed). Such an orphan would fail the VALIDATE
+--      on EVERY boot. So, for a label key that is still NOT VALID, this file
+--      first repairs exactly the rows that would fail it, the way the key's
+--      own ON DELETE action would have, had it existed:
+--        workspace_labels.workspace_id  missing workspace -> DELETE the label
+--                                       (its post_labels rows cascade)
+--        workspace_labels.created_by    missing user      -> SET NULL
+--        post_labels.post_id            missing post      -> DELETE the row
+--        post_labels.label_id           missing label     -> DELETE the row
+--      Only rows whose referenced row is MISSING are touched; a key that is
+--      already valid is skipped, so a second run does nothing. These are
+--      plain row locks (ROW EXCLUSIVE), blocking no reader or writer.
 --   3. A constraint that is missing (a table created by push that an
 --      environment does not have, see 0093) or already valid is skipped.
 -- Idempotent: a second run finds every constraint valid and does nothing.
@@ -84,6 +98,26 @@ BEGIN
          AND c.contype = 'f'
          AND NOT c.convalidated
     ) THEN
+      -- The label keys only (see SAFETY 2): drop what would fail the scan.
+      -- The workspace key runs before the label key, so a label removed for
+      -- its missing workspace takes its post_labels rows with it.
+      IF target.constraint_name = 'workspace_labels_workspace_id_fkey' THEN
+        DELETE FROM workspace_labels l
+         WHERE NOT EXISTS (SELECT 1 FROM workspace w WHERE w.id = l.workspace_id);
+      ELSIF target.constraint_name = 'workspace_labels_created_by_fkey' THEN
+        UPDATE workspace_labels l
+           SET created_by = NULL
+         WHERE l.created_by IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = l.created_by);
+      ELSIF target.constraint_name = 'post_labels_post_id_fkey' THEN
+        DELETE FROM post_labels pl
+         WHERE NOT EXISTS (SELECT 1 FROM posts p WHERE p.id = pl.post_id);
+      ELSIF target.constraint_name = 'post_labels_label_id_fkey' THEN
+        DELETE FROM post_labels pl
+         WHERE NOT EXISTS (
+           SELECT 1 FROM workspace_labels l WHERE l.id = pl.label_id
+         );
+      END IF;
       EXECUTE format('ALTER TABLE %I VALIDATE CONSTRAINT %I',
                      target.table_name, target.constraint_name);
     END IF;

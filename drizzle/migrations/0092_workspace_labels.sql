@@ -37,7 +37,11 @@
 --      writer) and inserts into the two new tables, which nobody else uses
 --      yet. It is set-based: two INSERT ... SELECT statements, no row-by-row
 --      loop. Soft-deleted posts are skipped: their labels are not carried
---      into the catalogue.
+--      into the catalogue. So are posts of a soft-deleted WORKSPACE: the
+--      purge may hard-delete that workspace and its posts at any moment,
+--      and a row written for them between the backfill and step 3's
+--      foreign keys would be an orphan no key ever saw (0098 also deletes
+--      any such orphan before it validates, as the second line of defence).
 --   3. Last, the four foreign keys are added NOT VALID: catalog-only, no
 --      scan, so SHARE ROW EXCLUSIVE on posts, workspace, users and
 --      workspace_labels is held from that statement to the commit right
@@ -129,6 +133,10 @@ FROM (
       ) WITH ORDINALITY AS e ("value", "ord")
       WHERE jsonb_typeof(e."value") = 'string'
         AND p."deleted_at" IS NULL
+        AND EXISTS (
+          SELECT 1 FROM "workspace" ws
+           WHERE ws."id" = p."workspace_id" AND ws."deleted_at" IS NULL
+        )
     ) c
     WHERE c."name" <> '' AND char_length(c."name") <= 40
   ) o
@@ -159,6 +167,10 @@ FROM (
     ) AS e ("value")
     WHERE jsonb_typeof(e."value") = 'string'
       AND p."deleted_at" IS NULL
+      AND EXISTS (
+        SELECT 1 FROM "workspace" ws
+         WHERE ws."id" = p."workspace_id" AND ws."deleted_at" IS NULL
+      )
   ) c
   WHERE c."name" <> '' AND char_length(c."name") <= 40
 ) o
