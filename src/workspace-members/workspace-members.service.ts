@@ -100,7 +100,7 @@ function invitationView<
   const lapsed = row.status === 'EXPIRED' || row.expiresAt.getTime() <= now;
   return {
     ...withoutToken(row),
-    status: (lapsed ? 'EXPIRED' : 'PENDING') as 'PENDING' | 'EXPIRED',
+    status: lapsed ? ('EXPIRED' as const) : ('PENDING' as const),
     invitedByName: row.inviter?.name ?? null,
   };
 }
