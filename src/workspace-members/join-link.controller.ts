@@ -16,7 +16,7 @@ import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 import { SkipLaunchGate } from '../auth/decorators/skip-launch-gate.decorator';
-import { ClientIpThrottlerGuard } from '../channels/connect-links/client-ip-throttler.guard';
+import { ClientIpThrottlerGuard } from '../common/guards/client-ip-throttler.guard';
 import { INVITE_CODE_REGEX, InviteLinkService } from './invite-link.service';
 
 /** 30 lookups per visitor per 15 minutes: a person never needs more. */
