@@ -36,6 +36,7 @@ import { CommunityModule } from './community/community.module';
 import { ChatbotModule } from './chatbot/chatbot.module';
 import { MaestroModule } from './maestro/maestro.module';
 import { ScheduleModule } from '@nestjs/schedule';
+import { SchedulingModule } from './common/scheduling/scheduling.module';
 import { AnalyticsModule } from './channels/analytics/analytics.module';
 import { RealtimeModule } from './realtime/realtime.module';
 import { ComposerModule } from './posts/composer/composer.module';
@@ -80,6 +81,12 @@ import { QUEUES } from './queue/queue.module';
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
     MetricsModule,
     ScheduleModule.forRoot(),
+    // AFTER ScheduleModule on purpose: it wraps the cron jobs that module
+    // registers so each tick runs on ONE process. Without it, splitting web
+    // from worker makes all 28 crons fire twice — and the token-refresh
+    // scheduler enqueues per channel with no jobId, so two concurrent
+    // refreshes can race into a token the platform already invalidated.
+    SchedulingModule,
     SocialMediaModule,
     DrizzleModule,
     StripeModule,
