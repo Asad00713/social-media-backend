@@ -18,7 +18,8 @@ export class UpdatePostCommentDto {
 
 export interface PostCommentAuthor {
   id: string;
-  name: string;
+  /** Null for a deleted account (the client shows "Deleted user"). */
+  name: string | null;
   avatarUrl: string | null;
 }
 

@@ -9,6 +9,7 @@ import { WorkspaceMembersService } from '../../workspace-members/workspace-membe
 import { MediaItemService } from '../../media-library/services/media-item.service';
 import { TemplateService } from '../../media-library/services/template.service';
 import { TextSnippetService } from '../../media-library/services/text-snippet.service';
+import { displayNameOrNull } from '../../users/display-name';
 
 /**
  * Everything the `@` picker can offer, grouped the way the picker shows it.
@@ -286,11 +287,16 @@ export class MentionSearchService {
     // about, but lives outside the members array — so they are folded in here
     // rather than being the one person you cannot mention.
     const rows: MentionResult[] = [];
-    if (roster.owner) {
+    // A deleted account has no name to mention by (displayNameOrNull is
+    // null): it is left out rather than listed as its placeholder email.
+    const ownerLabel = roster.owner
+      ? displayNameOrNull(roster.owner.name, roster.owner.email)
+      : null;
+    if (roster.owner && ownerLabel) {
       rows.push({
         type: 'member',
         id: roster.owner.id,
-        label: roster.owner.name ?? roster.owner.email,
+        label: ownerLabel,
         context: 'Owner',
       });
     }
@@ -299,10 +305,12 @@ export class MentionSearchService {
         m as { user?: { id: string; name: string | null; email: string } }
       ).user;
       if (!u) continue;
+      const label = displayNameOrNull(u.name, u.email);
+      if (!label) continue;
       rows.push({
         type: 'member',
         id: u.id,
-        label: u.name ?? u.email,
+        label,
         context: (m as { role?: string }).role ?? 'Member',
       });
     }

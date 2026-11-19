@@ -11,6 +11,7 @@ import {
   workspaceInvitation,
 } from '../drizzle/schema';
 import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
+import { displayNameOrNull } from './display-name';
 
 export type MyWorkspaceRole = 'OWNER' | 'ADMIN' | 'MEMBER' | 'GUEST';
 
@@ -24,7 +25,8 @@ export interface MyWorkspace {
   planName: string | null;
   /** null for a workspace I own, and when the inviter's account is gone. */
   invitedByName: string | null;
-  ownerName: string;
+  /** Null when the owner's account is deleted (the client shows "Deleted user"). */
+  ownerName: string | null;
 }
 
 /**
@@ -63,7 +65,7 @@ export class MyWorkspacesService {
       role,
       planName: r.planName ?? freePlanName,
       invitedByName,
-      ownerName: r.ownerName ?? r.ownerEmail,
+      ownerName: displayNameOrNull(r.ownerName, r.ownerEmail),
     });
 
     const ownedIds = new Set(owned.map((r) => r.id));
@@ -73,7 +75,9 @@ export class MyWorkspacesService {
         // Owners never hold a membership row; guard anyway so a stray one
         // cannot list the same workspace twice.
         .filter((r) => !ownedIds.has(r.id))
-        .map((r) => toRow(r, r.role, r.inviterName ?? r.inviterEmail))
+        .map((r) =>
+          toRow(r, r.role, displayNameOrNull(r.inviterName, r.inviterEmail)),
+        )
         .sort(byName),
     ];
     return { workspaces: rows };

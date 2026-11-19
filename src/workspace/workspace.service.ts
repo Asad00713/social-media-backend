@@ -1,4 +1,5 @@
 import { lockLiveAccount } from '../users/account-live';
+import { displayNameOrNull } from '../users/display-name';
 import {
   BadRequestException,
   ConflictException,
@@ -73,7 +74,8 @@ export type WorkspaceDetail = Omit<
   'maestroAnthropicKey' | 'inviteLinkCode'
 > & {
   owner: { id: string; name: string | null; email: string };
-  ownerName: string;
+  /** Null when the owner's account is deleted (the client shows "Deleted user"). */
+  ownerName: string | null;
 };
 
 /** The three composer defaults an Editor reads before writing a post. */
@@ -454,7 +456,10 @@ export class WorkspaceService {
       );
     }
 
-    return { ...result, ownerName: result.owner.name ?? result.owner.email };
+    return {
+      ...result,
+      ownerName: displayNameOrNull(result.owner.name, result.owner.email),
+    };
   }
 
   /** The composer's starting switches, readable by anyone who can draft. */

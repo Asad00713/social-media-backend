@@ -46,10 +46,12 @@ import {
 import { readyPreview } from '../../services/post-drafts.service';
 import { ApprovalPolicyService } from './approval-policy.service';
 import { livePosts } from '../../soft-delete/soft-delete';
+import { displayNameOrNull } from '../../../users/display-name';
 
 export interface ApprovalPerson {
   id: string;
-  name: string;
+  /** Null for a deleted account (the client shows "Deleted user"). */
+  name: string | null;
 }
 
 /** GET/PUT/POST answer for one draft's approval. */
@@ -343,7 +345,13 @@ export class DraftApprovalService {
         versionMicros: versionMicrosSql,
       })
       .from(posts)
-      .where(and(eq(posts.id, postId), eq(posts.workspaceId, workspaceId), livePosts()));
+      .where(
+        and(
+          eq(posts.id, postId),
+          eq(posts.workspaceId, workspaceId),
+          livePosts(),
+        ),
+      );
     return row ?? null;
   }
 
@@ -507,7 +515,10 @@ export class DraftApprovalService {
       .from(users)
       .where(inArray(users.id, unique));
     return new Map(
-      rows.map((r) => [r.id, { id: r.id, name: r.name || r.email }]),
+      rows.map((r) => [
+        r.id,
+        { id: r.id, name: displayNameOrNull(r.name, r.email) },
+      ]),
     );
   }
 
