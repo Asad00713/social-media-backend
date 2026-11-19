@@ -1,4 +1,5 @@
 import { LinkedInApiClient, LinkedInApiError } from './linkedin-api.client';
+import { LINKEDIN_REST_VERSION } from '../../../lib/linkedin-version';
 
 describe('LinkedInApiClient', () => {
   const mockFetch = jest.fn();
@@ -30,7 +31,7 @@ describe('LinkedInApiClient', () => {
     });
     // getUserInfo does NOT use REST API headers
     expect((init as RequestInit).headers).not.toMatchObject({
-      'LinkedIn-Version': expect.any(String),
+      'Linkedin-Version': expect.any(String),
     });
     expect(result.sub).toBe('abc123');
     expect(result.name).toBe('Jane Doe');
@@ -66,7 +67,10 @@ describe('LinkedInApiClient', () => {
     expect(url).toContain('count=10');
     expect((init as RequestInit).headers).toMatchObject({
       Authorization: 'Bearer access-token-456',
-      'LinkedIn-Version': '202402',
+      // The shared pin, not a literal: this adapter sat on a hard-coded
+      // '202402' for about two and a half years while publishing moved on,
+      // and every analytics call came back 426.
+      'Linkedin-Version': LINKEDIN_REST_VERSION,
       'X-Restli-Protocol-Version': '2.0.0',
     });
     expect(result.elements).toHaveLength(1);
@@ -177,7 +181,7 @@ describe('LinkedInApiClient', () => {
     const [url, init] = mockFetch.mock.calls[0];
     expect(url).toContain(encodeURIComponent(postUrn));
     expect((init as RequestInit).headers).toMatchObject({
-      'LinkedIn-Version': '202402',
+      'Linkedin-Version': LINKEDIN_REST_VERSION,
       'X-Restli-Protocol-Version': '2.0.0',
     });
     expect(result.likesSummary?.aggregatedTotalLikes).toBe(42);

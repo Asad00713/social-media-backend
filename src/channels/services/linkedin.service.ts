@@ -5,6 +5,7 @@ import {
 } from '../../common/net/public-fetch';
 import { type VideoThumbnail, downloadVideoThumbnail } from './video-thumbnail';
 import { toLittleText } from './linkedin-little-text';
+import { LINKEDIN_REST_VERSION } from '../lib/linkedin-version';
 
 /**
  * A post's audience - the Post schema's `MemberNetworkVisibility`:
@@ -44,15 +45,16 @@ function altTextOf(value: unknown): string | undefined {
 const LINKEDIN_REST_URL = 'https://api.linkedin.com/rest';
 
 /**
- * `Linkedin-Version` (YYYYMM) sent on every versioned call.
+ * `Linkedin-Version` (YYYYMM) sent on every versioned call. Mandatory —
+ * LinkedIn does not apply the latest version by default — and each version is
+ * sunset after about a year.
  *
- * Stated by LinkedIn: the header is mandatory (the latest version is NOT
- * applied by default) and a version is supported for at least a year before
- * it is sunset. 202610 was the latest when this was written; bump it before
- * it is sunset, after reading the changelog for the Posts, Images and
- * Documents APIs.
+ * Now imported rather than declared here, because a pin written down twice
+ * expires in one place first: the analytics adapter sat on `202402` for about
+ * two and a half years while this file moved to `202610`, and every LinkedIn
+ * analytics call came back 426. See `lib/linkedin-version.ts` for the whole
+ * story and for how to bump it.
  */
-const LINKEDIN_REST_VERSION = '202610';
 
 /** Documents API: "The file size can't exceed 100MB and 300 pages." */
 const MAX_DOCUMENT_BYTES = 100 * 1024 * 1024;
