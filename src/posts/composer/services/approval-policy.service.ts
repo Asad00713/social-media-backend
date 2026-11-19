@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { DbType } from '../../../drizzle/db';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import {
@@ -8,6 +8,7 @@ import {
 } from '../../../drizzle/schema/workspace.schema';
 import type { WorkspaceRole } from '../../../workspace-members/role-capabilities';
 import { WorkspaceRoleService } from '../../../workspace-members/workspace-role.service';
+import { liveWorkspaces } from '../../soft-delete/soft-delete';
 import {
   activationNeedsApproverMessage,
   approvalRequiredByPolicy,
@@ -68,7 +69,7 @@ export class ApprovalPolicyService {
     const [ws] = await this.db
       .select({ approvalPolicy: workspace.approvalPolicy })
       .from(workspace)
-      .where(eq(workspace.id, workspaceId))
+      .where(and(eq(workspace.id, workspaceId), liveWorkspaces()))
       .limit(1);
     if (!ws || ws.approvalPolicy === 'none') return null;
     const role = await this.roles.getRole(workspaceId, userId);

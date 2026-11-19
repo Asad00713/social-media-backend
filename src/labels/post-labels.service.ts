@@ -3,6 +3,7 @@ import { sql } from 'drizzle-orm';
 import type { DbType } from '../drizzle/db';
 import { DRIZZLE } from '../drizzle/drizzle.module';
 import { normaliseLabels } from '../posts/composer/lib/draft-organise';
+import { livePostsSql } from '../posts/soft-delete/soft-delete';
 import { LabelsService } from './labels.service';
 
 /** Either the root db or a transaction on it. */
@@ -99,8 +100,9 @@ export class PostLabelsService {
   // ---------------------------------------------------------------------------
 
   /**
-   * 404 unless the post is in this workspace. The row lock serialises two
-   * saves of one post, so their label sets never interleave into a union.
+   * 404 unless the post is in this workspace and not soft-deleted. The row
+   * lock serialises two saves of one post, so their label sets never
+   * interleave into a union.
    */
   private async lockPost(
     tx: Executor,
@@ -110,6 +112,7 @@ export class PostLabelsService {
     const found = await tx.execute(sql`
       SELECT id FROM posts
       WHERE id = ${postId} AND workspace_id = ${workspaceId}
+        AND ${livePostsSql()}
       FOR NO KEY UPDATE`);
     if (found.rows.length === 0) throw new NotFoundException('Post not found');
   }

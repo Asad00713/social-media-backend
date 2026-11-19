@@ -28,6 +28,8 @@ const MIGRATIONS = [
   '0072_known_devices.sql',
   '0073_users_email_changed_at.sql',
   '0080_member_soft_removal.sql',
+  // main: workspace.deleted_at, which the OWNS_WORKSPACES check reads.
+  '0088_soft_delete_posts_workspaces.sql',
   '0090_user_account_settings.sql',
   '0091_workspace_settings.sql',
   '0092_workspace_labels.sql',
@@ -152,6 +154,55 @@ describeDb('AccountDeletionService (database)', () => {
       });
       expect(subscriptions.cancelForAccount).not.toHaveBeenCalled();
       expect(await userRow(client, me.id)).toEqual(before);
+    });
+  });
+
+  it('an owner whose only workspace is soft-deleted is not blocked: deleted, and the workspace row stays for the purge', async () => {
+    await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const me = await seedUser(client);
+      const live = await seedWorkspace(client, me.id, 'Live');
+      const gone = await seedWorkspace(client, me.id, 'Gone');
+      await client.query(
+        `UPDATE workspace SET deleted_at = now(), deleted_by_id = owner_id
+          WHERE id = $1`,
+        [gone],
+      );
+      const { service } = makeService(db);
+
+      // Still blocked by the live one, and only the live one is listed.
+      await expect(
+        service.deleteAccount(me.id, {
+          confirmEmail: me.email,
+          actor: 'self',
+          actorId: me.id,
+        }),
+      ).rejects.toMatchObject({
+        status: 409,
+        response: { workspaces: [{ id: live, name: 'Live' }] },
+      });
+
+      await client.query(
+        `UPDATE workspace SET deleted_at = now(), deleted_by_id = owner_id
+          WHERE id = $1`,
+        [live],
+      );
+      await service.deleteAccount(me.id, {
+        confirmEmail: me.email,
+        actor: 'self',
+        actorId: me.id,
+      });
+
+      expect((await userRow(client, me.id)).deleted_at).toBeInstanceOf(Date);
+      // Anonymised, never removed: RESTRICT (0093) keeps the owner row, and
+      // the purge still finds the soft-deleted workspaces.
+      expect(
+        await count(
+          client,
+          `SELECT count(*) AS n FROM workspace
+            WHERE owner_id = $1 AND deleted_at IS NOT NULL`,
+          [me.id],
+        ),
+      ).toBe(2);
     });
   });
 

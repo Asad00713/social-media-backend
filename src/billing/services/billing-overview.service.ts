@@ -14,6 +14,7 @@ import {
   type Subscription,
 } from '../../drizzle/schema';
 import { BestTimesCache } from '../../planner/lib/best-times-cache';
+import { isWorkspaceLive } from '../../posts/soft-delete/soft-delete';
 import type {
   BillingProfile,
   PaymentProviderAdapter,
@@ -169,6 +170,7 @@ export class BillingOverviewService {
   ) {}
 
   async overview(workspaceId: string): Promise<BillingOverview> {
+    await this.assertLive(workspaceId);
     const sub = await this.lookup.findByWorkspaceId(workspaceId);
     const ownerId = await this.lookup.getOwnerId(workspaceId);
     if (!ownerId) throw new NotFoundException('Workspace not found');
@@ -248,6 +250,7 @@ export class BillingOverviewService {
     workspaceId: string,
     limit: number = DEFAULT_INVOICE_LIMIT,
   ): Promise<ProviderInvoicesResult> {
+    await this.assertLive(workspaceId);
     const sub = await this.lookup.findByWorkspaceId(workspaceId);
     if (!sub || sub.planCode === 'FREE') {
       return { invoices: [], invoicesUnavailable: false };
@@ -276,6 +279,7 @@ export class BillingOverviewService {
     workspaceId: string,
     intent: PortalIntent,
   ): Promise<{ url: string }> {
+    await this.assertLive(workspaceId);
     const sub = await this.lookup.findByWorkspaceId(workspaceId);
     if (!sub || sub.planCode === 'FREE') {
       throw new NotFoundException({
@@ -306,6 +310,18 @@ export class BillingOverviewService {
   }
 
   // ------------------------------------------------------------------ helpers
+
+  /**
+   * 404 for a soft-deleted workspace (migration 0088). The billing controller
+   * carries @SkipSuspendCheck(), so the global guard that 404s a deleted
+   * workspace never runs on these routes; WorkspaceRoleGuard refuses members
+   * of one, and this closes it for a platform super admin too.
+   */
+  private async assertLive(workspaceId: string): Promise<void> {
+    if (!(await isWorkspaceLive(this.db, workspaceId))) {
+      throw new NotFoundException('Workspace not found');
+    }
+  }
 
   private statusOf(sub: Subscription): BillingOverview['status'] {
     if (sub.status === 'trialing') return 'trialing';

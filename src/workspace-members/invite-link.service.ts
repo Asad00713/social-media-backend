@@ -14,6 +14,7 @@ import { users, workspace, workspaceInvitation } from 'src/drizzle/schema';
 import { UsageService } from 'src/billing/services/usage.service';
 import { AppLinks } from 'src/email/links/app-links';
 import { normalizeEmail } from 'src/users/normalize-email';
+import { liveWorkspaces } from 'src/posts/soft-delete/soft-delete';
 import {
   lockWorkspaceSeats,
   WorkspaceMembersService,
@@ -101,7 +102,7 @@ export class InviteLinkService {
 
   async get(workspaceId: string): Promise<InviteLinkState> {
     const row = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
       columns: { inviteLinkCode: true, inviteLinkEnabled: true },
     });
     if (!row) throw new NotFoundException('Workspace not found');
@@ -278,6 +279,10 @@ export class InviteLinkService {
       eq(workspace.inviteLinkCode, code),
       eq(workspace.inviteLinkEnabled, true),
       eq(workspace.isActive, true),
+      // The join routes carry a code, not a :workspaceId, so the global
+      // guard that 404s a soft-deleted workspace never sees them: a link of
+      // a deleted workspace must stop here.
+      liveWorkspaces(),
     );
   }
 
@@ -302,7 +307,7 @@ export class InviteLinkService {
     values: (workspaceName: string) => Record<string, unknown>,
   ): Promise<InviteLinkState> {
     const current = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
       columns: { name: true },
     });
     if (!current) throw new NotFoundException('Workspace not found');
@@ -312,7 +317,7 @@ export class InviteLinkService {
         const [row] = await this.db
           .update(workspace)
           .set({ ...values(current.name), updatedAt: new Date() })
-          .where(eq(workspace.id, workspaceId))
+          .where(and(eq(workspace.id, workspaceId), liveWorkspaces()))
           .returning({
             inviteLinkCode: workspace.inviteLinkCode,
             inviteLinkEnabled: workspace.inviteLinkEnabled,

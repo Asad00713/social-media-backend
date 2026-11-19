@@ -1,5 +1,5 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
-import { asc, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import type { DbType } from '../../drizzle/db';
 import {
@@ -14,6 +14,7 @@ import {
   ProviderItemType,
 } from '../../drizzle/schema';
 import { AppLinks } from '../../email/links/app-links';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 import { CatalogueService } from './catalogue.service';
 import { CustomerService } from '../services/customer.service';
 import { StripeService } from '../../stripe/stripe.service';
@@ -560,7 +561,11 @@ export class StripeAdapter implements PaymentProviderAdapter {
     const [last] = await this.db
       .select({ id: workspace.id })
       .from(users)
-      .innerJoin(workspace, eq(workspace.id, users.lastAccessedWorkspaceId))
+      // Never return the customer to a soft-deleted workspace's page.
+      .innerJoin(
+        workspace,
+        and(eq(workspace.id, users.lastAccessedWorkspaceId), liveWorkspaces()),
+      )
       .where(eq(users.id, userId))
       .limit(1);
     if (last) return this.links.billing(last.id);
@@ -568,7 +573,7 @@ export class StripeAdapter implements PaymentProviderAdapter {
     const [owned] = await this.db
       .select({ id: workspace.id })
       .from(workspace)
-      .where(eq(workspace.ownerId, userId))
+      .where(and(eq(workspace.ownerId, userId), liveWorkspaces()))
       .orderBy(asc(workspace.createdAt), asc(workspace.id))
       .limit(1);
     return owned ? this.links.billing(owned.id) : this.links.frontend('/');

@@ -93,7 +93,11 @@ export class RecipientsService {
         timezone: workspace.timezone,
       })
       .from(users)
-      .leftJoin(workspace, eq(workspace.id, users.lastAccessedWorkspaceId))
+      // A soft-deleted workspace's zone is no fallback: it is gone.
+      .leftJoin(
+        workspace,
+        and(eq(workspace.id, users.lastAccessedWorkspaceId), liveWorkspaces()),
+      )
       .where(eq(users.id, userId));
     if (row?.preference && isIanaTimeZone(row.preference)) {
       return row.preference;

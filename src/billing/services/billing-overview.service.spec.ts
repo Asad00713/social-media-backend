@@ -10,7 +10,11 @@ import {
   withProviderTimeout,
 } from './billing-overview.service';
 import { PAYMENT_GRACE_DAYS } from './webhook.service';
-import { aiUsageLog, billingPaymentAlerts } from '../../drizzle/schema';
+import {
+  aiUsageLog,
+  billingPaymentAlerts,
+  workspace,
+} from '../../drizzle/schema';
 import type { BillingDashboard } from './dashboard.service';
 import type {
   BillingProfile,
@@ -133,6 +137,8 @@ function build(
     alerts?: Array<{ kind: string; createdAt: Date }>;
     aiRows?: Array<{ feature: string; used: string }>;
     adapter?: Record<string, jest.Mock>;
+    /** The workspace is soft-deleted (isWorkspaceLive finds no live row). */
+    deleted?: boolean;
   } = {},
 ) {
   const adapter = {
@@ -161,6 +167,7 @@ function build(
     new Map<unknown, unknown[]>([
       [billingPaymentAlerts, opts.alerts ?? []],
       [aiUsageLog, opts.aiRows ?? []],
+      [workspace, opts.deleted ? [] : [{ id: WS }]],
     ]),
   );
   const service = new BillingOverviewService(
@@ -572,6 +579,26 @@ describe('BillingOverviewService', () => {
         invoicesUnavailable: false,
       });
       expect(adapter.listInvoices).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('a soft-deleted workspace', () => {
+    it('answers 404 on overview, invoices and portal link, without a provider call', async () => {
+      const { service, adapter, lookup } = build({ deleted: true });
+
+      await expect(service.overview(WS)).rejects.toMatchObject({
+        status: 404,
+      });
+      await expect(service.invoices(WS)).rejects.toMatchObject({
+        status: 404,
+      });
+      await expect(service.portalLink(WS, 'portal')).rejects.toMatchObject({
+        status: 404,
+      });
+      expect(lookup.findByWorkspaceId).not.toHaveBeenCalled();
+      expect(adapter.getBillingProfile).not.toHaveBeenCalled();
+      expect(adapter.listInvoices).not.toHaveBeenCalled();
+      expect(adapter.createPortalLink).not.toHaveBeenCalled();
     });
   });
 

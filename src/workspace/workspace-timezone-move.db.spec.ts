@@ -15,9 +15,14 @@ import { WorkspaceService } from './workspace.service';
 // 0091 adds the workspace columns `update` writes and returns. 0066 creates
 // insight_reports, which a zone change reschedules: without it that read
 // fails, and on the harness's single transaction the caught error aborts
-// every later query. The harness applies each file twice, so both must stay
+// every later query. 0088 (main) adds the deleted_at columns the post reads
+// filter on. The harness applies each file twice, so all must stay
 // idempotent.
-const MIGRATIONS = ['0066_insight_reports.sql', '0091_workspace_settings.sql'];
+const MIGRATIONS = [
+  '0066_insight_reports.sql',
+  '0088_soft_delete_posts_workspaces.sql',
+  '0091_workspace_settings.sql',
+];
 
 // 09:00 in Karachi (UTC+5) and in New York (EST, UTC-5) on a January day.
 const KARACHI_9AM = new Date('2027-01-15T04:00:00Z');
@@ -636,6 +641,44 @@ describeDb('WorkspaceTimezoneMoveService (database)', () => {
         false,
       );
       expectNoColonJobIds(publishing, moveQueue);
+    });
+  });
+
+  it('a queued move of a workspace soft-deleted since moves nothing and arms no job; a deleted post is never re-armed', async () => {
+    await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const { ws, channel } = await karachiWorkspace(client);
+      await seedMany(client, ws, channel, TZ_MOVE_INLINE_LIMIT + 1);
+      const first = makeServices(db as never);
+      await first.moves.moveExisting(ws, 'Asia/Karachi', 'America/New_York');
+      const data = first.moveQueue.added[0].data as TimezoneMoveJob;
+
+      // One post deleted, then the whole workspace, before the job runs.
+      await client.query(`UPDATE posts SET deleted_at = now() WHERE id = $1`, [
+        data.posts[0].id,
+      ]);
+      const run = makeServices(db as never);
+      await client.query(
+        `UPDATE workspace SET deleted_at = now() WHERE id = $1`,
+        [ws],
+      );
+
+      expect(await run.moves.processQueued(data)).toBe(0);
+      expect(run.publishing.added).toHaveLength(0);
+      const moved = await client.query(
+        `SELECT 1 FROM posts WHERE workspace_id = $1 AND scheduled_at <> $2`,
+        [ws, KARACHI_9AM],
+      );
+      expect(moved.rowCount).toBe(0);
+
+      // And moveTo, the one place a tz move adds a publish job, refuses too.
+      const reschedule = new PostRescheduleService(
+        db as never,
+        run.publishing.queue as never,
+      );
+      expect(
+        await reschedule.moveTo(ws, data.posts[1].id, NEW_YORK_9AM),
+      ).toBe('not-movable');
+      expect(run.publishing.added).toHaveLength(0);
     });
   });
 

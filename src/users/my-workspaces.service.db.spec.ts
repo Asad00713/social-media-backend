@@ -6,10 +6,12 @@ import {
 } from '../planner/testing/rollback-db';
 import { MyWorkspacesService } from './my-workspaces.service';
 
-// 0080: REMOVED invitations. 0091: workspace columns the schema selects.
-// 0093: invited_by becomes NULLable (an invitation outlives its inviter).
+// 0080: REMOVED invitations. 0088 (main): workspace.deleted_at. 0091:
+// workspace columns the schema selects. 0093: invited_by becomes NULLable
+// (an invitation outlives its inviter).
 const MIGRATIONS = [
   '0080_member_soft_removal.sql',
+  '0088_soft_delete_posts_workspaces.sql',
   '0090_user_account_settings.sql',
   '0091_workspace_settings.sql',
   '0093_users_fk_set_null.sql',
@@ -232,6 +234,36 @@ describeDb('MyWorkspacesService (database)', () => {
       expect(byId.get(wNameless)?.invitedByName).toBe(owner.email);
       // The owner name falls back to the email the same way.
       expect(byId.get(wNameless)?.ownerName).toBe(owner.email);
+    });
+  });
+
+  it('a soft-deleted workspace is listed neither as owned nor as joined', async () => {
+    await run(async (service, client) => {
+      await seedPlan(client, 'FREE', 'Free');
+      const me = await seedUser(client, 'Me');
+      const other = await seedUser(client, 'Other');
+      const mineLive = await seedWorkspace(client, me.id, 'Mine');
+      const mineGone = await seedWorkspace(client, me.id, 'Mine Deleted');
+      const joinedGone = await seedWorkspace(
+        client,
+        other.id,
+        'Theirs Deleted',
+      );
+      await seedMembership(
+        client,
+        joinedGone,
+        me,
+        'MEMBER',
+        'ACCEPTED',
+        other.id,
+      );
+      await client.query(
+        `UPDATE workspace SET deleted_at = now() WHERE id = ANY($1::uuid[])`,
+        [[mineGone, joinedGone]],
+      );
+
+      const ids = (await service.list(me.id)).workspaces.map((w) => w.id);
+      expect(ids).toEqual([mineLive]);
     });
   });
 

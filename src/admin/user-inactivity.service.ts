@@ -561,7 +561,14 @@ export class UserInactivityService {
     }
   }
 
-  /** Which of these users own at least one workspace. */
+  /**
+   * Which of these users own at least one workspace row.
+   *
+   * Deliberately NOT filtered by liveWorkspaces(): this guards a HARD user
+   * delete, and workspace.owner_id is ON DELETE RESTRICT (0093). A
+   * soft-deleted workspace is still a row until the purge removes it, so its
+   * owner would fail the delete with 23503 all the same.
+   */
   private async workspaceOwnersAmong(userIds: string[]): Promise<Set<string>> {
     if (userIds.length === 0) return new Set();
     const rows = await this.db

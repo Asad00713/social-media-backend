@@ -10,6 +10,7 @@ import {
   workspace,
   workspaceInvitation,
 } from '../drizzle/schema';
+import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 export type MyWorkspaceRole = 'OWNER' | 'ADMIN' | 'MEMBER' | 'GUEST';
 
@@ -92,7 +93,8 @@ export class MyWorkspacesService {
         ),
       )
       .leftJoin(plans, eq(plans.code, subscriptions.planCode))
-      .where(eq(workspace.ownerId, userId));
+      // A soft-deleted workspace is gone (migration 0088).
+      .where(and(eq(workspace.ownerId, userId), liveWorkspaces()));
   }
 
   private async joinedRows(userId: string): Promise<JoinedRow[]> {
@@ -123,6 +125,7 @@ export class MyWorkspacesService {
         and(
           eq(workspaceInvitation.userId, userId),
           eq(workspaceInvitation.status, 'ACCEPTED'),
+          liveWorkspaces(),
         ),
       );
   }

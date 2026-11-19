@@ -15,10 +15,12 @@ import type { AppLinks } from '../email/links/app-links';
 import { WorkspaceMembersService } from './workspace-members.service';
 import { InviteLinkService, INVITE_CODE_REGEX } from './invite-link.service';
 
-// 0080: REMOVED status. 0090/0091: columns the full-row reads select, the
-// invite link columns and their unique index. 0093: invited_by is NULLable.
+// 0080: REMOVED status. 0088 (main): workspace.deleted_at. 0090/0091:
+// columns the full-row reads select, the invite link columns and their
+// unique index. 0093: invited_by is NULLable.
 const MIGRATIONS = [
   '0080_member_soft_removal.sql',
+  '0088_soft_delete_posts_workspaces.sql',
   '0090_user_account_settings.sql',
   '0091_workspace_settings.sql',
   '0093_users_fk_set_null.sql',
@@ -540,6 +542,32 @@ describeDb('InviteLinkService (database)', () => {
           NotFoundException,
         );
         expect(await rowsOf(client, ws, joiner.id)).toHaveLength(0);
+      });
+    });
+
+    it('a soft-deleted workspace: its link previews and joins as the same 404, and writes nothing', async () => {
+      await run(ROOMY, async ({ links, usage }, client) => {
+        const owner = await seedUser(client, 'Owner');
+        const joiner = await seedUser(client, 'Joiner');
+        const ws = await seedWorkspace(client, owner.id);
+        const code = codeOf(await links.setEnabled(ws, true));
+        await client.query(
+          `UPDATE workspace SET deleted_at = now() WHERE id = $1`,
+          [ws],
+        );
+
+        await expect(links.preview(code)).rejects.toBeInstanceOf(
+          NotFoundException,
+        );
+        await expect(links.join(code, joiner.id)).rejects.toBeInstanceOf(
+          NotFoundException,
+        );
+        // The admin side treats it as gone too.
+        await expect(links.setEnabled(ws, false)).rejects.toBeInstanceOf(
+          NotFoundException,
+        );
+        expect(await rowsOf(client, ws, joiner.id)).toHaveLength(0);
+        expect(usage.incrementMemberCount).not.toHaveBeenCalled();
       });
     });
 

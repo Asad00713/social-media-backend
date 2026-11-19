@@ -40,6 +40,7 @@ import {
   CloudflareR2Service,
 } from '../media/cloudflare-r2.service';
 import { normalizeEmail } from './normalize-email';
+import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 type Executor = DbType | Parameters<Parameters<DbType['transaction']>[0]>[0];
 type Tx = Parameters<Parameters<DbType['transaction']>[0]>[0];
@@ -442,9 +443,12 @@ export class AccountDeletionService {
 /**
  * The workspaces this person owns, which block the delete.
  *
- * The one place "owns a workspace" is decided for account delete. When
- * workspace soft delete lands, add `isNull(workspace.deletedAt)` to the
- * `where` below (a soft-deleted workspace no longer blocks).
+ * The one place "owns a workspace" is decided for account delete. A
+ * soft-deleted workspace (migration 0088) no longer blocks: it is gone, its
+ * posts are kept from publishing by liveWorkspacePosts() on every publish
+ * path, and WorkspacePurgeService removes it after 30 days. The owner row
+ * that RESTRICT (0093) protects is anonymised, never removed, so the purge
+ * still finds it.
  */
 async function ownedWorkspaces(
   db: Executor,
@@ -453,7 +457,7 @@ async function ownedWorkspaces(
   return db
     .select({ id: workspace.id, name: workspace.name })
     .from(workspace)
-    .where(and(eq(workspace.ownerId, userId)))
+    .where(and(eq(workspace.ownerId, userId), liveWorkspaces()))
     .orderBy(workspace.name, workspace.id);
 }
 
