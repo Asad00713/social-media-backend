@@ -116,12 +116,20 @@ export interface PostTarget {
   heldAt?: string;
   /**
    * Why the target did not go: paused by the user, disconnected (channel soft
-   * disconnect, 0081), or the platform's per-account rate limit was full.
+   * disconnect, 0081), the platform's per-account rate limit was full, or the
+   * platform failed in a way worth retrying (502/503/504, a timeout, a
+   * dropped connection).
    *
-   * The first two are released by a user action; `rate_limited` releases
-   * itself when the window reopens. See `posts/lib/held-targets.ts`.
+   * The first two are released by a user action. `rate_limited` releases
+   * itself when the window reopens, and `transient_error` after a fixed
+   * delay - both on a timer, with no user action.
+   * See `posts/lib/held-targets.ts`.
    */
-  heldReason?: 'channel_paused' | 'channel_disconnected' | 'rate_limited';
+  heldReason?:
+    | 'channel_paused'
+    | 'channel_disconnected'
+    | 'rate_limited'
+    | 'transient_error';
   contentOverride?: PlatformContent;
   /**
    * Sub-destination for chat/messaging platforms (Slack/Discord): which

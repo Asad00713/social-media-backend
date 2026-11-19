@@ -29,10 +29,49 @@ export const HELD_REASON_DISCONNECTED = 'channel_disconnected' as const;
  * option on `enqueueHeldPost`.
  */
 export const HELD_REASON_RATE_LIMITED = 'rate_limited' as const;
+/**
+ * Held because the platform failed in a way that is worth trying again - a
+ * 502/503/504, a dropped connection, a timeout.
+ *
+ * `classifyPublishError` has always computed `retryable` for exactly these
+ * (code `transient`), and nothing read it: every caller took `.code` and threw
+ * the flag away. So a target whose platform returned "503 Service
+ * Unavailable" was written `status: 'failed'` and the per-target catch
+ * swallowed the error, so the job COMPLETED and BullMQ never retried either.
+ * The customer's post was dead because the platform hiccuped for a minute.
+ *
+ * Grouped with `rate_limited` rather than the two user-caused reasons: nothing
+ * but time releases it, so it is re-enqueued on a timer and
+ * `isHeldByUserAction` must answer false for it.
+ */
+export const HELD_REASON_TRANSIENT = 'transient_error' as const;
 export type HeldReason =
   | typeof HELD_REASON
   | typeof HELD_REASON_DISCONNECTED
-  | typeof HELD_REASON_RATE_LIMITED;
+  | typeof HELD_REASON_RATE_LIMITED
+  | typeof HELD_REASON_TRANSIENT;
+
+/** The reasons that release themselves on a timer, with no user action. */
+const SELF_RELEASING: ReadonlySet<string> = new Set([
+  HELD_REASON_RATE_LIMITED,
+  HELD_REASON_TRANSIENT,
+]);
+
+/**
+ * True when this hold releases itself on a timer rather than by a user action.
+ *
+ * Exported as one predicate rather than left as a comparison at each site,
+ * because the sites are the thing that goes wrong: the release paths were
+ * written `heldReason !== HELD_REASON_RATE_LIMITED` when `rate_limited` was
+ * the only self-releasing reason, and every one of them had to be found again
+ * when a second appeared. A `!isSelfReleasing(t)` reads the same before and
+ * after a third.
+ */
+export function isSelfReleasing(
+  target: Pick<PostTarget, 'heldReason'>,
+): boolean {
+  return SELF_RELEASING.has(target.heldReason ?? '');
+}
 
 /**
  * Floor for a rate-limit retry delay.
@@ -123,7 +162,7 @@ export function holdTarget<T extends PostTarget>(
 export function isHeldByUserAction(
   target: Pick<PostTarget, 'heldAt' | 'heldReason'>,
 ): boolean {
-  return isHeld(target) && target.heldReason !== HELD_REASON_RATE_LIMITED;
+  return isHeld(target) && !isSelfReleasing(target);
 }
 
 /**
@@ -143,6 +182,42 @@ export function holdRateLimited<T extends PostTarget>(target: T, now: Date): T {
   if (isHeld(target)) return target;
   return holdTarget(target, now, HELD_REASON_RATE_LIMITED);
 }
+
+/**
+ * The target, held because the platform failed transiently.
+ *
+ * Same refusal to downgrade an existing hold as `holdRateLimited`, and for the
+ * same reason: a paused or disconnected channel must not be turned into
+ * something that releases itself on a timer.
+ *
+ * `errorMessage` and `errorCode` are kept rather than cleared - the attempt
+ * really did fail, and the author seeing "Service unavailable, retrying" is
+ * better than a silent wait - but `status` is left exactly as it was, so the
+ * post is still `scheduled` rather than `failed`.
+ */
+export function holdTransient<T extends PostTarget>(
+  target: T,
+  now: Date,
+  errorMessage: string,
+): T {
+  if (isHeld(target)) return target;
+  return {
+    ...holdTarget(target, now, HELD_REASON_TRANSIENT),
+    errorMessage,
+    errorCode: 'transient',
+  };
+}
+
+/**
+ * How long to wait before trying a transiently-failed target again.
+ *
+ * A platform outage is not a rate-limit window with a published reopening
+ * time, so there is nothing to read: the delay is chosen. Five minutes is long
+ * enough that a blip has passed and short enough that a post scheduled to the
+ * minute is not noticeably late, and `PUBLISH_LATE_GRACE_MS` still caps how
+ * many of these a post may absorb before it is failed as missed.
+ */
+export const TRANSIENT_RETRY_DELAY_MS = 5 * 60 * 1000;
 
 /**
  * The soonest of two retry delays, ignoring absent or nonsensical ones.
@@ -172,6 +247,47 @@ export function releaseTarget<T extends PostTarget>(target: T): T {
   delete copy.heldAt;
   delete copy.heldReason;
   return copy;
+}
+
+/**
+ * The target as it should look at the START of a fresh attempt: hold markers
+ * gone, and the previous failure's residue gone with them.
+ *
+ * `releaseTarget` alone is not enough here, because it clears only the hold.
+ * A target that failed earlier keeps `status: 'failed'` and its old
+ * `errorCode`/`errorMessage` through the release, and nothing else on the
+ * publish path resets them — so a retry that is then HELD (rate limit or
+ * transient failure) stores a target still reading `failed`:
+ *
+ *   - `targetStatusOf` answers 'failed' for the post's own status line, so
+ *     the row says `scheduled` while its only target says `failed`;
+ *   - `present-post` gates `heldAt`/`heldReason` on `status === 'scheduled'`,
+ *     so the hold vanishes from the API and the UI cannot say "retrying";
+ *   - `nothingFailed` is false, so `lastError` is written on a post that is
+ *     actually waiting — the one thing the hold logic tries to avoid.
+ *
+ * Clearing them is also what `PostTarget.errorCode` already documents
+ * ("cleared when the target is attempted again") — a promise the code did
+ * not keep. This is deliberately NOT folded into `releaseTarget`, whose
+ * other callers (channel resume, reconnect) release a hold WITHOUT
+ * attempting anything, and must leave a previous failure intact.
+ */
+export function reattemptTarget<T extends PostTarget>(target: T): T {
+  const released = releaseTarget(target);
+  const fresh: T = released === target ? { ...target } : released;
+  const loose = fresh as Partial<PostTarget> & { publishStatus?: string };
+
+  // Both status fields, because `targetStatusOf` reads either one - clearing
+  // only `status` would leave a composer-written `publishStatus: 'failed'`
+  // winning, which is the same bug with a longer path to it.
+  if (loose.status === 'failed') delete loose.status;
+  if (loose.publishStatus === 'failed') delete loose.publishStatus;
+
+  // The previous attempt's reason. Keeping it would caption a target that is
+  // now waiting with the error that ended its LAST try.
+  delete loose.errorCode;
+  delete loose.errorMessage;
+  return fresh;
 }
 
 /** Delay for a held post: at its time if that is still ahead, else now. */
