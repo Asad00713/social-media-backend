@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   PayloadTooLargeException,
+  UnsupportedMediaTypeException,
 } from '@nestjs/common';
 import type {
   CloudinaryService,
@@ -69,7 +70,35 @@ function make() {
   return { service, cloudinary, quota, mediaItems, item, order };
 }
 
-const buffer = Buffer.from('hello');
+/**
+ * A real PNG header, because the ingest paths now sniff the bytes.
+ *
+ * `Buffer.from('hello')` was fine while the only byte check was a DENYLIST
+ * ("are these bytes a PDF?") - placeholder bytes are not a PDF, so they
+ * passed. The allowlist asks the opposite question, and placeholder bytes are
+ * not a PNG either, so a fixture standing in for "a valid upload" now has to
+ * actually be one.
+ */
+const buffer = Buffer.concat([
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  Buffer.from([0x00, 0x00, 0x00, 0x0d]),
+  Buffer.from('IHDR'),
+]);
+
+/**
+ * A PNG of exactly `bytes` length: a real header, then padding.
+ *
+ * The size-cap tests are about SIZE, so their payload still has to pass the
+ * byte sniffer - otherwise they would pass or fail for the wrong reason.
+ */
+function sizedPng(bytes: number): Buffer {
+  const out = Buffer.alloc(bytes);
+  buffer.copy(out, 0, 0, Math.min(buffer.length, bytes));
+  return out;
+}
+
+/** The same real PNG, base64-encoded, for the data-URI paths. */
+const pngBase64 = buffer.toString('base64');
 
 describe('LibraryIngestService', () => {
   it('refuses before uploading when storage is full', async () => {
@@ -200,7 +229,13 @@ describe('LibraryIngestService', () => {
 
   it('base64 checks the decoded size first and reads the mime type', async () => {
     const { service, quota, mediaItems, order } = make();
-    const data = 'data:image/png;base64,' + 'A'.repeat(400);
+    // Real PNG bytes padded out, not `'A'.repeat(400)`: that decodes to zeros,
+    // which the byte sniffer refuses. The property under test is the SIZE
+    // arithmetic and the declared mime type, so the payload has to be a file
+    // that would really be stored.
+    const data =
+      'data:image/png;base64,' +
+      sizedPng(300).toString('base64').padEnd(400, 'A').slice(0, 400);
     await service.ingestBase64({ workspaceId: WS, userId: USER, data });
     expect(order).toEqual(['quota', 'upload', 'create']);
     expect(quota.assertCanStore).toHaveBeenCalledWith(
@@ -252,7 +287,7 @@ describe('LibraryIngestService', () => {
           s.ingestBase64({
             workspaceId: WS,
             userId: USER,
-            data: 'aGk=',
+            data: pngBase64,
             ...stray,
           } as never),
         'uploadFromBase64',
@@ -352,7 +387,7 @@ describe('LibraryIngestService', () => {
     await service.ingestBuffer({
       workspaceId: WS,
       userId: USER,
-      buffer: Buffer.alloc(THUMBNAIL_MAX_BYTES),
+      buffer: sizedPng(THUMBNAIL_MAX_BYTES),
       purpose: 'thumbnail',
     });
     expect(cloudinary.uploadFromBuffer).toHaveBeenCalledTimes(1);
@@ -363,7 +398,7 @@ describe('LibraryIngestService', () => {
     await service.ingestBuffer({
       workspaceId: WS,
       userId: USER,
-      buffer: Buffer.alloc(THUMBNAIL_MAX_BYTES + 1),
+      buffer: sizedPng(THUMBNAIL_MAX_BYTES + 1),
       resourceType: 'video',
     });
     const opts = cloudinary.uploadFromBuffer.mock.calls[0][1] as Record<
@@ -433,7 +468,7 @@ describe('LibraryIngestService', () => {
       await service.ingestBuffer({
         workspaceId: WS,
         userId: USER,
-        buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+        buffer,
         originalName: 'a.png',
         mimeType: 'image/png',
       });
@@ -541,6 +576,146 @@ describe('LibraryIngestService', () => {
         }),
       ).rejects.toBeInstanceOf(DocumentNeedsR2Exception);
       expect(cloudinary.uploadFromBase64).not.toHaveBeenCalled();
+    });
+  });
+  /**
+   * The allowlist, at the three doors it guards.
+   *
+   * `media-allowlist.spec.ts` tests the RULES; these test that each ingest
+   * path applies them. Both are needed, and the gap was real: removing the
+   * guard from any one of the three paths left this suite 37/37 green until
+   * these tests existed - the same shape as the hand-list spec that passed
+   * 14/14 while two publishing engines leaked.
+   */
+  describe('only allowed media is stored', () => {
+    /** A Linux binary, renamed and mislabelled as a picture. */
+    const elf = Buffer.concat([
+      Buffer.from([0x7f]),
+      Buffer.from('ELF'),
+      Buffer.alloc(28),
+    ]);
+    /** An SVG, which has no magic number at all. */
+    const svg = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
+    );
+
+    it('upload/file refuses an executable renamed as a picture', async () => {
+      const { service, cloudinary, quota } = make();
+      await expect(
+        service.ingestBuffer({
+          workspaceId: WS,
+          userId: USER,
+          buffer: elf,
+          originalName: 'cat.png',
+          mimeType: 'image/png',
+        }),
+      ).rejects.toBeInstanceOf(UnsupportedMediaTypeException);
+      // Before any bytes are stored and before the quota is touched.
+      expect(cloudinary.uploadFromBuffer).not.toHaveBeenCalled();
+      expect(quota.assertCanStore).not.toHaveBeenCalled();
+    });
+
+    it('upload/file refuses an SVG, which no magic number can match', async () => {
+      const { service, cloudinary } = make();
+      await expect(
+        service.ingestBuffer({
+          workspaceId: WS,
+          userId: USER,
+          buffer: svg,
+          originalName: 'logo.svg',
+          mimeType: 'image/svg+xml',
+        }),
+      ).rejects.toBeInstanceOf(UnsupportedMediaTypeException);
+      expect(cloudinary.uploadFromBuffer).not.toHaveBeenCalled();
+    });
+
+    it('upload/base64 refuses an executable data URI', async () => {
+      const { service, cloudinary } = make();
+      await expect(
+        service.ingestBase64({
+          workspaceId: WS,
+          userId: USER,
+          data: `data:image/png;base64,${elf.toString('base64')}`,
+        }),
+      ).rejects.toBeInstanceOf(UnsupportedMediaTypeException);
+      expect(cloudinary.uploadFromBase64).not.toHaveBeenCalled();
+    });
+
+    it('upload/base64 accepts a video, whose brand sits at offset 8', async () => {
+      // The head handed to the sniffer has to reach offset 12: an MP4 is
+      // identified by `ftyp` at 4 and its brand at 8. `base64Head` is derived
+      // from SNIFF_BYTES so that stays true; the 16 characters it carried
+      // before decoded to exactly 12 bytes, which worked with nothing spare.
+      const mp4 = Buffer.alloc(64);
+      mp4.writeUInt32BE(64, 0);
+      mp4.write('ftyp', 4, 'latin1');
+      mp4.write('isom', 8, 'latin1');
+      const { service, cloudinary } = make();
+      await service.ingestBase64({
+        workspaceId: WS,
+        userId: USER,
+        data: mp4.toString('base64'),
+        resourceType: 'video',
+      });
+      expect(cloudinary.uploadFromBase64).toHaveBeenCalledTimes(1);
+    });
+
+    it('upload/url deletes and refuses a non-media file Cloudinary fetched', async () => {
+      // The bytes were never here to sniff, so the check runs afterwards on
+      // Cloudinary's own verdict - and the stored copy is deleted first, so
+      // nothing we refused is left behind.
+      const { service, cloudinary } = make();
+      cloudinary.uploadFromUrl.mockResolvedValue({
+        ...upload,
+        format: 'svg',
+        resourceType: 'image',
+      });
+      await expect(
+        service.ingestRemoteUrl({
+          workspaceId: WS,
+          userId: USER,
+          url: 'https://example.com/logo',
+        }),
+      ).rejects.toBeInstanceOf(UnsupportedMediaTypeException);
+      expect(cloudinary.delete).toHaveBeenCalledWith(upload.publicId, 'image');
+    });
+
+    it('upload/url leaves an existing asset alone while still refusing', async () => {
+      // An `existing` asset is someone else's; refusing ours must not delete
+      // theirs. Same rule as the document path.
+      const { service, cloudinary } = make();
+      cloudinary.uploadFromUrl.mockResolvedValue({
+        ...upload,
+        format: 'svg',
+        resourceType: 'image',
+        existing: true,
+      });
+      await expect(
+        service.ingestRemoteUrl({
+          workspaceId: WS,
+          userId: USER,
+          url: 'https://example.com/logo',
+        }),
+      ).rejects.toBeInstanceOf(UnsupportedMediaTypeException);
+      expect(cloudinary.delete).not.toHaveBeenCalled();
+    });
+
+    it('a real picture still goes through every path', async () => {
+      const { service, cloudinary } = make();
+      await service.ingestBuffer({
+        workspaceId: WS,
+        userId: USER,
+        buffer,
+        originalName: 'a.png',
+        mimeType: 'image/png',
+      });
+      await service.ingestBase64({
+        workspaceId: WS,
+        userId: USER,
+        data: pngBase64,
+      });
+      expect(cloudinary.uploadFromBuffer).toHaveBeenCalledTimes(1);
+      expect(cloudinary.uploadFromBase64).toHaveBeenCalledTimes(1);
     });
   });
 });
