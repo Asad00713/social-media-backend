@@ -71,6 +71,16 @@ export interface PublishResultSummary {
   postId: string;
 }
 
+/** The shared metadata a "Publish now" row stores, before its filing keys. */
+function publishNowMetadata(draft: Draft): Record<string, unknown> {
+  return {
+    hashtags: draft.base.hashtags,
+    mentions: draft.base.mentions,
+    linkPreview: draft.base.linkPreview,
+    schedule: draft.schedule,
+  };
+}
+
 /**
  * Publishes (or retries publishing) a draft that lives entirely in the
  * browser. We never store an in-progress draft on the server — the row in
@@ -389,7 +399,13 @@ export class PublishOrchestratorService {
       const rows = (await this.db
         .select({ targets: posts.targets })
         .from(posts)
-        .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId), livePosts()))
+        .where(
+          and(
+            eq(posts.id, draftId),
+            eq(posts.workspaceId, workspaceId),
+            livePosts(),
+          ),
+        )
         .limit(1)) as { targets: unknown }[];
       const targets = Array.isArray(rows?.[0]?.targets)
         ? (rows[0].targets as ChannelTarget[])
@@ -453,13 +469,22 @@ export class PublishOrchestratorService {
     const [existing] = await this.db
       .select({ metadata: posts.metadata })
       .from(posts)
-      .where(and(eq(posts.id, draft.id), eq(posts.workspaceId, workspaceId), livePosts()))
+      .where(
+        and(
+          eq(posts.id, draft.id),
+          eq(posts.workspaceId, workspaceId),
+          livePosts(),
+        ),
+      )
       .limit(1);
     const outgoing: ApprovableContent = {
       content: draft.base.text,
       mediaItems: draft.base.mediaItems,
       platformContent: draft.perPlatform,
       targets: draft.channels,
+      // The publisher-read keys upsertPostsRow stores (filing keys never
+      // count, see NON_VOIDING_METADATA_KEYS).
+      metadata: publishNowMetadata(draft),
     };
     assertPolicyAllowsDirectSend(
       (await this.approvalPolicy?.coversAuthor(
@@ -484,7 +509,13 @@ export class PublishOrchestratorService {
     const [existing] = await this.db
       .select({ metadata: posts.metadata })
       .from(posts)
-      .where(and(eq(posts.id, draft.id), eq(posts.workspaceId, workspaceId), livePosts()))
+      .where(
+        and(
+          eq(posts.id, draft.id),
+          eq(posts.workspaceId, workspaceId),
+          livePosts(),
+        ),
+      )
       .limit(1);
 
     // Project to legacy PostTarget shape (with `status` field).
@@ -494,10 +525,7 @@ export class PublishOrchestratorService {
     }));
 
     const metadata = {
-      hashtags: draft.base.hashtags,
-      mentions: draft.base.mentions,
-      linkPreview: draft.base.linkPreview,
-      schedule: draft.schedule,
+      ...publishNowMetadata(draft),
       ...(await resolveOrganise(
         this.db,
         workspaceId,

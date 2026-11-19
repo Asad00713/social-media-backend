@@ -37,7 +37,7 @@ const DRAFT_TITLE_KEY = 'title';
  * `metadata.title` WAS the post title a client sent for YouTube or
  * Pinterest - so it is still handed over.
  */
-function isComposerRow(metadata: Record<string, any>): boolean {
+export function isComposerRow(metadata: Record<string, any>): boolean {
   return metadata.source === 'composer' || metadata.schedule !== undefined;
 }
 

@@ -371,7 +371,13 @@ export class ComposerSchedulingService {
     const existing = await this.db
       .select()
       .from(posts)
-      .where(and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId), livePosts()))
+      .where(
+        and(
+          eq(posts.id, dto.draftId),
+          eq(posts.workspaceId, workspaceId),
+          livePosts(),
+        ),
+      )
       .limit(1);
 
     // A first-week draft keeps its tag when scheduled from the composer (the
@@ -386,27 +392,11 @@ export class ComposerSchedulingService {
       await resolveOrganise(this.db, workspaceId, existing[0]?.metadata, dto),
     );
 
-    // "Needs approval": refused before any write or job unless an approval
-    // covers exactly what is being scheduled. The approval then rides along
-    // on the scheduled row, so unscheduling keeps it.
-    const outgoing: ApprovableContent = {
-      content: dto.base.text,
-      mediaItems: dto.base.mediaItems,
-      platformContent: dto.perPlatform ?? {},
-      targets: dto.channels,
-    };
-    await this.assertPolicyAllows(workspaceId, userId, existing[0], outgoing, {
-      shared: pickShared(metadata),
-      rule: rule ?? null,
-      ...(variations === undefined ? {} : { variations }),
-    });
-    assertApprovedFor(existing[0]?.metadata, outgoing);
-    Object.assign(metadata, carryApproval(existing[0]?.metadata, outgoing));
-
     // A repeating post keeps its rule with the series state the server owns.
     // A post already in a series stays in it (same seriesId and place), so
     // re-scheduling it does not restart an "after N posts" count. Without a
-    // rule, no `schedule` key is written — exactly as before.
+    // rule, no `schedule` key is written — exactly as before. Written before
+    // the approval check: the repeat rule is part of what an approval covers.
     if (rule) {
       const timezone = await loadWorkspaceTimezone(this.db, workspaceId);
       metadata.schedule = {
@@ -423,6 +413,25 @@ export class ComposerSchedulingService {
         ),
       };
     }
+
+    // "Needs approval": refused before any write or job unless an approval
+    // covers exactly what is being scheduled — the shared metadata and the
+    // repeat rule included. The approval then rides along on the scheduled
+    // row, so unscheduling keeps it.
+    const outgoing: ApprovableContent = {
+      content: dto.base.text,
+      mediaItems: dto.base.mediaItems,
+      platformContent: dto.perPlatform ?? {},
+      targets: dto.channels,
+      metadata,
+    };
+    await this.assertPolicyAllows(workspaceId, userId, existing[0], outgoing, {
+      shared: pickShared(metadata),
+      rule: rule ?? null,
+      ...(variations === undefined ? {} : { variations }),
+    });
+    assertApprovedFor(existing[0]?.metadata, outgoing);
+    Object.assign(metadata, carryApproval(existing[0]?.metadata, outgoing));
 
     // The same per-channel queue ceiling PostService.createPost enforces. This
     // is a second, independent path to `status: 'scheduled'`, so a check on
@@ -537,7 +546,13 @@ export class ComposerSchedulingService {
     const existing: StoredPost[] = await this.db
       .select()
       .from(posts)
-      .where(and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId), livePosts()))
+      .where(
+        and(
+          eq(posts.id, dto.draftId),
+          eq(posts.workspaceId, workspaceId),
+          livePosts(),
+        ),
+      )
       .limit(1);
     const stored = existing[0] as StoredPost | undefined;
 
@@ -555,6 +570,7 @@ export class ComposerSchedulingService {
       mediaItems: dto.base.mediaItems,
       platformContent: dto.perPlatform ?? {},
       targets: dto.channels,
+      metadata: shared,
     };
     // The policy, once for the whole; approvalForPart then runs
     // assertApprovedFor for the whole and for each part.
@@ -574,6 +590,7 @@ export class ComposerSchedulingService {
           mediaItems: dto.base.mediaItems,
           platformContent: perPlatform,
           targets: group.channels,
+          metadata: shared,
         }),
       };
       return {
@@ -723,7 +740,13 @@ export class ComposerSchedulingService {
     const [row] = await this.db
       .select()
       .from(posts)
-      .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId), livePosts()))
+      .where(
+        and(
+          eq(posts.id, draftId),
+          eq(posts.workspaceId, workspaceId),
+          livePosts(),
+        ),
+      )
       .limit(1);
     await this.removeJobs(`composer-publish-${draftId}`, row?.jobId);
 

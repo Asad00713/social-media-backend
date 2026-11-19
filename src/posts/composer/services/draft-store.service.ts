@@ -58,19 +58,32 @@ export class DraftStoreService {
     const existing = await this.db
       .select()
       .from(posts)
-      .where(and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId), livePosts()))
+      .where(
+        and(
+          eq(posts.id, dto.draftId),
+          eq(posts.workspaceId, workspaceId),
+          livePosts(),
+        ),
+      )
       .limit(1);
 
     if (existing.length > 0 && isViewer(role)) {
       this.assertViewerOwnsDraft(existing[0], userId);
     }
 
-    const metadata = {
+    const metadata: Record<string, unknown> = {
       hashtags: dto.base.hashtags,
       mentions: dto.base.mentions,
       linkPreview: dto.base.linkPreview,
       schedule: dto.schedule,
       title: dto.title,
+      // The composer's marker, as the scheduler stamps it: `title` here is
+      // the draft's name, never a post title (see sharedMetadataFor). A
+      // draft saved with no `schedule` would otherwise read as a legacy row,
+      // whose title IS published - and an approval granted on it would not
+      // match the same draft once scheduled. A first-week draft's own
+      // `source` (carried below) wins.
+      source: 'composer',
       // Campaign: absent keeps the stored value (see draft-organise). Labels
       // go to post_labels after the row is written.
       ...(await resolveOrganise(
@@ -83,15 +96,19 @@ export class DraftStoreService {
       ...carryFirstWeekMeta(existing[0]?.metadata),
       // A sibling of a post split by "a time per channel" keeps its family.
       ...carryScheduleGroup(existing[0]?.metadata),
-      // "Needs approval" survives a save; a grant that no longer matches the
-      // saved content is withdrawn.
-      ...carryApproval(existing[0]?.metadata, {
+    };
+    // "Needs approval" survives a save; a grant that no longer matches the
+    // saved content - metadata and repeat rule included - is withdrawn.
+    Object.assign(
+      metadata,
+      carryApproval(existing[0]?.metadata, {
         content: dto.base.text,
         mediaItems: dto.base.mediaItems,
         platformContent: dto.perPlatform ?? {},
         targets: dto.channels ?? [],
+        metadata,
       }),
-    };
+    );
 
     if (existing.length === 0) {
       // The workspace approval policy: a covered author's new draft starts
@@ -214,7 +231,13 @@ export class DraftStoreService {
     const rows = await this.db
       .select()
       .from(posts)
-      .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId), livePosts()))
+      .where(
+        and(
+          eq(posts.id, draftId),
+          eq(posts.workspaceId, workspaceId),
+          livePosts(),
+        ),
+      )
       .limit(1);
     if (rows.length === 0)
       throw new NotFoundException(`Draft ${draftId} not found`);
@@ -225,10 +248,15 @@ export class DraftStoreService {
     const rows = await this.db
       .select()
       .from(posts)
-      .where(and(and(
-          eq(posts.workspaceId, workspaceId),
-          inArray(posts.status, ['draft', 'scheduled', 'failed']),
-        ), livePosts()))
+      .where(
+        and(
+          and(
+            eq(posts.workspaceId, workspaceId),
+            inArray(posts.status, ['draft', 'scheduled', 'failed']),
+          ),
+          livePosts(),
+        ),
+      )
       .orderBy(desc(posts.updatedAt))
       .limit(limit);
     const names = await this.namesFor(rows.map((r: any) => r.id as string));
@@ -260,7 +288,13 @@ export class DraftStoreService {
       const rows = await this.db
         .select()
         .from(posts)
-        .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId), livePosts()))
+        .where(
+          and(
+            eq(posts.id, draftId),
+            eq(posts.workspaceId, workspaceId),
+            livePosts(),
+          ),
+        )
         .limit(1);
       if (rows.length > 0) this.assertViewerOwnsDraft(rows[0], userId ?? '');
     }

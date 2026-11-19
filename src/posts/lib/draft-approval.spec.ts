@@ -25,6 +25,7 @@ const content = (over: Partial<ApprovableContent> = {}): ApprovableContent => ({
     { channelId: '7', platform: 'instagram' } as { channelId: string },
     { channelId: '9', platform: 'x' } as { channelId: string },
   ],
+  metadata: { hashtags: ['coffee'], firstComment: 'Link in bio' },
   ...over,
 });
 
@@ -74,6 +75,7 @@ describe('contentFingerprint', () => {
         },
         mediaItems: [{ type: 'image', url: 'https://cdn.test/a.jpg' }],
         content: a.content,
+        metadata: { firstComment: 'Link in bio', hashtags: ['coffee'] },
       }),
     ) as ApprovableContent;
     expect(contentFingerprint(b)).toBe(contentFingerprint(a));
@@ -106,10 +108,136 @@ describe('contentFingerprint', () => {
       },
     ],
     ['the channels', { targets: [{ channelId: '7' }] }],
+    [
+      'a legacy first comment',
+      { metadata: { hashtags: ['coffee'], firstComment: 'Buy now' } },
+    ],
+    [
+      'the hashtags',
+      { metadata: { hashtags: ['tea'], firstComment: 'Link in bio' } },
+    ],
+    [
+      'a legacy title (no composer marker)',
+      {
+        metadata: {
+          hashtags: ['coffee'],
+          firstComment: 'Link in bio',
+          title: 'New title',
+        },
+      },
+    ],
+    [
+      'a repeat rule added',
+      {
+        metadata: {
+          hashtags: ['coffee'],
+          firstComment: 'Link in bio',
+          schedule: {
+            mode: 'all_same_time',
+            recurrence: { freq: 'daily', interval: 1, ends: { type: 'never' } },
+          },
+        },
+      },
+    ],
+    [
+      'a TikTok flag',
+      {
+        metadata: {
+          hashtags: ['coffee'],
+          firstComment: 'Link in bio',
+          brandContentToggle: true,
+        },
+      },
+    ],
   ])('changes when %s changes', (_what, over) => {
     expect(
       contentFingerprint(content(over as Partial<ApprovableContent>)),
     ).not.toBe(contentFingerprint(content()));
+  });
+
+  it('a different rotating wording changes it; the variation index does not', () => {
+    const withSources = (text: string, index: number) =>
+      content({
+        metadata: {
+          hashtags: ['coffee'],
+          firstComment: 'Link in bio',
+          schedule: {
+            recurrence: {
+              freq: 'daily',
+              interval: 1,
+              ends: { type: 'never' },
+              rotateVariations: true,
+              seriesId: 's1',
+              occurrence: index + 1,
+              anchorDate: '2026-11-01',
+              time: '09:00',
+              variations: { x: { text, index } },
+            },
+          },
+        },
+      });
+    expect(contentFingerprint(withSources('{a|b}', 1))).toBe(
+      contentFingerprint(withSources('{a|b}', 0)),
+    );
+    expect(contentFingerprint(withSources('{a|c}', 0))).not.toBe(
+      contentFingerprint(withSources('{a|b}', 0)),
+    );
+  });
+
+  it.each([
+    [
+      'the time it goes out',
+      {
+        schedule: { mode: 'all_same_time', scheduleAt: '2026-12-01T09:00:00Z' },
+      },
+    ],
+    ['its campaign and labels', { campaignId: 'c1', labels: ['x'] }],
+    ['its approval', { approval: { required: true } }],
+    ['a publish report', { mediaWarning: 'Some media was left out' }],
+    [
+      'the composer marker and its draft name',
+      { source: 'composer', title: 'My draft' },
+    ],
+    ['the a-time-per-channel family', { scheduleGroupId: 'g1' }],
+  ])('does not change with %s', (_what, extra) => {
+    const base = { hashtags: ['coffee'], firstComment: 'Link in bio' };
+    expect(
+      contentFingerprint(content({ metadata: { ...base, ...extra } })),
+    ).toBe(contentFingerprint(content({ metadata: base })));
+  });
+
+  it("a series' place and anchor do not change it, its rule does", () => {
+    const rule = { freq: 'weekly', interval: 1, ends: { type: 'never' } };
+    const at = (occurrence: number, interval = 1) =>
+      contentFingerprint(
+        content({
+          metadata: {
+            hashtags: ['coffee'],
+            firstComment: 'Link in bio',
+            schedule: {
+              recurrence: {
+                ...rule,
+                interval,
+                seriesId: 's',
+                occurrence,
+                anchorDate: '2026-11-0' + occurrence,
+                time: '09:00',
+              },
+            },
+          },
+        }),
+      );
+    expect(at(2)).toBe(at(1));
+    expect(at(1, 2)).not.toBe(at(1));
+  });
+
+  it('a row with no covered metadata keeps its pre-metadata fingerprint', () => {
+    // Grants made before metadata was covered stay valid for such rows.
+    const bare = content({ metadata: { approval: { required: true } } });
+    const { metadata: _m, ...rest } = bare;
+    void _m;
+    const legacy = contentFingerprint({ ...rest, metadata: undefined });
+    expect(contentFingerprint(bare)).toBe(legacy);
   });
 });
 

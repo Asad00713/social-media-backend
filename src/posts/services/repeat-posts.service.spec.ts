@@ -2,6 +2,12 @@
 import { getTableName } from 'drizzle-orm';
 import { RepeatPostsService } from './repeat-posts.service';
 import { seriesPostId } from '../lib/recurrence';
+import {
+  approvalState,
+  contentFingerprint,
+  newApprovalRequest,
+  readApproval,
+} from '../lib/draft-approval';
 
 const AT = new Date('2026-10-15T04:30:00Z'); // Thu 9:30 AM Karachi
 const NOW = new Date('2026-10-15T04:30:05Z');
@@ -51,7 +57,13 @@ const post = (over: any = {}): any => ({
 });
 
 function make(
-  opts: { inserted?: boolean; existing?: any; workspaceLive?: boolean } = {},
+  opts: {
+    inserted?: boolean;
+    existing?: any;
+    workspaceLive?: boolean;
+    /** Whether the workspace approval policy covers the author. */
+    covers?: boolean;
+  } = {},
 ) {
   const inserts: any[] = [];
   const db = {
@@ -104,8 +116,14 @@ function make(
   };
   const queue = { add: jest.fn(async () => ({})) };
   const calendar = { syncPost: jest.fn(async () => undefined) };
-  const svc = new RepeatPostsService(db as any, queue as any, calendar as any);
-  return { svc, db, queue, calendar, inserts };
+  const policy = { coversAuthor: jest.fn(async () => opts.covers ?? false) };
+  const svc = new RepeatPostsService(
+    db as any,
+    queue as any,
+    calendar as any,
+    policy as any,
+  );
+  return { svc, db, queue, calendar, inserts, policy };
 }
 
 describe('RepeatPostsService.ensureNext', () => {
@@ -370,5 +388,75 @@ describe('RepeatPostsService.ensureNext with "Use your variations"', () => {
     expect(inserts[0].metadata.schedule.recurrence).not.toHaveProperty(
       'variations',
     );
+  });
+
+  describe('"Needs approval"', () => {
+    const grantFor = (row: any) => ({
+      ...newApprovalRequest('u1', new Date('2026-10-01T00:00:00Z')),
+      approvedById: 'boss',
+      approvedAt: '2026-10-02T00:00:00.000Z',
+      approvedFingerprint: contentFingerprint(row),
+    });
+
+    it("a repeat rule added after the grant: a covered author's next post is a draft with no job", async () => {
+      // Approved as a one-off: the grant's fingerprint has no repeat rule.
+      const oneOff = post();
+      const { schedule: _s, ...metaNoRule } = oneOff.metadata;
+      void _s;
+      const approval = grantFor({ ...oneOff, metadata: metaNoRule });
+      const fired = post({ metadata: { ...oneOff.metadata, approval } });
+      const { svc, inserts, queue } = make({ covers: true });
+      await expect(svc.ensureNext(fired, NOW)).resolves.toBe(NEXT_ID);
+      expect(inserts).toHaveLength(1);
+      expect(inserts[0]).toMatchObject({ status: 'draft', jobId: null });
+      expect(queue.add).not.toHaveBeenCalled();
+    });
+
+    it('a grant voided by a metadata-only edit: the next post is a draft', async () => {
+      const original = post();
+      const approval = grantFor(original);
+      const fired = post({
+        metadata: { ...original.metadata, firstComment: 'edited', approval },
+      });
+      const { svc, inserts, queue } = make({ covers: true });
+      await svc.ensureNext(fired, NOW);
+      expect(inserts[0].status).toBe('draft');
+      expect(queue.add).not.toHaveBeenCalled();
+    });
+
+    it('a covered author with no approval at all: the next post is a draft that asks for one', async () => {
+      const { svc, inserts, queue } = make({ covers: true });
+      await svc.ensureNext(post(), NOW);
+      expect(inserts[0].status).toBe('draft');
+      expect(readApproval(inserts[0].metadata)).toMatchObject({
+        requestedById: 'u1',
+        approvedAt: null,
+        byPolicy: true,
+      });
+      expect(queue.add).not.toHaveBeenCalled();
+    });
+
+    it('an approved series goes on: the next post is scheduled with the grant re-pinned to it', async () => {
+      const original = post();
+      const fired = post({
+        metadata: { ...original.metadata, approval: grantFor(original) },
+      });
+      const { svc, inserts, queue } = make({ covers: true });
+      await svc.ensureNext(fired, NOW);
+      expect(inserts[0].status).toBe('scheduled');
+      expect(queue.add).toHaveBeenCalledTimes(1);
+      const next = inserts[0];
+      expect(next.metadata.approval.approvedById).toBe('boss');
+      expect(
+        approvalState(readApproval(next.metadata), contentFingerprint(next)),
+      ).toBe('approved');
+    });
+
+    it("an author the policy does not cover keeps today's behaviour: scheduled", async () => {
+      const { svc, inserts, queue } = make({ covers: false });
+      await svc.ensureNext(post(), NOW);
+      expect(inserts[0].status).toBe('scheduled');
+      expect(queue.add).toHaveBeenCalledTimes(1);
+    });
   });
 });

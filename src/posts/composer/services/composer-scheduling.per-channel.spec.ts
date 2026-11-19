@@ -321,6 +321,7 @@ describe('ComposerSchedulingService — a time per channel', () => {
       mediaItems: BASE.mediaItems,
       platformContent: PER_PLATFORM,
       targets: SPLIT().channels,
+      metadata: { hashtags: BASE.hashtags, mentions: BASE.mentions },
     });
 
     it('refuses an unapproved post before any write or job', async () => {
@@ -367,6 +368,7 @@ describe('ComposerSchedulingService — a time per channel', () => {
           mediaItems: row.mediaItems,
           platformContent: row.platformContent,
           targets: row.targets,
+          metadata: row.metadata,
         };
         expect(row.metadata.approval.approvedById).toBe('boss');
         expect(row.metadata.approval.approvedFingerprint).toBe(

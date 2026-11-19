@@ -513,6 +513,9 @@ export class PostService {
       platformContent:
         updateData.platformContent ?? existingPost.platformContent,
       targets: updateData.targets ?? existingPost.targets,
+      // A metadata-only edit (a legacy row's firstComment, thread, poll,
+      // title...) is a content change too: the publishers read them.
+      metadata: updateData.metadata ?? existingPost.metadata,
     };
     const willBeScheduled =
       dto.scheduledAt !== undefined

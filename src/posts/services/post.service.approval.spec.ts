@@ -107,7 +107,10 @@ const approved = (status = 'draft') => ({
       ...newApprovalRequest('u1'),
       approvedById: 'admin',
       approvedAt: '2026-11-01T00:00:00.000Z',
-      approvedFingerprint: contentFingerprint(base),
+      approvedFingerprint: contentFingerprint({
+        ...base,
+        metadata: { title: 'T' },
+      }),
     },
   },
 });
@@ -157,6 +160,41 @@ describe('PostService and "Needs approval"', () => {
     const set = writes.sets.find((s) => s.metadata);
     expect(set.metadata.approval.approvedById).toBe('admin');
     expect(set.metadata.title).toBe('T');
+  });
+
+  it("a metadata-only edit (a legacy row's first comment) withdraws the grant", async () => {
+    const svc = makeService(approved());
+    await svc.updatePost(
+      'p1',
+      WS,
+      'u1',
+      { metadata: { title: 'T', firstComment: 'buy now' } } as any,
+      'MEMBER',
+    );
+    const set = writes.sets.find((s) => s.metadata);
+    expect(set.metadata.firstComment).toBe('buy now');
+    expect(set.metadata.approval).toMatchObject({
+      approvedById: null,
+      approvedAt: null,
+    });
+  });
+
+  it('refuses to schedule an approved draft whose metadata changed in the same request', async () => {
+    const svc = makeService(approved());
+    expect(
+      await codeOf(
+        svc.updatePost(
+          'p1',
+          WS,
+          'u1',
+          {
+            scheduledAt: later(),
+            metadata: { title: 'T', poll: { options: ['a', 'b'] } },
+          } as any,
+          'MEMBER',
+        ),
+      ),
+    ).toBe('APPROVAL_STALE');
   });
 
   it('a draft edit withdraws the grant and a client cannot write one', async () => {
