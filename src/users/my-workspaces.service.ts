@@ -81,6 +81,7 @@ export class MyWorkspacesService {
 
   private async ownedRows(userId: string): Promise<Row[]> {
     const owner = alias(users, 'owner');
+    // A soft-deleted workspace is gone (migration 0088).
     return this.db
       .select(workspaceColumns(owner.name, owner.email))
       .from(workspace)
@@ -93,7 +94,6 @@ export class MyWorkspacesService {
         ),
       )
       .leftJoin(plans, eq(plans.code, subscriptions.planCode))
-      // A soft-deleted workspace is gone (migration 0088).
       .where(and(eq(workspace.ownerId, userId), liveWorkspaces()));
   }
 

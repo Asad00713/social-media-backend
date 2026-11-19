@@ -675,9 +675,9 @@ describeDb('WorkspaceTimezoneMoveService (database)', () => {
         db as never,
         run.publishing.queue as never,
       );
-      expect(
-        await reschedule.moveTo(ws, data.posts[1].id, NEW_YORK_9AM),
-      ).toBe('not-movable');
+      expect(await reschedule.moveTo(ws, data.posts[1].id, NEW_YORK_9AM)).toBe(
+        'not-movable',
+      );
       expect(run.publishing.added).toHaveLength(0);
     });
   });

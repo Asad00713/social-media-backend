@@ -413,10 +413,9 @@ describeDb('WorkspaceService delete (database)', () => {
   it('the preview does not count a soft-deleted scheduled post', async () => {
     await withRollbackDb(MIGRATIONS, async (db, client) => {
       const { ws, scheduled } = await seedAcme(client);
-      await client.query(
-        `UPDATE posts SET deleted_at = now() WHERE id = $1`,
-        [scheduled[0]],
-      );
+      await client.query(`UPDATE posts SET deleted_at = now() WHERE id = $1`, [
+        scheduled[0],
+      ]);
       const { service } = makeService(db as never, null);
 
       expect((await service.deletionPreview(ws)).scheduledPosts).toBe(3);
@@ -440,9 +439,9 @@ describeDb('WorkspaceService delete (database)', () => {
       expect((await codeOf(service.remove(ws, ownerId, 'Acme')))?.status).toBe(
         404,
       );
-      expect(
-        (await softDeleteMark(client, ws)).deleted_at?.toISOString(),
-      ).toBe('2026-11-01T00:00:00.000Z');
+      expect((await softDeleteMark(client, ws)).deleted_at?.toISOString()).toBe(
+        '2026-11-01T00:00:00.000Z',
+      );
       expect(removed).toEqual([]);
       expect(subscriptionService.cancelForAccount).not.toHaveBeenCalled();
     });

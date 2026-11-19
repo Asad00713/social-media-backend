@@ -7,9 +7,13 @@ import { describeDb, withRollbackDb } from '../planner/testing/rollback-db';
 import { CloudflareR2Service } from '../media/cloudflare-r2.service';
 import { WorkspaceService } from './workspace.service';
 
-// 0091 adds the workspace columns this service selects and writes. The
-// harness applies each file twice, so it must stay idempotent.
-const MIGRATIONS = ['0091_workspace_settings.sql'];
+// 0091 adds the workspace columns this service selects and writes; 0088
+// (main) workspace.deleted_at, which every read filters on. The harness
+// applies each file twice, so both must stay idempotent.
+const MIGRATIONS = [
+  '0088_soft_delete_posts_workspaces.sql',
+  '0091_workspace_settings.sql',
+];
 
 // A real R2 service with a fixed public base: the own-URL rule runs for real
 // and nothing ever leaves the process (no key means no client call is made).
@@ -223,6 +227,25 @@ describeDb('WorkspaceService General (database)', () => {
         [ws],
       );
       expect((await failure(svc.findDetail(ws))).status).toBe(403);
+    });
+  });
+
+  it('a soft-deleted workspace is a 404 for the General read, the defaults read and the PATCH, which writes nothing', async () => {
+    await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const { workspaceId: ws } = await seedWorkspace(client);
+      await client.query(
+        `UPDATE workspace SET deleted_at = now() WHERE id = $1`,
+        [ws],
+      );
+      const before = await row(client, ws);
+      const svc = makeService(db as never);
+
+      expect((await failure(svc.findDetail(ws))).status).toBe(404);
+      expect((await failure(svc.getPublishingDefaults(ws))).status).toBe(404);
+      expect(
+        (await failure(svc.update(ws, { name: 'Renamed' } as never))).status,
+      ).toBe(404);
+      expect(await row(client, ws)).toEqual(before);
     });
   });
 });

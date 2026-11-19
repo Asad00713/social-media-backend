@@ -681,7 +681,7 @@ export class WorkspaceMembersService {
     currentUserId: string,
   ) {
     const workspaceData = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
     });
     if (!workspaceData) {
       throw new NotFoundException('Workspace not found');
@@ -1178,7 +1178,7 @@ export class WorkspaceMembersService {
    */
   async leaveWorkspace(workspaceId: string, userId: string): Promise<void> {
     const workspaceData = await this.db.query.workspace.findFirst({
-      where: eq(workspace.id, workspaceId),
+      where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
       columns: { ownerId: true },
     });
     if (!workspaceData) {
