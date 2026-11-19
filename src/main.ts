@@ -6,22 +6,37 @@ import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
 import express from 'express';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppLoggerService } from './logs/app-logger.service';
 import { LogWriterService } from './logs/log-writer.service';
 import { AllExceptionsFilter } from './logs/all-exceptions.filter';
-import {
-  REQUEST_ID_HEADER,
-  requestIdMiddleware,
-} from './logs/request-context';
+import { REQUEST_ID_HEADER, requestIdMiddleware } from './logs/request-context';
 import { SAMPLE_ASSET_ROUTE } from './media-library/samples/sample-content';
 import { sampleAssetsMiddleware } from './media-library/samples/sample-assets';
+import { bodyShapeMiddleware } from './common/validation/body-shape.middleware';
+
+/**
+ * The ceiling for a JSON or form body. See the note in `bootstrap` for why
+ * this number and why it is set through `useBodyParser`.
+ */
+const BODY_LIMIT = '256kb';
+
+/**
+ * `POST /media/upload/base64` takes a file inline as base64, so it needs a
+ * ceiling of its own. Base64 inflates by about a third, so this admits a file
+ * of roughly 15MB.
+ */
+const UPLOAD_BASE64_ROUTE = '/media/upload/base64';
+const UPLOAD_BASE64_LIMIT = '20mb';
 
 async function bootstrap() {
   // `rawBody: true` makes Nest buffer the unparsed request body onto
   // `req.rawBody` (alongside the normal parsed JSON). Stripe webhook signature
   // verification needs the exact bytes Stripe signed — see
   // BillingController.handleStripeWebhook.
-  const app = await NestFactory.create(AppModule, { rawBody: true });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    rawBody: true,
+  });
 
   // Every request gets an id first, before any parser or route, so even a
   // request that fails in a parser answers with an X-Request-Id header. The
@@ -61,7 +76,10 @@ async function bootstrap() {
       process.env.APP_URL,
       process.env.FRONTEND_URL,
       process.env.ADMIN_URL,
-    ].filter(Boolean),
+      // `.filter(Boolean)` does not narrow `string | undefined` away in
+      // TypeScript, and typing the app as NestExpressApplication makes
+      // `enableCors` strict enough to say so. Same runtime behaviour.
+    ].filter((o): o is string => Boolean(o)),
     credentials: true,
     // The frontend reads the PDF file name from Content-Disposition, and an
     // error's id from X-Request-Id ("Copy error ID" on an error toast).
@@ -73,6 +91,71 @@ async function bootstrap() {
   // This middleware matches only the Slack events endpoint; all other routes
   // continue to receive parsed JSON as usual.
   app.use('/webhooks/slack/events', express.raw({ type: 'application/json' }));
+
+  // Request body ceilings.
+  //
+  // The JSON parser was running with a 100kb limit nobody chose: Nest's
+  // adapter installs `express.json()` with no `limit`, so the number was
+  // whatever body-parser happened to default to — a ceiling in front of every
+  // route that moves on a dependency bump.
+  //
+  // `useBodyParser` rather than a bare `app.use(express.json(...))`, for two
+  // reasons that a probe made plain:
+  //
+  //   1. ONLY THE FIRST PARSER TO READ THE BODY COUNTS. A second
+  //      `express.json()` with a smaller limit is dead code — the body is
+  //      already parsed, so the new limit never applies. Measured: first=1mb
+  //      + second=256kb accepts a 300kb body (200), while first=100kb refuses
+  //      it (413). The limit has to be set on the parser that actually runs.
+  //   2. This is the API that keeps `rawBody`. Both the Stripe and the
+  //      LemonSqueezy webhooks verify their signature over `req.rawBody`
+  //      (billing.controller.ts), and a parser registered by hand would not
+  //      populate it — signature verification would fail for both providers,
+  //      i.e. a billing outage. `useBodyParser` passes the app's `rawBody`
+  //      option through to the parser's `verify` hook.
+  //
+  // Nest registers its own parsers inside `app.init()`, which runs on
+  // `listen()` — after this function — and skips a parser already applied.
+  // So these calls come first and are the ones that govern.
+  //
+  // 256kb, because a legitimate post is genuinely large: one post fans out to
+  // per-platform captions and the platforms' own caps add up (Facebook alone
+  // allows 63,206 characters). Summing every platform's cap plus ten media
+  // entries each puts the worst-case REAL body near 242kb, so a tighter limit
+  // would reject posts the composer invites people to write. Bulk routes are
+  // nowhere near it — `ArrayMaxSize(500)` UUIDs is about 19kb.
+  //
+  // Multipart uploads (`upload/file`, 100MB) never reach these parsers;
+  // multer reads those, with its own `limits.fileSize`.
+  //
+  // `upload/base64` is the one route that legitimately carries a whole file
+  // inline, so a post-sized ceiling would disable it. It is registered BEFORE
+  // the global parsers because the first parser to read the body wins, and it
+  // sets `rawBody` itself the same way Nest's does — this path is scoped to
+  // one route, so it cannot affect the webhook routes, but keeping the shape
+  // identical means nothing downstream has to care which parser ran.
+  //
+  // No client in any of our repos calls it today; the route is live and
+  // reachable, so it gets a limit that fits its job rather than one that
+  // silently breaks it.
+  app.use(
+    UPLOAD_BASE64_ROUTE,
+    express.json({
+      limit: UPLOAD_BASE64_LIMIT,
+      verify: (req: express.Request & { rawBody?: Buffer }, _res, buf) => {
+        req.rawBody = buf;
+      },
+    }),
+  );
+
+  app.useBodyParser('json', { limit: BODY_LIMIT });
+  app.useBodyParser('urlencoded', { extended: true, limit: BODY_LIMIT });
+
+  // Depth/size guard on the parsed body, before anything recurses over it.
+  // Must run after the parsers above and before the global ValidationPipe:
+  // class-transformer's `plainToInstance` recurses, so a deep body overflows
+  // the stack there rather than failing validation. See the middleware.
+  app.use(bodyShapeMiddleware());
 
   app.use(cookieParser());
 
