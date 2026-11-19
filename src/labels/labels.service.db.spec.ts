@@ -5,7 +5,11 @@ import { seedWorkspace } from '../inbox/testing/inbox-db';
 import { describeDb, withRollbackDb } from '../planner/testing/rollback-db';
 import { LabelsService } from './labels.service';
 
-const MIGRATIONS = ['0092_workspace_labels.sql'];
+// 0088: posts.deleted_at, which the usage counts read.
+const MIGRATIONS = [
+  '0088_soft_delete_posts_workspaces.sql',
+  '0092_workspace_labels.sql',
+];
 
 async function seedPost(
   client: PoolClient,
@@ -344,6 +348,37 @@ describeDb('LabelsService (database)', () => {
         lastUsedAt: '2026-11-02T10:00:00.000Z',
       });
       expect(await svc.catalogueNames(ws)).toEqual(['Alpha', 'Beta', 'zeta']);
+    });
+  });
+
+  it('a soft-deleted post neither counts nor sets last use; a label used only by one still lists, at 0', async () => {
+    await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const { workspaceId: ws, ownerId } = await seedWorkspace(client);
+      const svc = new LabelsService(db);
+      const kept = await svc.create(ws, ownerId, { name: 'Kept' });
+      const orphan = await svc.create(ws, ownerId, { name: 'Orphan' });
+      const live = await seedPost(client, ws, ownerId);
+      const gone = await seedPost(client, ws, ownerId);
+      await tag(client, live, kept.id, '2026-11-01T10:00:00Z');
+      await tag(client, gone, kept.id, '2026-11-05T10:00:00Z');
+      await tag(client, gone, orphan.id, '2026-11-05T10:00:00Z');
+      await client.query(`UPDATE posts SET deleted_at = now() WHERE id = $1`, [
+        gone,
+      ]);
+
+      const { labels } = await svc.list(ws);
+      expect(labels).toEqual([
+        expect.objectContaining({
+          id: kept.id,
+          postCount: 1,
+          lastUsedAt: '2026-11-01T10:00:00.000Z',
+        }),
+        expect.objectContaining({
+          id: orphan.id,
+          postCount: 0,
+          lastUsedAt: null,
+        }),
+      ]);
     });
   });
 

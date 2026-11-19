@@ -6,9 +6,11 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { and, count, eq, inArray, isNull, max, sql } from 'drizzle-orm';
+import { and, count, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { DbType } from '../drizzle/db';
 import { DRIZZLE } from '../drizzle/drizzle.module';
+import { posts } from '../drizzle/schema/posts.schema';
+import { livePosts } from '../posts/soft-delete/soft-delete';
 import {
   LABEL_COLORS,
   postLabels,
@@ -382,14 +384,21 @@ export class LabelsService {
     workspaceId: string,
     labelId?: string,
   ): Promise<Label[]> {
+    // Usage counts live posts only: a soft-deleted post keeps its
+    // post_labels rows (for a restore) but is gone from every list, so it
+    // must not make a label look used. The join to posts carries the filter,
+    // so a label used only by deleted posts still lists, with 0.
     const rows = await tx
       .select({
         label: workspaceLabels,
-        postCount: count(postLabels.postId),
-        lastUsedAt: max(postLabels.createdAt),
+        postCount: count(posts.id),
+        lastUsedAt: sql<
+          Date | string | null
+        >`max(CASE WHEN ${posts.id} IS NOT NULL THEN ${postLabels.createdAt} END)`,
       })
       .from(workspaceLabels)
       .leftJoin(postLabels, eq(postLabels.labelId, workspaceLabels.id))
+      .leftJoin(posts, and(eq(posts.id, postLabels.postId), livePosts()))
       .where(
         and(
           this.live(workspaceId),
