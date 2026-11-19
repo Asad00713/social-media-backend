@@ -428,7 +428,7 @@ describe('EvergreenService.addVariation', () => {
 
     const dto = await service.addVariation(WORKSPACE_ID, CAMPAIGN_ID, CATEGORY_ID, POST_ID, {
       caption: 'Manual caption',
-    });
+    }, 'actor-1');
 
     expect(postRows[0].variations).toHaveLength(1);
     expect(postRows[0].variations[0]).toMatchObject({

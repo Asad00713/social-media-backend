@@ -15,6 +15,7 @@ import type { CallerRole } from '../posts/guest-rules';
 import { roleCan } from '../workspace-members/role-capabilities';
 import type { PostCommentDto } from './dto/post-comments.dto';
 import { livePosts } from '../posts/soft-delete/soft-delete';
+import { displayNameOrNull } from '../users/display-name';
 
 /**
  * True when Postgres says the table does not exist (42P01): the code is
@@ -39,7 +40,8 @@ const canModerate = (role: CallerRole): boolean =>
   role === 'SUPER_ADMIN' ||
   (role !== undefined && roleCan(role, MODERATE_CAPABILITY));
 
-type Author = { name: string; avatarUrl: string | null };
+/** `name` null: a deleted account (the client shows "Deleted user"). */
+type Author = { name: string | null; avatarUrl: string | null };
 
 /**
  * Team comments on a post. Every read and write is scoped to the workspace
@@ -80,7 +82,11 @@ export class PostCommentsService {
           r.comment,
           r.comment.userId
             ? {
-                name: r.authorName || r.authorEmail || 'A teammate',
+                name: displayNameOrNull(
+                  r.authorName,
+                  r.authorEmail,
+                  'A teammate',
+                ),
                 avatarUrl: r.authorAvatar ?? null,
               }
             : null,
@@ -170,7 +176,13 @@ export class PostCommentsService {
     const [post] = await this.db
       .select({ id: posts.id })
       .from(posts)
-      .where(and(eq(posts.id, postId), eq(posts.workspaceId, workspaceId), livePosts()));
+      .where(
+        and(
+          eq(posts.id, postId),
+          eq(posts.workspaceId, workspaceId),
+          livePosts(),
+        ),
+      );
     if (!post) throw new NotFoundException('Post not found');
   }
 

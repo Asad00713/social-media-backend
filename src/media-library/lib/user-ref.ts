@@ -1,5 +1,6 @@
 import { users } from '../../drizzle/schema/users.schema';
 import type { UserRef } from '../dto/contract';
+import { isAnonymisedEmail } from '../../users/display-name';
 
 export interface UserRefRow {
   id: string;
@@ -21,13 +22,17 @@ export const USER_REF_COLUMNS = {
 
 /**
  * A joined `users` row as the contract's `UserRef`. A user with no name (null
- * or empty) shows the local part of their email, never an empty label.
+ * or empty) shows the local part of their email, never an empty label. A
+ * deleted account is `name: null` (the client shows "Deleted user"), never
+ * the `deleted+<uuid>` local part of its placeholder address.
  */
 export function toUserRef(row: UserRefRow | null): UserRef | null {
   if (!row) return null;
   return {
     id: row.id,
-    name: row.name || row.email.split('@')[0],
+    name: isAnonymisedEmail(row.email)
+      ? null
+      : row.name || row.email.split('@')[0],
     avatarUrl: row.avatarUrl,
   };
 }

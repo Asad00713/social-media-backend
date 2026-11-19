@@ -34,7 +34,8 @@ export type R2MediaKind =
   | 'file'
   | 'composer-video'
   | 'composer-document'
-  | 'avatar';
+  | 'avatar'
+  | 'workspace-logo';
 
 const KIND_TO_PREFIX: Record<R2MediaKind, string> = {
   image: 'inbox/images',
@@ -57,7 +58,27 @@ const KIND_TO_PREFIX: Record<R2MediaKind, string> = {
   // media — an avatar deleted after 90 days would leave a hole in every list
   // the user appears in.
   avatar: 'avatars',
+  // A workspace's logo belongs to the WORKSPACE, so its key keeps the
+  // workspace segment (unlike an avatar) and a deleted workspace's logos can
+  // be found by prefix. Separate from `avatars` so the two never share a
+  // lifecycle rule.
+  'workspace-logo': 'workspace-logos',
 };
+
+/**
+ * The user segment of every key this service issues: the id with anything
+ * but letters, digits and '-' removed, cut to 12 characters. One rule, so a
+ * caller that must recognise a person's own keys (the account delete) builds
+ * exactly the segment the upload did.
+ */
+export function safeKeyUserId(userId: string): string {
+  return userId.replace(/[^a-zA-Z0-9-]/g, '').slice(0, 12);
+}
+
+/** The folder a person's avatars are uploaded into: `avatars/<safeUserId>/`. */
+export function avatarKeyFolder(userId: string): string {
+  return `${KIND_TO_PREFIX.avatar}/${safeKeyUserId(userId)}/`;
+}
 
 const MAX_BYTES: Record<R2MediaKind, number> = {
   image: 10 * 1024 * 1024, // 10 MB
@@ -76,6 +97,9 @@ const MAX_BYTES: Record<R2MediaKind, number> = {
   // buys nothing visible and is paid for on every screen that lists people.
   // The DTO enforces the same number before a URL is ever signed.
   avatar: 2 * 1024 * 1024,
+  // 2 MB, the same ceiling as an avatar: a logo is drawn at thumbnail size in
+  // the sidebar, switcher and emails. PresignLogoDto enforces it first.
+  'workspace-logo': 2 * 1024 * 1024,
 };
 
 /** The five types LinkedIn's Documents API takes, without parameters. */
@@ -99,6 +123,9 @@ const ALLOWED_MIME: Record<R2MediaKind, RegExp> = {
   // places at once, where an animated GIF is a dozen loops running behind a
   // list, and HEIC does not decode in Chrome or Firefox at all.
   avatar: /^image\/(jpeg|png|webp)(;.*)?$/i,
+  // PNG and JPEG only: a logo with transparency or a photo-like mark is
+  // covered, and the WebP/GIF/HEIC decode and animation cases are not.
+  'workspace-logo': /^image\/(png|jpeg)$/i,
 };
 
 /**
@@ -225,7 +252,7 @@ export class CloudflareR2Service {
 
     const ext = this.extensionFor(contentType, filename);
     const id = crypto.randomBytes(12).toString('hex');
-    const safeUserId = userId.replace(/[^a-zA-Z0-9-]/g, '').slice(0, 12);
+    const safeUserId = safeKeyUserId(userId);
     // An avatar belongs to the person, not to a workspace — the same face
     // follows them into every workspace they join — so its key leaves the
     // workspace segment out. Every other kind is workspace media, and its
@@ -301,23 +328,50 @@ export class CloudflareR2Service {
    * True when `url` is one this service handed out for `kind`.
    *
    * A client that uploads a file then PATCHes the resulting URL back is
-   * trusted to send the right string — and a hostile one is trusted to send
-   * any string at all. Without this, a stored avatar URL could point anywhere:
-   * a tracking pixel that fires on every page listing that user, or an image
-   * that changes after review. Checking the base and prefix costs nothing and
-   * turns "any URL" into "a file we issued".
+   * trusted to send the right string, and a hostile one is trusted to send
+   * any string at all. Without this, a stored URL could point anywhere: a
+   * tracking pixel, or any other object in the bucket.
    *
-   * Not proof the CALLER uploaded it — one user could pass another's avatar
-   * URL, which shows them someone else's face and nothing more.
+   * The check is on the KEY, not on a prefix: the URL must sit under the
+   * public base and the rest must match exactly what `createPresignedUpload`
+   * builds for that kind (fixed prefix, then for workspace media the
+   * workspace id and a user segment, then `<ms>-<24 hex><ext>`). A prefix
+   * check alone is bypassed by `%2e%2e`, which the URL parser turns into a
+   * parent segment, so any `%` is refused outright and nothing is left for
+   * normalisation to change.
+   *
+   * Every kind except `avatar` is workspace media: pass the `workspaceId` the
+   * URL must belong to, or the answer is false. Not proof the CALLER uploaded
+   * it: one user could pass another's avatar URL, which shows them someone
+   * else's face and nothing more.
    */
-  isOwnPublicUrl(url: string, kind: R2MediaKind): boolean {
+  isOwnPublicUrl(
+    url: string,
+    kind: R2MediaKind,
+    workspaceId?: string,
+  ): boolean {
     if (!this.publicUrlBase || !url) return false;
-    const prefix = `${this.publicUrlBase}/${KIND_TO_PREFIX[kind]}/`;
-    if (!url.startsWith(prefix)) return false;
-    // No traversal, no query, no fragment: the key we build has none of them,
-    // so anything carrying one was not built here.
-    const key = url.slice(prefix.length);
-    return key.length > 0 && !/[?#]/.test(key) && !key.includes('..');
+    if (/[%?#\\\s]|\.\./.test(url)) return false;
+
+    const base = `${this.publicUrlBase}/`;
+    if (!url.startsWith(base)) return false;
+    try {
+      if (new URL(url).origin !== new URL(base).origin) return false;
+    } catch {
+      return false;
+    }
+
+    const prefix = KIND_TO_PREFIX[kind];
+    // Same shape as safeUserId and safeKeyExtension in createPresignedUpload.
+    const tail = String.raw`[A-Za-z0-9-]{1,12}/\d+-[0-9a-f]{24}(?:\.[a-z0-9]{1,8})?`;
+    let keyPattern: RegExp;
+    if (kind === 'avatar') {
+      keyPattern = new RegExp(`^${prefix}/${tail}$`);
+    } else {
+      if (!workspaceId || !/^[A-Za-z0-9-]+$/.test(workspaceId)) return false;
+      keyPattern = new RegExp(`^${prefix}/${workspaceId}/${tail}$`);
+    }
+    return keyPattern.test(url.slice(base.length));
   }
 
   /**

@@ -52,7 +52,11 @@ export class SaveDraftDto {
   @IsUUID()
   campaignId?: string | null;
 
-  /** Free-form labels (`metadata.labels`). Leaving the key out keeps them. */
+  /**
+   * Label names (`post_labels`), matched case-insensitively to the
+   * workspace's labels; an unknown name creates one. Leaving the key out
+   * keeps them; `[]` or `null` clears them.
+   */
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(MAX_LABELS)

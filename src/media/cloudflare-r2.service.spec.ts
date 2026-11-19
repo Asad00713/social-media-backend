@@ -126,6 +126,181 @@ describe('CloudflareR2Service composer-document presign', () => {
   });
 });
 
+// A workspace logo: PNG or JPEG, 2 MB, keyed under the workspace. No live
+// call is made: signing a URL is local, and the SDK never contacts R2 here.
+describe('CloudflareR2Service workspace-logo presign', () => {
+  const env: Record<string, string> = {
+    CLOUDFLARE_R2_ACCOUNT_ID: 'acct',
+    CLOUDFLARE_R2_ACCESS_KEY_ID: 'key',
+    CLOUDFLARE_R2_SECRET_ACCESS_KEY: 'secret',
+    CLOUDFLARE_R2_BUCKET: 'bucket',
+    CLOUDFLARE_R2_PUBLIC_URL: 'https://pub.r2.dev',
+  };
+  const service = new CloudflareR2Service({
+    get: (name: string, fallback?: string) => env[name] ?? fallback,
+  } as unknown as ConfigService);
+  const presign = (contentType: string, sizeBytes = 1024, filename?: string) =>
+    service.createPresignedUpload({
+      workspaceId: 'ws-1',
+      userId: 'user-1',
+      kind: 'workspace-logo',
+      contentType,
+      sizeBytes,
+      filename,
+    });
+
+  it.each([
+    ['image/png', 'logo.png', '.png'],
+    ['image/jpeg', 'logo.jpg', '.jpg'],
+  ])('takes %s under workspace-logos/<workspace>', async (type, name, ext) => {
+    const res = await presign(type, 1024, name);
+    expect(res.key).toMatch(
+      /^workspace-logos\/ws-1\/user-1\/\d+-[0-9a-f]{24}\.[a-z]+$/,
+    );
+    expect(res.key.endsWith(ext)).toBe(true);
+    expect(res.publicUrl).toBe(`https://pub.r2.dev/${res.key}`);
+  });
+
+  it.each(['image/webp', 'image/gif', 'image/svg+xml', 'image/png;x=1', ''])(
+    'refuses %p',
+    async (type) => {
+      await expect(presign(type)).rejects.toBeInstanceOf(BadRequestException);
+    },
+  );
+
+  it('refuses a file over 2 MB and takes one at exactly 2 MB', async () => {
+    const limit = 2 * 1024 * 1024;
+    await expect(presign('image/png', limit + 1)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    await expect(presign('image/png', 0)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    await expect(presign('image/png', limit)).resolves.toBeDefined();
+  });
+
+  describe('isOwnPublicUrl', () => {
+    const HEX = 'a'.repeat(24);
+    const logo = (ws = 'ws-1', rest = `user-1/1700000000000-${HEX}.png`) =>
+      `https://pub.r2.dev/workspace-logos/${ws}/${rest}`;
+    const own = (url: string, ws = 'ws-1') =>
+      service.isOwnPublicUrl(url, 'workspace-logo', ws);
+
+    it('accepts the URL its own presign returns, for that workspace only', async () => {
+      const { publicUrl } = await presign('image/png', 1024, 'l.png');
+      expect(own(publicUrl)).toBe(true);
+      expect(own(publicUrl, 'ws-2')).toBe(false);
+    });
+
+    it('accepts a well-formed key, with or without an extension', () => {
+      expect(own(logo())).toBe(true);
+      expect(own(logo('ws-1', `user-1/1700000000000-${HEX}`))).toBe(true);
+    });
+
+    it("refuses another workspace's logo URL", () => {
+      expect(own(logo('ws-2'), 'ws-1')).toBe(false);
+      expect(own(logo('ws-1'), 'ws-2')).toBe(false);
+    });
+
+    it('refuses to answer without a workspace id', () => {
+      expect(service.isOwnPublicUrl(logo(), 'workspace-logo')).toBe(false);
+      expect(service.isOwnPublicUrl(logo(), 'workspace-logo', '')).toBe(false);
+    });
+
+    it.each([
+      [
+        'lower-case encoded dots',
+        'https://pub.r2.dev/workspace-logos/%2e%2e/avatars/u/1-a.png',
+      ],
+      [
+        'upper-case encoded dots',
+        'https://pub.r2.dev/workspace-logos/%2E%2E/avatars/u/1-a.png',
+      ],
+      [
+        'mixed encoded dots',
+        'https://pub.r2.dev/workspace-logos/.%2e/inbox/x.png',
+      ],
+      [
+        'an encoded slash',
+        `https://pub.r2.dev/workspace-logos/ws-1/user-1%2f1700000000000-${'a'.repeat(24)}.png`,
+      ],
+      ['literal dots', 'https://pub.r2.dev/workspace-logos/../x.png'],
+      ['a query', `${logo()}?x=1`],
+      ['a fragment', `${logo()}#x`],
+      [
+        'a backslash',
+        `https://pub.r2.dev/workspace-logos/ws-1/user-1\\1700000000000-${'a'.repeat(24)}.png`,
+      ],
+      [
+        'a foreign origin',
+        `https://evil.test/workspace-logos/ws-1/user-1/1700000000000-${'a'.repeat(24)}.png`,
+      ],
+      [
+        'a look-alike origin',
+        `https://pub.r2.dev.evil.test/workspace-logos/ws-1/user-1/1700000000000-${'a'.repeat(24)}.png`,
+      ],
+      [
+        'userinfo before the host',
+        `https://pub.r2.dev@evil.test/workspace-logos/ws-1/user-1/1700000000000-${'a'.repeat(24)}.png`,
+      ],
+      [
+        'an avatar URL',
+        `https://pub.r2.dev/avatars/user-1/1700000000000-${'a'.repeat(24)}.png`,
+      ],
+      [
+        'an extra path segment',
+        logo('ws-1', `x/user-1/1700000000000-${HEX}.png`),
+      ],
+      ['a short random part', logo('ws-1', 'user-1/1700000000000-abc.png')],
+      ['an unsafe extension', logo('ws-1', `user-1/1700000000000-${HEX}.p-g`)],
+      ['no key at all', 'https://pub.r2.dev/workspace-logos/ws-1/'],
+      ['whitespace', ` ${logo()}`],
+    ])('refuses %s', (_label, url) => {
+      expect(own(url)).toBe(false);
+    });
+  });
+
+  describe('isOwnPublicUrl for avatars', () => {
+    const HEX = 'b'.repeat(24);
+    const avatar = (rest = `user-1/1700000000000-${HEX}.png`) =>
+      `https://pub.r2.dev/avatars/${rest}`;
+    const own = (url: string) => service.isOwnPublicUrl(url, 'avatar');
+
+    it('still accepts an avatar from its own presign and a well-formed key', async () => {
+      const res = await service.createPresignedUpload({
+        workspaceId: 'user',
+        userId: 'user-1',
+        kind: 'avatar',
+        contentType: 'image/png',
+        sizeBytes: 1024,
+      });
+      expect(own(res.publicUrl)).toBe(true);
+      expect(own(avatar())).toBe(true);
+    });
+
+    it.each([
+      [
+        'a logo URL',
+        `https://pub.r2.dev/workspace-logos/ws-1/user-1/1700000000000-${'b'.repeat(24)}.png`,
+      ],
+      ['encoded dots', 'https://pub.r2.dev/avatars/%2e%2e/inbox/x.png'],
+      [
+        'upper-case encoded dots',
+        'https://pub.r2.dev/avatars/%2E%2E/inbox/x.png',
+      ],
+      ['literal dots', 'https://pub.r2.dev/avatars/../inbox/x.png'],
+      ['a query', `${avatar()}?x=1`],
+      [
+        'a foreign origin',
+        `https://evil.test/avatars/user-1/1700000000000-${'b'.repeat(24)}.png`,
+      ],
+      ['a non-issued name', 'https://pub.r2.dev/avatars/u/1-a.png'],
+    ])('refuses %s', (_label, url) => {
+      expect(own(url)).toBe(false);
+    });
+  });
+});
+
 // A 42 MB video on a ~1 Mbps uplink needs ~5.5 minutes just to send: the URL
 // must outlive that, scaled to the file, while small files keep five minutes.
 describe('presignExpirySeconds', () => {

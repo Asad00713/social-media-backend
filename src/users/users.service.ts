@@ -35,11 +35,14 @@ export type PublicUser = Pick<
   | 'useCase'
   | 'avatarUrl'
   | 'avatarColor'
+  | 'passwordChangedAt'
   | 'createdAt'
   | 'updatedAt'
 > & {
   /** False for a Google-only account; the hash itself never leaves the server. */
   hasPassword: boolean;
+  /** True when a Google account is linked; the Google id itself never leaves the server. */
+  hasGoogle: boolean;
 };
 
 /**
@@ -63,16 +66,21 @@ const PUBLIC_USER_COLUMNS = {
   useCase: true,
   avatarUrl: true,
   avatarColor: true,
+  passwordChangedAt: true,
   createdAt: true,
   updatedAt: true,
 } as const;
 
 /**
- * `hasPassword`, computed in SQL next to PUBLIC_USER_COLUMNS, so a public read
- * never loads the password hash at all.
+ * `hasPassword` and `hasGoogle`, computed in SQL next to PUBLIC_USER_COLUMNS,
+ * so a public read never loads the password hash or the Google id at all.
  */
-const PUBLIC_USER_EXTRAS = (fields: { password: typeof users.password }) => ({
+const PUBLIC_USER_EXTRAS = (fields: {
+  password: typeof users.password;
+  googleSub: typeof users.googleSub;
+}) => ({
   hasPassword: sql<boolean>`${fields.password} is not null`.as('has_password'),
+  hasGoogle: sql<boolean>`${fields.googleSub} is not null`.as('has_google'),
 });
 
 /** Narrow a full row to the public shape. Counterpart to PUBLIC_USER_COLUMNS
@@ -80,6 +88,7 @@ const PUBLIC_USER_EXTRAS = (fields: { password: typeof users.password }) => ({
 export function toPublicUser(row: User): PublicUser {
   return {
     hasPassword: row.password !== null,
+    hasGoogle: row.googleSub !== null,
     id: row.id,
     email: row.email,
     name: row.name,
@@ -91,6 +100,7 @@ export function toPublicUser(row: User): PublicUser {
     useCase: row.useCase,
     avatarUrl: row.avatarUrl,
     avatarColor: row.avatarColor,
+    passwordChangedAt: row.passwordChangedAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -161,6 +171,8 @@ export class UsersService {
       isActive: boolean;
       suspendedReason: string | null;
       sessionsRevokedAt: Date | null;
+      /** Set once the account is soft-deleted (AccountDeletionService). */
+      deletedAt: Date | null;
     }
   > {
     const user = await this.db.query.users.findFirst({
@@ -170,6 +182,7 @@ export class UsersService {
         isActive: true,
         suspendedReason: true,
         sessionsRevokedAt: true,
+        deletedAt: true,
       },
       extras: PUBLIC_USER_EXTRAS,
     });
@@ -304,6 +317,8 @@ export class UsersService {
                 password = ${hashedPassword},
                 password_reset_token = NULL,
                 password_reset_token_expires_at = NULL,
+                -- When the password last changed, shown in Settings (migration 0092).
+                password_changed_at = ${now},
                 -- Ends every session in the same write (migration 0070).
                 sessions_revoked_at = ${now},
                 updated_at = ${now}
@@ -412,16 +427,6 @@ export class UsersService {
         updatedAt: new Date(),
       })
       .where(eq(users.id, userId));
-  }
-
-  async remove(id: string): Promise<void> {
-    const user = await this.findOne(id);
-
-    if (!user) {
-      throw new NotFoundException(`User with ID ${id} not found`);
-    }
-
-    await this.db.delete(users).where(eq(users.id, id));
   }
 
   /**

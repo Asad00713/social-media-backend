@@ -21,11 +21,13 @@ import {
   type VersionDetails,
 } from '../lib/draft-versions';
 import { livePosts } from '../../soft-delete/soft-delete';
+import { displayNameOrNull } from '../../../users/display-name';
 
 export interface DraftVersionDto {
   id: string;
   createdAt: string;
-  author: { id: string; name: string; avatarUrl: string | null } | null;
+  /** `name` null: a deleted account (the client shows "Deleted user"). */
+  author: { id: string; name: string | null; avatarUrl: string | null } | null;
   change: VersionChange;
   /** The caption as it was, for "Copy text". */
   text: string;
@@ -134,7 +136,11 @@ export class DraftVersionsService {
         author: r.authorId
           ? {
               id: r.authorId,
-              name: r.authorName || r.authorEmail || 'A teammate',
+              name: displayNameOrNull(
+                r.authorName,
+                r.authorEmail,
+                'A teammate',
+              ),
               avatarUrl: r.authorAvatar ?? null,
             }
           : null,
@@ -197,7 +203,13 @@ export class DraftVersionsService {
     const [post] = await this.db
       .select({ status: posts.status, metadata: posts.metadata })
       .from(posts)
-      .where(and(eq(posts.id, postId), eq(posts.workspaceId, workspaceId), livePosts()))
+      .where(
+        and(
+          eq(posts.id, postId),
+          eq(posts.workspaceId, workspaceId),
+          livePosts(),
+        ),
+      )
       .limit(1);
     if (!post) throw new NotFoundException('Post not found');
     return post;

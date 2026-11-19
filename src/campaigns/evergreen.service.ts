@@ -37,6 +37,8 @@ import {
   selectVariation,
 } from './evergreen-rotation.util';
 import { CampaignPublishingService } from './campaign-publishing.service';
+import { ApprovalPolicyService } from '../posts/composer/services/approval-policy.service';
+import { canonicalJson } from '../posts/lib/draft-approval';
 import { QUEUES } from '../queue/queue.module';
 import { GroqService, type Platform } from '../ai/groq.service';
 import { AiTokenService } from '../ai/services/ai-token.service';
@@ -141,7 +143,25 @@ export class EvergreenService {
     private readonly rotationQueue: Queue,
     private readonly groq: GroqService,
     private readonly aiTokens: AiTokenService,
+    // Not @Optional: PostsModule exports it. Optional in the type only so
+    // the unit specs that build the service positionally need not pass it.
+    private readonly approvalPolicy?: ApprovalPolicyService,
   ) {}
+
+  /**
+   * The workspace approval policy: a pool post added to or changed in an
+   * ACTIVE campaign goes out on the next rotation with no per-post approval,
+   * so a covered person may not write one. A draft or paused campaign is
+   * free to edit: its launch and resume are gated instead.
+   */
+  private async assertMayChangeLivePool(
+    workspaceId: string,
+    campaign: Campaign,
+    actorId: string,
+  ): Promise<void> {
+    if (campaign.status !== 'active') return;
+    await this.approvalPolicy?.assertMayActivate(workspaceId, actorId);
+  }
 
   // ========================================================================
   // Assembly
@@ -381,8 +401,9 @@ export class EvergreenService {
     campaignId: string,
     categoryId: string,
     dto: UpdateEvergreenCategoryDto,
+    actorId: string,
   ): Promise<EvergreenCampaignDto> {
-    await this.loadOwnedCampaign(workspaceId, campaignId);
+    const campaign = await this.loadOwnedCampaign(workspaceId, campaignId);
 
     const [existing] = await db
       .select()
@@ -395,6 +416,20 @@ export class EvergreenService {
       );
     if (!existing) {
       throw new NotFoundException('Category not found');
+    }
+
+    // Where and when an ACTIVE campaign's approved pool goes out is part of
+    // what it publishes: a covered person may not redirect it.
+    const sameChannels = (a: unknown, b: unknown): boolean =>
+      canonicalJson([...((a as string[]) ?? [])].sort()) ===
+      canonicalJson([...((b as string[]) ?? [])].sort());
+    if (
+      (dto.channelIds !== undefined &&
+        !sameChannels(dto.channelIds, existing.channelIds)) ||
+      (dto.schedule !== undefined &&
+        canonicalJson(dto.schedule) !== canonicalJson(existing.schedule))
+    ) {
+      await this.assertMayChangeLivePool(workspaceId, campaign, actorId);
     }
 
     const updates: Partial<EvergreenCategory> = { updatedAt: new Date() };
@@ -417,11 +452,15 @@ export class EvergreenService {
     campaignId: string,
     categoryId: string,
     isActive: boolean,
+    actorId: string,
   ): Promise<EvergreenCampaignDto> {
-    await this.loadOwnedCampaign(workspaceId, campaignId);
+    const campaign = await this.loadOwnedCampaign(workspaceId, campaignId);
 
     const [existing] = await db
-      .select({ id: evergreenCategories.id })
+      .select({
+        id: evergreenCategories.id,
+        isActive: evergreenCategories.isActive,
+      })
       .from(evergreenCategories)
       .where(
         and(
@@ -431,6 +470,13 @@ export class EvergreenService {
       );
     if (!existing) {
       throw new NotFoundException('Category not found');
+    }
+
+    // Switching a category ON in an ACTIVE campaign puts its pool back into
+    // rotation with no per-post approval: gated like any live-pool change.
+    // Switching one off sends nothing new and stays free.
+    if (isActive && !existing.isActive) {
+      await this.assertMayChangeLivePool(workspaceId, campaign, actorId);
     }
 
     await db
@@ -494,9 +540,11 @@ export class EvergreenService {
     campaignId: string,
     categoryId: string,
     dto: CreateEvergreenPostDto,
+    actorId: string,
   ): Promise<EvergreenCampaignDto> {
-    await this.loadOwnedCampaign(workspaceId, campaignId);
+    const campaign = await this.loadOwnedCampaign(workspaceId, campaignId);
     await this.loadOwnedCategory(campaignId, categoryId);
+    await this.assertMayChangeLivePool(workspaceId, campaign, actorId);
 
     const recyclePolicy: RecyclePolicyJson = dto.recyclePolicy ?? {
       mode: 'forever',
@@ -521,9 +569,13 @@ export class EvergreenService {
     categoryId: string,
     postId: string,
     dto: UpdateEvergreenPostDto,
+    actorId: string,
   ): Promise<EvergreenCampaignDto> {
-    await this.loadOwnedCampaign(workspaceId, campaignId);
+    const campaign = await this.loadOwnedCampaign(workspaceId, campaignId);
     await this.loadOwnedCategory(campaignId, categoryId);
+    if (dto.content !== undefined) {
+      await this.assertMayChangeLivePool(workspaceId, campaign, actorId);
+    }
 
     const [existing] = await db
       .select({ id: evergreenPosts.id })
@@ -622,8 +674,10 @@ export class EvergreenService {
     postId: string,
     count = 3,
   ): Promise<EvergreenCampaignDto> {
-    await this.loadOwnedCampaign(workspaceId, campaignId);
+    const campaign = await this.loadOwnedCampaign(workspaceId, campaignId);
     await this.loadOwnedCategory(campaignId, categoryId);
+    // Before any AI tokens are spent.
+    await this.assertMayChangeLivePool(workspaceId, campaign, userId);
     const post = await this.loadOwnedPost(categoryId, postId);
 
     const platform = await this.resolvePlatform(categoryId, campaignId);
@@ -708,9 +762,11 @@ export class EvergreenService {
     categoryId: string,
     postId: string,
     dto: AddVariationDto,
+    actorId: string,
   ): Promise<EvergreenCampaignDto> {
-    await this.loadOwnedCampaign(workspaceId, campaignId);
+    const campaign = await this.loadOwnedCampaign(workspaceId, campaignId);
     await this.loadOwnedCategory(campaignId, categoryId);
+    await this.assertMayChangeLivePool(workspaceId, campaign, actorId);
     const post = await this.loadOwnedPost(categoryId, postId);
 
     const newVariation = {

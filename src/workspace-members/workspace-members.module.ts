@@ -3,6 +3,8 @@ import { WorkspaceMembersService } from './workspace-members.service';
 import { WorkspaceRoleModule } from './workspace-role.module';
 import { WorkspaceMembersController } from './workspace-members.controller';
 import { PublicInvitationsController } from './public-invitations.controller';
+import { JoinLinkController } from './join-link.controller';
+import { InviteLinkService } from './invite-link.service';
 import { PassportModule } from '@nestjs/passport';
 import { AuthModule } from 'src/auth/auth.module';
 import { JwtModule } from '@nestjs/jwt';
@@ -20,8 +22,12 @@ import { UsersModule } from 'src/users/users.module';
     UsersModule,
     WorkspaceRoleModule,
   ],
-  providers: [WorkspaceMembersService],
-  controllers: [WorkspaceMembersController, PublicInvitationsController],
+  providers: [WorkspaceMembersService, InviteLinkService],
+  controllers: [
+    WorkspaceMembersController,
+    PublicInvitationsController,
+    JoinLinkController,
+  ],
   // Re-export the role module so existing consumers of WorkspaceMembersModule
   // keep receiving WorkspaceRoleService / WorkspaceRoleGuard.
   //

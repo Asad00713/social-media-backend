@@ -30,6 +30,8 @@ export const QUEUES = {
   // Finalize of a soft-disconnected channel when its undo window closes.
   CHANNEL_DISCONNECT: 'channel-disconnect',
   PLATFORM_STATUS: 'platform-status',
+  // A workspace time-zone change too large to move its scheduled posts inline.
+  WORKSPACE_TZ_MOVE: 'workspace-tz-move',
 } as const;
 
 @Module({
@@ -93,6 +95,7 @@ export const QUEUES = {
       { name: QUEUES.EMAIL },
       { name: QUEUES.CHANNEL_DISCONNECT },
       { name: QUEUES.PLATFORM_STATUS },
+      { name: QUEUES.WORKSPACE_TZ_MOVE },
     ),
   ],
   providers: [RateLimiterService, WorkerDrainService],

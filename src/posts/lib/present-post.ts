@@ -120,7 +120,11 @@ export function plannerAt(
 
 export function presentPost(
   row: PostRow,
-  ctx: { users: Map<string, PlannerUserRef> },
+  ctx: {
+    users: Map<string, PlannerUserRef>;
+    /** Live label ids per post (post_labels); a post not in it has none. */
+    labelIds?: Map<string, string[]>;
+  },
 ): PlannerPostDto {
   const stored = (row.targets ?? []) as unknown as StoredTarget[];
   const metadata = (row.metadata ?? {}) as PlannerPostDto['metadata'];
@@ -143,6 +147,7 @@ export function presentPost(
       {}) as PlannerPostDto['platformContent'],
     metadata,
     campaignId: typeof campaignId === 'string' ? campaignId : null,
+    labelIds: ctx.labelIds?.get(row.id) ?? [],
     lastError: row.lastError,
     retryCount: row.retryCount,
     createdAt: row.createdAt.toISOString(),

@@ -72,13 +72,13 @@ describe('DraftStoreService.upsert keeps the first-week tag', () => {
       { id: 'd1', metadata: { title: 'mine' } },
     ]);
     await new DraftStoreService(db as any).upsert(WS, 'u1', dto());
-    expect(captured.updated.metadata.source).toBeUndefined();
+    expect(captured.updated.metadata.source).toBe('composer');
     expect(captured.updated.metadata.firstWeekSlot).toBeUndefined();
   });
 
   it('adds no first-week keys to a brand-new draft', async () => {
     const { db, captured } = fakeDb([]);
     await new DraftStoreService(db as any).upsert(WS, 'u1', dto());
-    expect(captured.inserted.metadata.source).toBeUndefined();
+    expect(captured.inserted.metadata.source).toBe('composer');
   });
 });

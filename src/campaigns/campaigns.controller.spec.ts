@@ -348,7 +348,7 @@ describe('CampaignsController (DB-mocked happy path)', () => {
       date: '2026-09-01',
       channelId: 'channel-1',
       patch: { caption: 'Hello world!' },
-    });
+    }, USER);
     expect(
       afterUpdateEvent.slotContent['2026-09-01'].channelContent['channel-1@09:00'].caption,
     ).toBe('Hello world!');
@@ -361,7 +361,7 @@ describe('CampaignsController (DB-mocked happy path)', () => {
     expect(afterUpdateEvent.metrics.postsPlanned).toBe(1);
 
     // ---- launch --------------------------------------------------------------
-    const launched = await controller.launch(WORKSPACE_ID, created.id);
+    const launched = await controller.launch(WORKSPACE_ID, created.id, USER);
     expect(launched.status).toBe('active');
     expect(launched.id).toBe(created.id);
   });
@@ -397,8 +397,8 @@ describe('CampaignsController (DB-mocked happy path)', () => {
       date: '2026-09-01',
       channelId: 'channel-1',
       patch: { caption: 'Hello world!' },
-    });
-    await controller.launch(WORKSPACE_ID, second.id);
+    }, USER);
+    await controller.launch(WORKSPACE_ID, second.id, USER);
 
     const counts = await controller.statusCounts(WORKSPACE_ID);
     expect(counts.all).toBe(2);

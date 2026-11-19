@@ -206,7 +206,7 @@ export class ComposerController {
     });
   }
 
-  /** Every label used in this workspace, for the composer's Labels picker. */
+  /** The workspace's live label names, for the composer's Labels picker. */
   @RequireCapability('posts:draft')
   @Get('labels')
   async listLabels(@Param('wsId') wsId: string) {

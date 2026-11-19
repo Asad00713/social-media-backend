@@ -12,6 +12,15 @@ import { buildDuplicate } from '../lib/duplicate-post';
 import type { PostRow } from '../lib/present-post';
 import { nextPost, parseStored, seriesPostId } from '../lib/recurrence';
 import { applyVariationSources } from '../lib/rotating-variations';
+import {
+  approvalState,
+  contentFingerprint,
+  newApprovalRequest,
+  readApproval,
+  type ApprovableContent,
+  type DraftApproval,
+} from '../lib/draft-approval';
+import { ApprovalPolicyService } from '../composer/services/approval-policy.service';
 import { isWorkspaceLive, livePosts } from '../soft-delete/soft-delete';
 
 /** Job options the composer's own schedule endpoint uses. */
@@ -41,6 +50,9 @@ export class RepeatPostsService {
     @InjectQueue(QUEUES.POST_PUBLISHING)
     private readonly publishingQueue: Queue,
     private readonly calendarPushSync: CalendarPushSyncService,
+    // Not @Optional: PostsModule provides it. Optional in the type only so a
+    // unit test that never touches approvals can leave it out.
+    private readonly approvalPolicy?: ApprovalPolicyService,
   ) {}
 
   /**
@@ -88,6 +100,68 @@ export class RepeatPostsService {
     const base = next.recurrence.variations
       ? applyVariationSources(copy, next.recurrence.variations)
       : copy;
+    const nextMetadata: Record<string, unknown> = {
+      ...(base.metadata as Record<string, unknown>),
+      schedule: {
+        mode: 'all_same_time',
+        scheduleAt: next.at.toISOString(),
+        recurrence: next.recurrence,
+      },
+    };
+
+    // "Needs approval". A series whose post went out under a grant that
+    // still covers it (its content AND its repeat rule) is approved as a
+    // whole, so the next post carries that grant, re-pinned to its own
+    // content (its rotating wording differs) - exactly as approvalForPart
+    // re-pins a split post's parts. Otherwise, for an author the workspace
+    // policy covers, the next post is created as a DRAFT with no job: a
+    // repeat rule added after the grant, or a grant voided by an edit, must
+    // not keep publishing posts nobody approved. Fire time never checks
+    // approvals (see PostService.publishPost), so this is the only gate.
+    const sourceApproval = readApproval(post.metadata);
+    const sourceApproved =
+      sourceApproval !== null &&
+      approvalState(sourceApproval, contentFingerprint(approvable(post))) ===
+        'approved';
+    if (sourceApproved) {
+      nextMetadata.approval = {
+        ...sourceApproval,
+        approvedFingerprint: contentFingerprint(
+          approvable({ ...base, metadata: nextMetadata }),
+        ),
+      } satisfies DraftApproval;
+    }
+    // Held when the source carries an approval that no longer covers it
+    // (pending, rejected, or stale after an edit) - whether the author asked
+    // for it themselves or the policy did. A copy of such a post must not
+    // publish as if approved; only a grant that still covers the source is
+    // carried (re-pinned above). With NO approval at all, only the policy
+    // holds it.
+    const held =
+      !sourceApproved &&
+      (sourceApproval !== null ||
+        ((await this.approvalPolicy?.coversAuthor(
+          post.workspaceId,
+          post.createdById,
+        )) ??
+          false));
+    if (held) {
+      // The policy demands a request on a covered author's post.
+      if (!readApproval(nextMetadata)) {
+        nextMetadata.approval = newApprovalRequest(post.createdById, now, {
+          byPolicy: true,
+        });
+      }
+      return this.insertHeldDraft(
+        post,
+        current.seriesId,
+        id,
+        base,
+        nextMetadata,
+        next.at,
+      );
+    }
+
     const inserted = await this.db
       .insert(posts)
       .values({
@@ -96,14 +170,7 @@ export class RepeatPostsService {
         status: 'scheduled',
         scheduledAt: next.at,
         jobId,
-        metadata: {
-          ...(base.metadata as Record<string, unknown>),
-          schedule: {
-            mode: 'all_same_time',
-            scheduleAt: next.at.toISOString(),
-            recurrence: next.recurrence,
-          },
-        },
+        metadata: nextMetadata,
       })
       .onConflictDoNothing()
       .returning({ id: posts.id });
@@ -144,4 +211,52 @@ export class RepeatPostsService {
     });
     return id;
   }
+
+  /**
+   * The next post of a series that needs approving first: a draft at the
+   * series' next time, with no job. The author (or an approver) approves and
+   * schedules it like any draft. Idempotent like the scheduled path: the id
+   * is derived from (series, place), so a retried job inserts it once.
+   */
+  private async insertHeldDraft(
+    post: PostRow,
+    seriesId: string,
+    id: string,
+    base: typeof posts.$inferInsert,
+    metadata: Record<string, unknown>,
+    at: Date,
+  ): Promise<string> {
+    await this.db
+      .insert(posts)
+      .values({
+        ...base,
+        id,
+        status: 'draft',
+        scheduledAt: at,
+        jobId: null,
+        metadata,
+      })
+      .onConflictDoNothing();
+    this.logger.log(
+      `Series ${seriesId}: post after ${post.id} (${id}) created as a draft - it needs approval before it can go out`,
+    );
+    return id;
+  }
+}
+
+/** The approvable content of a row (see lib/draft-approval). */
+function approvable(row: {
+  content?: string | null;
+  mediaItems?: unknown;
+  platformContent?: unknown;
+  targets?: unknown;
+  metadata?: unknown;
+}): ApprovableContent {
+  return {
+    content: row.content,
+    mediaItems: row.mediaItems,
+    platformContent: row.platformContent,
+    targets: row.targets as ApprovableContent['targets'],
+    metadata: row.metadata,
+  };
 }

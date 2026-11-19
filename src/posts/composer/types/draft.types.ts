@@ -25,7 +25,7 @@ export interface Draft {
   schedule: ScheduleConfig;
   /** `metadata.campaignId`: the campaign this post is filed under. */
   campaignId?: string | null;
-  /** `metadata.labels`. */
+  /** Live label names from `post_labels`, A to Z. */
   labels?: string[];
   createdAt: string;
   updatedAt: string;

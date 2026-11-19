@@ -1,4 +1,7 @@
+import { ForbiddenException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
+import { isComposerRow } from './publish-metadata';
+import { parseRule } from './recurrence';
 import { refusal } from './refusal';
 
 /**
@@ -11,8 +14,9 @@ import { refusal } from './refusal';
  * granted by someone else and must survive into 'scheduled'.
  *
  * An approval covers the content that was approved. Its fingerprint is kept
- * with the grant; any later change to the caption, media, per-channel content
- * or channel list voids it, and the post needs approving again.
+ * with the grant; any later change to the caption, media, per-channel content,
+ * channel list, publisher-read metadata or repeat rule voids it, and the post
+ * needs approving again.
  */
 
 /** The capability an approver needs (ADMIN and OWNER today). */
@@ -33,6 +37,18 @@ export interface DraftApproval {
   approvedAt: string | null;
   /** Fingerprint of the content the grant covers; null until approved. */
   approvedFingerprint: string | null;
+  /**
+   * Added by the workspace approval policy when the draft was created, not
+   * asked for by the author. An approver cannot switch it off while the
+   * policy still covers the author.
+   */
+  byPolicy?: true;
+  /**
+   * When the approvers were told about a policy request. A policy request is
+   * written silently on the first save; the author's "Send for approval"
+   * tells the approvers once and stamps this.
+   */
+  notifiedAt?: string;
 }
 
 /** The row-shaped content an approval covers. */
@@ -44,6 +60,90 @@ export interface ApprovableContent {
     | ReadonlyArray<{ channelId?: string | number | null }>
     | null
     | undefined;
+  /**
+   * The row's `metadata` as it will be stored (or is stored). Required, not
+   * optional: a caller that forgot it would fingerprint differently from one
+   * that passed it, and every grant would read as stale - or, worse, a caller
+   * that always left it out would let a metadata-only edit keep its grant.
+   */
+  metadata: unknown;
+}
+
+/**
+ * Metadata keys that do NOT void a grant. Everything else on `metadata` is
+ * covered, because the scheduled publish hands the shared metadata to the
+ * publishers (`sharedMetadataFor`): a legacy row's `firstComment`, `thread`,
+ * `poll*`, `title`, `altText`, `collaborators`, `tagPeople`, the TikTok and
+ * YouTube flags, and the composer's `hashtags` / `mentions` / `linkPreview`.
+ * An allow-list of the harmless keys rather than a list of the dangerous
+ * ones: a publisher that starts reading a new key is covered by default.
+ *
+ * These are filing, bookkeeping and server state that no publisher reads:
+ * the approval itself, where the post came from, its campaign and labels,
+ * the first-week tags, the "a time per channel" family, import markers.
+ * `schedule` is handled on its own (only its repeat rule counts), and so is
+ * the composer's draft `title` (the draft's name, never published).
+ */
+const NON_VOIDING_METADATA_KEYS: ReadonlySet<string> = new Set([
+  'approval',
+  'source',
+  'campaignId',
+  'campaignSlot',
+  'labels',
+  'firstWeekSlot',
+  'suggestedAt',
+  'imageCredit',
+  'scheduleGroupId',
+  'syncedFrom',
+  'syncedAt',
+]);
+
+/** A publish report (`mediaWarning`, ...) - written by the publish, not the author. */
+const WARNING_KEY = /^[a-z][A-Za-z0-9]*Warning$/;
+/** Mastodon's content warning IS content, despite the name. */
+const CONTENT_WARNING_KEY = 'contentWarning';
+
+/**
+ * The repeat rule a row's `schedule` carries, without the series state the
+ * server owns (place, anchor, time, the index of each variation), plus the
+ * rotating channels' wordings. Null for a post that does not repeat. The
+ * time itself never counts: moving a post is not a content change.
+ */
+function repeatOf(schedule: unknown): unknown {
+  if (!schedule || typeof schedule !== 'object') return null;
+  const recurrence = (schedule as { recurrence?: unknown }).recurrence;
+  const rule = parseRule(recurrence);
+  if (!rule) return null;
+  const variations = (recurrence as { variations?: unknown }).variations;
+  const wordings: Record<string, unknown> = {};
+  if (variations && typeof variations === 'object') {
+    for (const [platform, v] of Object.entries(
+      variations as Record<string, unknown>,
+    )) {
+      const source = (v ?? {}) as { text?: unknown; thread?: unknown };
+      wordings[platform] = { text: source.text, thread: source.thread };
+    }
+  }
+  return { rule, variations: wordings };
+}
+
+/** The part of `metadata` an approval covers (see NON_VOIDING_METADATA_KEYS). */
+export function approvableMetadata(metadata: unknown): Record<string, unknown> {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    return {};
+  }
+  const m = metadata as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(m)) {
+    if (NON_VOIDING_METADATA_KEYS.has(key)) continue;
+    if (key !== CONTENT_WARNING_KEY && WARNING_KEY.test(key)) continue;
+    if (key === 'schedule') continue;
+    if (key === 'title' && isComposerRow(m)) continue;
+    out[key] = value;
+  }
+  const repeat = repeatOf(m.schedule);
+  if (repeat) out.repeat = repeat;
+  return out;
 }
 
 export type ApprovalState = 'none' | 'pending' | 'approved';
@@ -63,12 +163,15 @@ export function readApproval(metadata: unknown): DraftApproval | null {
     approvedAt: typeof a.approvedAt === 'string' ? a.approvedAt : null,
     approvedFingerprint:
       typeof a.approvedFingerprint === 'string' ? a.approvedFingerprint : null,
+    ...(a.byPolicy === true ? { byPolicy: true as const } : {}),
+    ...(typeof a.notifiedAt === 'string' ? { notifiedAt: a.notifiedAt } : {}),
   };
 }
 
 export function newApprovalRequest(
   userId: string,
   now: Date = new Date(),
+  opts: { byPolicy?: boolean } = {},
 ): DraftApproval {
   return {
     required: true,
@@ -77,7 +180,52 @@ export function newApprovalRequest(
     approvedById: null,
     approvedAt: null,
     approvedFingerprint: null,
+    ...(opts.byPolicy ? { byPolicy: true as const } : {}),
   };
+}
+
+/** 403 code: the workspace approval policy forbids this action. */
+export const APPROVAL_REQUIRED_BY_POLICY = 'APPROVAL_REQUIRED_BY_POLICY';
+
+/**
+ * Why a campaign, evergreen or drip activation is refused under the policy.
+ * Under `everyone` an ADMIN is covered too, so only the owner can launch.
+ */
+export function activationNeedsApproverMessage(
+  policy: 'members' | 'everyone',
+): string {
+  return policy === 'everyone'
+    ? 'Your workspace needs approval before posts go out. Ask the workspace owner to launch this.'
+    : 'Your workspace needs approval before posts go out. Ask an admin or the owner to launch this.';
+}
+
+/** The policy's 403, in the `{ statusCode, error, code, message }` shape. */
+export function approvalRequiredByPolicy(message: string): ForbiddenException {
+  return new ForbiddenException({
+    statusCode: 403,
+    error: 'Forbidden',
+    code: APPROVAL_REQUIRED_BY_POLICY,
+    message,
+  });
+}
+
+/**
+ * The workspace approval policy at send time. A covered author's post must
+ * carry an approval request (and `assertApprovedFor` then demands the grant);
+ * a post with none at all (never saved, or saved before the policy changed)
+ * is refused the same way an ungranted request is. Call immediately before
+ * `assertApprovedFor`.
+ */
+export function assertPolicyAllowsDirectSend(
+  covers: boolean,
+  metadata: unknown,
+): void {
+  if (covers && readApproval(metadata) === null) {
+    throw refusal(
+      'This post needs approval before it can be scheduled or published.',
+      'APPROVAL_REQUIRED',
+    );
+  }
 }
 
 /**
@@ -103,18 +251,23 @@ export function canonicalJson(value: unknown): string {
 
 /**
  * What an approval covers: the caption, the media, every channel's own
- * content and settings, and which channels it goes to. The per-channel
- * delivery state on `targets` is left out on purpose — publishing changes it.
+ * content and settings, which channels it goes to, the metadata a publisher
+ * reads and the repeat rule. The per-channel delivery state on `targets` is
+ * left out on purpose — publishing changes it.
  */
 export function contentFingerprint(c: ApprovableContent): string {
   const channels = [
     ...new Set((c.targets ?? []).map((t) => String(t?.channelId ?? ''))),
   ].sort();
+  const meta = approvableMetadata(c.metadata);
   const body = canonicalJson({
     text: c.content ?? '',
     media: c.mediaItems ?? [],
     per: c.platformContent ?? {},
     channels,
+    // Left out when empty, so a row with no covered metadata keeps the
+    // fingerprint it was granted under before metadata was covered.
+    ...(Object.keys(meta).length ? { meta } : {}),
   });
   return createHash('sha256').update(body).digest('hex');
 }

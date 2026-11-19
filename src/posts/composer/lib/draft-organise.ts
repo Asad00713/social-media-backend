@@ -10,18 +10,20 @@ type Reader = Pick<DbType, 'select'>;
 export const MAX_LABELS = 20;
 /** Longest single label, in characters. */
 export const MAX_LABEL_LENGTH = 40;
-/** Most distinct labels the catalogue returns. */
-export const LABEL_CATALOGUE_LIMIT = 200;
 
 /**
- * How a post is filed: the campaign it belongs to and its free-form labels.
+ * How a post is filed: the campaign it belongs to and its labels.
  *
- * Both live in `posts.metadata` (no migration). `metadata.campaignId` is the
- * key the Planner already reads for its campaign colour, filter and name, so
- * a composer link shows up there without anything new. A post the campaign
- * engine MATERIALISED from a slot also carries `metadata.campaignSlot`; a
- * composer link carries the id only, so it is a reference to the campaign
- * and never a slot of it.
+ * The campaign lives in `posts.metadata` (no migration). `metadata.campaignId`
+ * is the key the Planner already reads for its campaign colour, filter and
+ * name, so a composer link shows up there without anything new. A post the
+ * campaign engine MATERIALISED from a slot also carries
+ * `metadata.campaignSlot`; a composer link carries the id only, so it is a
+ * reference to the campaign and never a slot of it.
+ *
+ * Labels live in `post_labels` (migration 0094) and are written by
+ * `PostLabelsService.setForPost`, never here; a stale `metadata.labels` is
+ * neither read nor carried.
  *
  * Every field follows "absent keeps, present sets": a caller that does not
  * send `campaignId` (an older client, Duplicate, a version restore) leaves
@@ -31,12 +33,12 @@ export const LABEL_CATALOGUE_LIMIT = 200;
  */
 export interface OrganiseInput {
   campaignId?: string | null;
+  /** Read by the caller for `setForPost`; ignored here. */
   labels?: string[] | null;
 }
 
 export interface OrganiseView {
   campaignId: string | null;
-  labels: string[];
 }
 
 /**
@@ -68,12 +70,11 @@ function asMeta(existing: unknown): Record<string, unknown> {
     : {};
 }
 
-/** The filing a stored post carries, in the shape the composer reads. */
+/** The campaign a stored post is filed under, in the shape the composer reads. */
 export function readOrganise(existing: unknown): OrganiseView {
   const meta = asMeta(existing);
   return {
     campaignId: typeof meta.campaignId === 'string' ? meta.campaignId : null,
-    labels: Array.isArray(meta.labels) ? normaliseLabels(meta.labels) : [],
   };
 }
 
@@ -93,7 +94,7 @@ export function campaignToCheck(
 }
 
 /**
- * The metadata keys to spread into the post's new metadata.
+ * The metadata keys to spread into the post's new metadata. Never `labels`.
  *
  * `campaignSlot` is carried only while the campaign stays the same: it is
  * what ties a materialised post to its slot, and rewriting the post from the
@@ -115,14 +116,6 @@ export function organiseMeta(
       out.campaignSlot = meta.campaignSlot;
     }
   }
-
-  const labels =
-    input.labels === undefined
-      ? Array.isArray(meta.labels)
-        ? normaliseLabels(meta.labels)
-        : []
-      : normaliseLabels(input.labels ?? []);
-  if (labels.length > 0) out.labels = labels;
 
   return out;
 }

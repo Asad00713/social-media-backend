@@ -49,14 +49,27 @@ function make(existing: any[] = [], opts: { queueFullOn?: string } = {}) {
     }
   });
   const versions = { record: jest.fn(async () => undefined) };
+  const postLabels = {
+    setForPost: jest.fn(async () => undefined),
+    namesForPosts: jest.fn(async () => new Map<string, string[]>()),
+  };
   const svc = new ComposerSchedulingService(
     db as any,
     queue as any,
     { syncPost: jest.fn(async () => undefined) } as any,
     { enforceQueueLimit } as any,
     versions as any,
+    postLabels as any,
   );
-  return { svc, inserts, updates, queue, enforceQueueLimit, versions };
+  return {
+    svc,
+    inserts,
+    updates,
+    queue,
+    enforceQueueLimit,
+    versions,
+    postLabels,
+  };
 }
 
 const NOW = new Date('2026-10-14T00:00:00Z');
@@ -150,7 +163,7 @@ describe('ComposerSchedulingService — a time per channel', () => {
   });
 
   it('three channels at two times become two rows with their own channels and jobs', async () => {
-    const { svc, inserts, queue, enforceQueueLimit } = make();
+    const { svc, inserts, queue, enforceQueueLimit, postLabels } = make();
     const result = await svc.schedule('w1', 'u1', SPLIT() as any);
 
     expect(inserts).toHaveLength(2);
@@ -185,8 +198,14 @@ describe('ComposerSchedulingService — a time per channel', () => {
     expect(first.mediaItems).toEqual(BASE.mediaItems);
     expect(second.mediaItems).toEqual(BASE.mediaItems);
     expect(first.content).toBe('caption');
-    expect(second.metadata.labels).toEqual(['launch']);
-    expect(first.metadata.labels).toEqual(['launch']);
+    // Labels go to both, through post_labels, never the metadata.
+    expect(first.metadata.labels).toBeUndefined();
+    expect(postLabels.setForPost).toHaveBeenCalledWith('w1', first.id, [
+      'launch',
+    ]);
+    expect(postLabels.setForPost).toHaveBeenCalledWith('w1', second.id, [
+      'launch',
+    ]);
 
     // One family.
     const group = first.metadata[SCHEDULE_GROUP_KEY];
@@ -302,6 +321,7 @@ describe('ComposerSchedulingService — a time per channel', () => {
       mediaItems: BASE.mediaItems,
       platformContent: PER_PLATFORM,
       targets: SPLIT().channels,
+      metadata: { hashtags: BASE.hashtags, mentions: BASE.mentions },
     });
 
     it('refuses an unapproved post before any write or job', async () => {
@@ -348,6 +368,7 @@ describe('ComposerSchedulingService — a time per channel', () => {
           mediaItems: row.mediaItems,
           platformContent: row.platformContent,
           targets: row.targets,
+          metadata: row.metadata,
         };
         expect(row.metadata.approval.approvedById).toBe('boss');
         expect(row.metadata.approval.approvedFingerprint).toBe(

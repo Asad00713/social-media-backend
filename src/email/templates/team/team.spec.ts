@@ -125,6 +125,40 @@ describe('team templates', () => {
       );
     });
 
+    it('renders the personal note as a quote from the inviter', async () => {
+      const r = await renderEmail(
+        workspaceInvitation,
+        { ...props, message: 'We need you on the October launch.' },
+        ctx,
+      );
+      expect(r.html).toContain('M Rehman wrote');
+      expect(r.html).toContain('We need you on the October launch.');
+      expect(r.text).toContain('We need you on the October launch.');
+    });
+
+    it('escapes the personal note: markup in it is text, never HTML', async () => {
+      const r = await renderEmail(
+        workspaceInvitation,
+        { ...props, message: '<b>hi</b>' },
+        ctx,
+      );
+      expect(r.html).toContain('&lt;b&gt;hi&lt;/b&gt;');
+      expect(r.html).not.toContain('<b>hi</b>');
+    });
+
+    it.each([null, ''])(
+      'no note (%p) renders no quote block',
+      async (message) => {
+        const r = await renderEmail(
+          workspaceInvitation,
+          { ...props, message },
+          ctx,
+        );
+        expect(r.html).not.toContain(' wrote');
+        expect(r.html).not.toContain('border-left');
+      },
+    );
+
     it('escapes user-written names and keeps the subject on one line', async () => {
       const r = await renderEmail(
         workspaceInvitation,

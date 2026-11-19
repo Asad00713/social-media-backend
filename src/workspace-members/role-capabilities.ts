@@ -24,7 +24,13 @@ export type Capability =
   /** Change the workspace brand kit: colours, default logo, presets. */
   | 'brand:manage'
   /** Create, change, share and send Insights reports; they email people outside the workspace. */
-  | 'reports:manage';
+  | 'reports:manage'
+  /** Open Settings and read the workspace-level pages (Settings spec §4.2). */
+  | 'settings:view'
+  /** Change workspace General, publishing defaults and the invite link (Settings spec §4.2). */
+  | 'workspace:manage'
+  /** Create, rename, recolour, merge and delete workspace labels (Settings spec §4.2). */
+  | 'labels:manage';
 
 export const ROLE_RANK: Record<WorkspaceRole, number> = {
   OWNER: 4,
@@ -48,6 +54,9 @@ export const CAPABILITY_MIN_ROLE: Record<Capability, WorkspaceRole> = {
   'maestro:view-all': 'ADMIN',
   'brand:manage': 'ADMIN',
   'reports:manage': 'MEMBER',
+  'settings:view': 'MEMBER',
+  'workspace:manage': 'ADMIN',
+  'labels:manage': 'MEMBER',
 };
 
 export function roleCan(role: WorkspaceRole, capability: Capability): boolean {

@@ -41,6 +41,7 @@ import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { CreateUserDto } from 'src/users/dto/create-user.dto';
 import { SkipLaunchGate } from './decorators/skip-launch-gate.decorator';
+import { clearRefreshCookie } from './refresh-cookie';
 import {
   deviceCookieOf,
   readOrMintDeviceId,
@@ -242,11 +243,8 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @SkipLaunchGate()
   async logout(@Res({ passthrough: true }) response: Response) {
-    response.clearCookie('refreshToken', {
-      httpOnly: true,
-      secure: true, // Must match cookie settings
-      sameSite: 'none', // Must match cookie settings
-    });
+    // Same options as the cookie was set with, or the browser keeps it.
+    clearRefreshCookie(response);
 
     return {
       message: 'Logged out successfully',

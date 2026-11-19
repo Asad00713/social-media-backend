@@ -25,6 +25,9 @@ import { BillingModule } from '../billing/billing.module';
 // NOT pull in CampaignsModule, so this does not create a module cycle even
 // though CampaignsModule imports PostsModule.
 import { CampaignStatusSyncListener } from '../campaigns/campaign-status-sync.listener';
+// PostLabelsService, for the Planner's labelIds. LabelsModule imports only
+// Drizzle and WorkspaceRole, so this adds no cycle.
+import { LabelsModule } from '../labels/labels.module';
 
 // Publishers
 import { PublisherFactory } from './publishers/publisher.factory';
@@ -46,7 +49,12 @@ import { DiscordPublisher } from './publishers/discord.publisher';
 import { PostPublishProcessor } from './processors/post-publish.processor';
 import { RepeatPostsService } from './services/repeat-posts.service';
 import { PostReminderService } from './services/post-reminder.service';
+import { PostRescheduleService } from './services/post-reschedule.service';
 import { PublishFailureNotifier } from './services/publish-failure-notifier.service';
+// workspace.approval_policy. Provided here (not in ComposerModule) so
+// PostService can use it too; ComposerModule and the campaign modules import
+// PostsModule. Needs WorkspaceRoleModule, imported below.
+import { ApprovalPolicyService } from './composer/services/approval-policy.service';
 
 @Module({
   imports: [
@@ -59,6 +67,7 @@ import { PublishFailureNotifier } from './services/publish-failure-notifier.serv
     MediaModule,
     BillingModule,
     EmailModule,
+    LabelsModule,
     // Circular by design: posts push to calendars (CalendarPushSyncService) and
     // calendars write back to posts (CalendarPullSyncService → PostService).
     forwardRef(() => CalendarSyncModule),
@@ -88,8 +97,10 @@ import { PublishFailureNotifier } from './services/publish-failure-notifier.serv
     PostPublishProcessor,
     RepeatPostsService,
     PostReminderService,
+    PostRescheduleService,
     PublishFailureNotifier,
     CampaignStatusSyncListener,
+    ApprovalPolicyService,
   ],
   exports: [
     PostService,
@@ -97,6 +108,9 @@ import { PublishFailureNotifier } from './services/publish-failure-notifier.serv
     PostDraftsService,
     PublisherFactory,
     PostReminderService,
+    ApprovalPolicyService,
+    // The workspace time-zone move re-times scheduled posts with it.
+    PostRescheduleService,
   ],
 })
 export class PostsModule {}

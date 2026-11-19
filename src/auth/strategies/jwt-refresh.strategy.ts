@@ -4,7 +4,7 @@ import { PassportStrategy } from '@nestjs/passport';
 import { Request } from 'express';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { UsersService } from '../../users/users.service';
-import { assertSessionLive } from './jwt.strategy';
+import { assertNotDeleted, assertSessionLive } from './jwt.strategy';
 
 export interface JwtRefreshPayload {
   sub: string;
@@ -56,6 +56,9 @@ export class JwtRefreshStrategy extends PassportStrategy(
       throw new UnauthorizedException('User not found');
     }
 
+    // A deleted account's refresh token never mints a new pair, whatever its
+    // iat (the delete also sets sessions_revoked_at; this does not rely on it).
+    assertNotDeleted(user.deletedAt);
     assertSessionLive(payload.iat, user.sessionsRevokedAt);
 
     // The current address, not the claim: /auth/refresh re-mints both tokens

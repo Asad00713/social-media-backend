@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -24,4 +25,9 @@ export class ChangePasswordDto {
       'Password must contain at least one uppercase letter, one lowercase letter, and one number',
   })
   newPassword: string;
+
+  /** Default true. False keeps the other signed-in devices (spec 5.3). */
+  @IsBoolean()
+  @IsOptional()
+  revokeOtherSessions?: boolean;
 }

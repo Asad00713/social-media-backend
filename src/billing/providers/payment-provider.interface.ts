@@ -16,6 +16,42 @@ export type PurchaseResult =
   | { status: 'completed'; quantity: number }
   | { status: 'checkout_required'; url: string };
 
+/**
+ * What the hosted billing portal should open on. `update_payment_method` goes
+ * straight to the card form where the provider supports it; `portal` is the
+ * provider's general customer page.
+ */
+export type PortalIntent = 'portal' | 'update_payment_method';
+
+/**
+ * One invoice, in our vocabulary rather than the provider's. `void` is part of
+ * the union on purpose: both providers can void an invoice and the settings
+ * screen shows it distinctly from a failed one.
+ */
+export interface ProviderInvoice {
+  id: string;
+  /** ISO 8601. */
+  date: string;
+  description: string;
+  amountCents: number;
+  currency: string;
+  status: 'paid' | 'pending' | 'failed' | 'refunded' | 'void';
+  downloadUrl: string | null;
+}
+
+/**
+ * The card and billing contact on file. `billingDetails` is null where the
+ * provider does not hand them over (Stripe: we mirror cards, not customers).
+ */
+export interface BillingProfile {
+  card: { brand: string | null; last4: string | null } | null;
+  billingDetails: {
+    name: string | null;
+    email: string | null;
+    country: string | null;
+  } | null;
+}
+
 export function isCheckoutRequired(
   result: PurchaseResult,
 ): result is { status: 'checkout_required'; url: string } {
@@ -81,4 +117,23 @@ export interface PaymentProviderAdapter {
   pause(subscriptionId: number): Promise<void>;
   resume(subscriptionId: number): Promise<void>;
   cancel(subscriptionId: number, atPeriodEnd: boolean): Promise<void>;
+
+  /**
+   * A signed link into the provider's hosted billing portal. `workspaceId` is
+   * the workspace the caller is acting in: where the portal sends the person
+   * back to. A provider with no such notion ignores it.
+   */
+  createPortalLink(
+    subscriptionId: number,
+    intent: PortalIntent,
+    opts?: { workspaceId?: string },
+  ): Promise<{ url: string }>;
+
+  /** Newest first, at most `limit`. */
+  listInvoices(
+    subscriptionId: number,
+    limit: number,
+  ): Promise<ProviderInvoice[]>;
+
+  getBillingProfile(subscriptionId: number): Promise<BillingProfile>;
 }

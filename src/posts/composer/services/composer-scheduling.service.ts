@@ -10,7 +10,10 @@ import { randomUUID } from 'node:crypto';
 import {
   approvalForPart,
   assertApprovedFor,
+  assertPolicyAllowsDirectSend,
+  canonicalJson,
   carryApproval,
+  contentFingerprint,
   type ApprovableContent,
 } from '../../lib/draft-approval';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -31,8 +34,10 @@ import {
   type ScheduleGroup,
 } from '../lib/per-channel-schedule';
 import { resolveOrganise } from '../lib/draft-organise';
+import { PostLabelsService } from '../../../labels/post-labels.service';
 import { assertNoOpenBlanks } from '../lib/template-blanks';
 import { snapshotOf } from '../lib/draft-versions';
+import { ApprovalPolicyService } from './approval-policy.service';
 import { DraftVersionsService } from './draft-versions.service';
 import { CalendarPushSyncService } from '../../../calendar-sync/services/calendar-push-sync.service';
 import { PostQueueService } from '../../../billing/services/post-queue.service';
@@ -67,7 +72,81 @@ interface StoredPost {
   metadata: unknown;
   targets: unknown;
   jobId: string | null;
+  content: string | null;
+  mediaItems: unknown;
+  platformContent: unknown;
 }
+
+/** The shared metadata keys the publishers read (see sharedMetadata). */
+const SHARED_PUBLISH_KEYS = [
+  'hashtags',
+  'mentions',
+  'linkPreview',
+  'title',
+] as const;
+
+/** The server-owned series state on a stored repeat rule. */
+const SERIES_STATE_KEYS = [
+  'seriesId',
+  'occurrence',
+  'anchorDate',
+  'time',
+  'variations',
+];
+
+/**
+ * Besides the approvable content, what a pure re-time must leave unchanged
+ * for the approval policy to let it through.
+ */
+interface PublishExtras {
+  shared: Record<string, unknown>;
+  /** The repeat rule without its series state; null for no repeat. */
+  rule: unknown;
+  /** The rotating variations; left out when the request keeps the stored ones. */
+  variations?: unknown;
+}
+
+function pickShared(metadata: unknown): Record<string, unknown> {
+  const m = (metadata ?? {}) as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of SHARED_PUBLISH_KEYS) out[key] = m[key];
+  return out;
+}
+
+function ruleOf(recurrence: unknown): unknown {
+  if (!recurrence || typeof recurrence !== 'object') return null;
+  const rule: Record<string, unknown> = { ...(recurrence as object) };
+  for (const key of SERIES_STATE_KEYS) delete rule[key];
+  return rule;
+}
+
+/** The stored row's extras, shaped like the request's for comparison. */
+function storedExtras(
+  metadata: unknown,
+  outgoing: PublishExtras,
+): PublishExtras {
+  const recurrence = (
+    (metadata ?? {}) as { schedule?: { recurrence?: { variations?: unknown } } }
+  ).schedule?.recurrence;
+  return {
+    shared: pickShared(metadata),
+    rule: ruleOf(recurrence),
+    ...('variations' in outgoing
+      ? { variations: recurrence?.variations ?? null }
+      : {}),
+  };
+}
+
+/** What the approval-policy check reads from a stored row. */
+type PolicyRow = Pick<
+  StoredPost,
+  | 'status'
+  | 'metadata'
+  | 'content'
+  | 'mediaItems'
+  | 'platformContent'
+  | 'targets'
+>;
 
 /**
  * The legacy posts.targets shape (PostTarget) — status='draft' per channel
@@ -114,7 +193,97 @@ export class ComposerSchedulingService {
     private readonly postQueue: PostQueueService,
     // Optional so a unit test can build the service without it.
     @Optional() private readonly versions?: DraftVersionsService,
+    // Not @Optional: the module must provide it. Optional in the type only so
+    // a unit test that never touches labels can leave it out.
+    private readonly postLabels?: PostLabelsService,
+    // Not @Optional either; optional in the type for the same reason.
+    private readonly approvalPolicy?: ApprovalPolicyService,
   ) {}
+
+  /**
+   * The workspace approval policy for one send. A pure time move of a post
+   * that is already scheduled is not gated, as in PostService.updatePost: it
+   * may predate the policy, and moving it sends nothing new. It is pure only
+   * when nothing that reaches the publishers changes: the content fingerprint
+   * (content, media, per-channel content, channels) AND the extras (the
+   * shared metadata, the repeat rule and the rotating variations).
+   */
+  private async assertPolicyAllows(
+    workspaceId: string,
+    userId: string,
+    stored: PolicyRow | undefined,
+    outgoing: ApprovableContent,
+    outgoingExtras: PublishExtras,
+  ): Promise<void> {
+    if (
+      stored?.status === 'scheduled' &&
+      contentFingerprint({
+        ...stored,
+        targets: stored.targets as ApprovableContent['targets'],
+      }) === contentFingerprint(outgoing) &&
+      canonicalJson(storedExtras(stored.metadata, outgoingExtras)) ===
+        canonicalJson(outgoingExtras)
+    ) {
+      return;
+    }
+    assertPolicyAllowsDirectSend(
+      (await this.approvalPolicy?.coversAuthor(workspaceId, userId)) ?? false,
+      stored?.metadata,
+    );
+  }
+
+  /**
+   * Labels on a post that is already scheduled or published. Best-effort: the
+   * post and its job (or publish) are done by now, so a label failure must not
+   * turn them into a 500 the client would retry. Logged, never thrown.
+   */
+  private async setLabelsAfter(
+    workspaceId: string,
+    postId: string,
+    labels: string[] | null,
+  ): Promise<void> {
+    try {
+      await this.postLabels?.setForPost(workspaceId, postId, labels ?? []);
+    } catch (error) {
+      this.logger.warn(
+        `Labels not saved on post ${postId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  private async labelSiblings(
+    workspaceId: string,
+    dto: ScheduleDraftDto,
+    stored: StoredPost | undefined,
+    siblings: Array<{ id: string }>,
+  ): Promise<void> {
+    if (dto.labels !== undefined) {
+      for (const sibling of siblings) {
+        await this.setLabelsAfter(workspaceId, sibling.id, dto.labels);
+      }
+      return;
+    }
+    if (!stored || !this.postLabels) return;
+    let kept: string[] = [];
+    try {
+      kept =
+        (await this.postLabels.namesForPosts([dto.draftId])).get(dto.draftId) ??
+        [];
+    } catch (error) {
+      this.logger.warn(
+        `Labels not copied from post ${dto.draftId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    if (kept.length === 0) return;
+    for (const sibling of siblings) {
+      if (sibling.id === dto.draftId) continue;
+      await this.setLabelsAfter(workspaceId, sibling.id, kept);
+    }
+  }
 
   /**
    * Fire-and-forget app→calendar push for a composer-scheduled draft. Mirrors
@@ -202,7 +371,13 @@ export class ComposerSchedulingService {
     const existing = await this.db
       .select()
       .from(posts)
-      .where(and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId), livePosts()))
+      .where(
+        and(
+          eq(posts.id, dto.draftId),
+          eq(posts.workspaceId, workspaceId),
+          livePosts(),
+        ),
+      )
       .limit(1);
 
     // A first-week draft keeps its tag when scheduled from the composer (the
@@ -210,28 +385,18 @@ export class ComposerSchedulingService {
     Object.assign(metadata, carryFirstWeekMeta(existing[0]?.metadata));
     // A sibling of a split post stays in its family when re-scheduled.
     Object.assign(metadata, carryScheduleGroup(existing[0]?.metadata));
-    // Campaign and labels: absent keeps the stored value (see draft-organise).
+    // Campaign: absent keeps the stored value (see draft-organise). Labels go
+    // to post_labels once the row is written.
     Object.assign(
       metadata,
       await resolveOrganise(this.db, workspaceId, existing[0]?.metadata, dto),
     );
 
-    // "Needs approval": refused before any write or job unless an approval
-    // covers exactly what is being scheduled. The approval then rides along
-    // on the scheduled row, so unscheduling keeps it.
-    const outgoing: ApprovableContent = {
-      content: dto.base.text,
-      mediaItems: dto.base.mediaItems,
-      platformContent: dto.perPlatform ?? {},
-      targets: dto.channels,
-    };
-    assertApprovedFor(existing[0]?.metadata, outgoing);
-    Object.assign(metadata, carryApproval(existing[0]?.metadata, outgoing));
-
     // A repeating post keeps its rule with the series state the server owns.
     // A post already in a series stays in it (same seriesId and place), so
     // re-scheduling it does not restart an "after N posts" count. Without a
-    // rule, no `schedule` key is written — exactly as before.
+    // rule, no `schedule` key is written — exactly as before. Written before
+    // the approval check: the repeat rule is part of what an approval covers.
     if (rule) {
       const timezone = await loadWorkspaceTimezone(this.db, workspaceId);
       metadata.schedule = {
@@ -248,6 +413,25 @@ export class ComposerSchedulingService {
         ),
       };
     }
+
+    // "Needs approval": refused before any write or job unless an approval
+    // covers exactly what is being scheduled — the shared metadata and the
+    // repeat rule included. The approval then rides along on the scheduled
+    // row, so unscheduling keeps it.
+    const outgoing: ApprovableContent = {
+      content: dto.base.text,
+      mediaItems: dto.base.mediaItems,
+      platformContent: dto.perPlatform ?? {},
+      targets: dto.channels,
+      metadata,
+    };
+    await this.assertPolicyAllows(workspaceId, userId, existing[0], outgoing, {
+      shared: pickShared(metadata),
+      rule: rule ?? null,
+      ...(variations === undefined ? {} : { variations }),
+    });
+    assertApprovedFor(existing[0]?.metadata, outgoing);
+    Object.assign(metadata, carryApproval(existing[0]?.metadata, outgoing));
 
     // The same per-channel queue ceiling PostService.createPost enforces. This
     // is a second, independent path to `status: 'scheduled'`, so a check on
@@ -320,6 +504,12 @@ export class ComposerSchedulingService {
       `Scheduled draft ${dto.draftId} for ${scheduledAt.toISOString()} (delay=${delay}ms)`,
     );
 
+    // Labels once the job is recorded ("absent keeps, present sets"; null =
+    // none), so a label failure never leaves the row without its job.
+    if (dto.labels !== undefined) {
+      await this.setLabelsAfter(workspaceId, dto.draftId, dto.labels);
+    }
+
     // In the 2026 composer, scheduling is how a draft reaches the server,
     // so it is a save for version history too.
     await this.versions?.record(dto.draftId, userId, snapshotOf(dto));
@@ -356,14 +546,20 @@ export class ComposerSchedulingService {
     const existing: StoredPost[] = await this.db
       .select()
       .from(posts)
-      .where(and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId), livePosts()))
+      .where(
+        and(
+          eq(posts.id, dto.draftId),
+          eq(posts.workspaceId, workspaceId),
+          livePosts(),
+        ),
+      )
       .limit(1);
     const stored = existing[0] as StoredPost | undefined;
 
     const groupId = readScheduleGroup(stored?.metadata) ?? randomUUID();
     const shared: Record<string, unknown> = {
       ...sharedMetadata(dto),
-      // First-week tag, campaign and labels go to every sibling.
+      // First-week tag and campaign go to every sibling; labels below.
       ...carryFirstWeekMeta(stored?.metadata),
       ...(await resolveOrganise(this.db, workspaceId, stored?.metadata, dto)),
       [SCHEDULE_GROUP_KEY]: groupId,
@@ -374,7 +570,15 @@ export class ComposerSchedulingService {
       mediaItems: dto.base.mediaItems,
       platformContent: dto.perPlatform ?? {},
       targets: dto.channels,
+      metadata: shared,
     };
+    // The policy, once for the whole; approvalForPart then runs
+    // assertApprovedFor for the whole and for each part.
+    // A time per channel never repeats (refused above), so no rule.
+    await this.assertPolicyAllows(workspaceId, userId, stored, whole, {
+      shared: pickShared(shared),
+      rule: null,
+    });
 
     const siblings = groups.map((group, i) => {
       const perPlatform = overridesFor(dto.perPlatform, group.channels);
@@ -386,6 +590,7 @@ export class ComposerSchedulingService {
           mediaItems: dto.base.mediaItems,
           platformContent: perPlatform,
           targets: group.channels,
+          metadata: shared,
         }),
       };
       return {
@@ -479,6 +684,11 @@ export class ComposerSchedulingService {
       this.syncCalendarForPost(sibling.id);
     }
 
+    // Labels go to every sibling, once every job is recorded. Sent labels are
+    // set on each; without them the draft keeps its own and the new siblings
+    // get a copy of those.
+    await this.labelSiblings(workspaceId, dto, stored, siblings);
+
     this.logger.log(
       `Scheduled draft ${dto.draftId} as ${siblings.length} posts (group ${groupId}) at ${siblings
         .map((s) => s.at.toISOString())
@@ -530,7 +740,13 @@ export class ComposerSchedulingService {
     const [row] = await this.db
       .select()
       .from(posts)
-      .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId), livePosts()))
+      .where(
+        and(
+          eq(posts.id, draftId),
+          eq(posts.workspaceId, workspaceId),
+          livePosts(),
+        ),
+      )
       .limit(1);
     await this.removeJobs(`composer-publish-${draftId}`, row?.jobId);
 

@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import {
   and,
   asc,
@@ -20,7 +20,11 @@ import {
   plannerAtSql,
 } from '../../posts/lib/post-status.sql';
 import { PlannerPostsService } from '../../posts/services/planner-posts.service';
-import type { ListTab, PlannerListDto } from '../dto/planner-list.dto';
+import {
+  LIST_LABELS_PATTERN,
+  type ListTab,
+  type PlannerListDto,
+} from '../dto/planner-list.dto';
 import { decodeListCursor, encodeListCursor } from '../lib/list-cursor';
 import { livePosts } from '../../posts/soft-delete/soft-delete';
 
@@ -52,6 +56,23 @@ function tabWhere(tab: ListTab, now: Date): SQL {
   }
 }
 
+/**
+ * The posts carrying any of these LIVE labels. Raw `labels` is the query
+ * string; the DTO validates it, and it is checked again here so a caller
+ * that bypasses the DTO gets a 400 rather than a uuid cast error.
+ */
+function labelWhere(labels: string | undefined): SQL | undefined {
+  if (labels === undefined) return undefined;
+  if (!LIST_LABELS_PATTERN.test(labels)) {
+    throw new BadRequestException('Invalid labels');
+  }
+  const ids = labels.split(',');
+  return sql`EXISTS (
+    SELECT 1 FROM post_labels pl
+    JOIN workspace_labels l ON l.id = pl.label_id AND l.deleted_at IS NULL
+    WHERE pl.post_id = ${posts.id} AND pl.label_id = ANY(${sql.param(ids)}::uuid[]))`;
+}
+
 @Injectable()
 export class PlannerListService {
   constructor(
@@ -61,12 +82,15 @@ export class PlannerListService {
 
   async list(
     workspaceId: string,
-    q: { tab: ListTab; limit: number; cursor?: string },
+    q: { tab: ListTab; limit: number; cursor?: string; labels?: string },
     now: Date = new Date(),
   ): Promise<PlannerListDto> {
+    // The label filter is part of the base, so the page, `total` and the
+    // tab badges all count the same posts.
     const base = and(
       eq(posts.workspaceId, workspaceId),
       inArray(posts.status, [...NON_DRAFT_STATUSES]),
+      labelWhere(q.labels),
     ) as SQL;
     const upcoming = tabWhere('upcoming', now);
     const failed = tabWhere('failed', now);

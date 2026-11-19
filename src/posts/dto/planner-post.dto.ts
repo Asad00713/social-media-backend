@@ -84,6 +84,8 @@ export interface PlannerPostDto {
     firstComment?: string;
   };
   campaignId: string | null;
+  /** Live labels from post_labels, in name order; the calendar filters on these. */
+  labelIds: string[];
   lastError: string | null;
   retryCount: string | null;
   createdAt: string;

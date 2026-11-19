@@ -9,15 +9,16 @@ jest.mock('../../drizzle/db', () => {
           ? (resolve: (v: unknown) => void) => resolve(rows)
           : () => mkChain(rows),
     });
-  return {
-    db: {
-      insert: () => mkChain([{ id: 'p-new', status: 'draft' }]),
-      select: () => mkChain([{ id: 'p1', status: 'draft' }]),
-      update: () => mkChain([{ id: 'p1', status: 'draft' }]),
-      delete: () => mkChain([]),
-      execute: () => mkChain([]),
-    },
+  const db: Record<string, unknown> = {
+    insert: () => mkChain([{ id: 'p-new', status: 'draft' }]),
+    select: () => mkChain([{ id: 'p1', status: 'draft' }]),
+    update: () => mkChain([{ id: 'p1', status: 'draft' }]),
+    delete: () => mkChain([]),
+    execute: () => mkChain([]),
   };
+  // createPost writes the post and its history in one transaction (#248).
+  db.transaction = (fn: (tx: unknown) => unknown) => fn(db);
+  return { db };
 });
 
 import { PostService } from '../../posts/services/post.service';
@@ -26,7 +27,10 @@ import { createPostTools } from './post.tools';
 const CTX = { userId: 'u1', workspaceId: 'ws1' };
 
 /** A real PostService (so the Guest rules are the real ones) over mocked IO. */
-function realPostService(existing: Record<string, unknown>) {
+function realPostService(
+  existing: Record<string, unknown>,
+  policyCovers = false,
+) {
   const noop = async () => undefined;
   const svc = new PostService(
     {} as any,
@@ -41,6 +45,8 @@ function realPostService(existing: Record<string, unknown>) {
     { enforceQueueLimit: noop } as any,
     { send: jest.fn() } as any, // PostReminderService
     { onPublishOutcome: jest.fn(async () => undefined) } as any, // PublishFailureNotifier
+    {} as any, // StrandedPostSweeperService (main, #234)
+    { coversAuthor: jest.fn(async () => policyCovers) } as any, // ApprovalPolicyService
   );
   jest.spyOn(svc, 'getPost').mockResolvedValue(existing as any);
   jest.spyOn(svc as any, 'validateChannels').mockResolvedValue([]);
@@ -60,8 +66,9 @@ function build(
     jobId: null,
     targets: [],
   },
+  policyCovers = false,
 ) {
-  const posts = realPostService(existing);
+  const posts = realPostService(existing, policyCovers);
   // The mocked db returns bare rows; give the result the shape the tool reads
   // AFTER the real service (and its Guest rules) has run.
   const realCreate = posts.createPost.bind(posts);
@@ -132,6 +139,24 @@ describe('chatbot create_post', () => {
     expect(res.success).toBe(false);
     expect(res.error).toContain('does not allow');
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('the workspace approval policy refuses a covered member scheduling through the tool', async () => {
+    const { posts, tool } = build('MEMBER', undefined, true);
+    const schedule = jest.spyOn(posts as any, 'schedulePublishJob');
+    const res = await tool('create_post').execute(
+      { content: 'hi', targetChannelIds: [], scheduledAt: FUTURE },
+      CTX,
+    );
+    expect(res.success).toBe(false);
+    expect(res.error).toContain('needs approval');
+    expect(schedule).not.toHaveBeenCalled();
+    // A draft (no time) is still fine.
+    const draft = await tool('create_post').execute(
+      { content: 'hi', targetChannelIds: [] },
+      CTX,
+    );
+    expect(draft.success).toBe(true);
   });
 });
 

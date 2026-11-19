@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
@@ -19,17 +20,102 @@ import {
   writeStripeBasePlanRow,
 } from '../providers/stripe-provider-row.util';
 import { db } from '../../drizzle/db';
+import { providerSubscriptions } from '../../drizzle/schema/billing.schema';
+import type { ProviderSubscription } from '../../drizzle/schema/billing.schema';
+import { findItem, isLive } from './provider-subscription.util';
 import {
   subscriptions,
   subscriptionItems,
   workspaceUsage,
   plans,
   workspace,
+  subscriptionChanges,
+  Subscription,
   NewSubscription,
   NewSubscriptionItem,
   NewWorkspaceUsage,
 } from '../../drizzle/schema';
 import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
+import type { CancelReason } from '../dto/billing.dto';
+
+/**
+ * Local `subscriptions.status` values after which nothing bills: Stripe's
+ * `canceled` and `incomplete_expired`, and `expired` (Lemon Squeezy's end,
+ * and what stale-id recovery writes).
+ */
+const TERMINAL_SUBSCRIPTION_STATUSES: ReadonlySet<string> = new Set([
+  'canceled',
+  'incomplete_expired',
+  'expired',
+]);
+
+/**
+ * Whether cancelling this subscription (at period end or now) would do
+ * anything. The one rule for "is there a plan to cancel": cancelForAccount
+ * acts on it, and the workspace deletion preview warns from it, so the
+ * warning and the action cannot disagree.
+ *
+ * Nothing to cancel: no subscription, the FREE plan (by code, never by
+ * name), a terminal status (TERMINAL_SUBSCRIPTION_STATUSES), a BASE_PLAN
+ * provider row that is no longer live (`isLive`: the provider says it has
+ * ended, whatever the local row still says), or already set to end at the
+ * period end when that is what is asked again.
+ *
+ * `basePlan` is the default provider's BASE_PLAN row (loadBasePlanRow);
+ * undefined or null when there is none, which leaves the local row to decide.
+ */
+export function isCancellable(
+  subscription:
+    | Pick<Subscription, 'planCode' | 'status' | 'cancelAtPeriodEnd'>
+    | null
+    | undefined,
+  atPeriodEnd: boolean,
+  basePlan?: ProviderSubscription | null,
+): boolean {
+  if (!subscription) return false;
+  if (subscription.planCode === 'FREE') return false;
+  if (TERMINAL_SUBSCRIPTION_STATUSES.has(subscription.status ?? '')) {
+    return false;
+  }
+  if (basePlan && !isLive(basePlan)) return false;
+  if (atPeriodEnd && subscription.cancelAtPeriodEnd) return false;
+  return true;
+}
+
+/** The default provider's BASE_PLAN row of one subscription, or null. */
+export async function loadBasePlanRow(
+  reader: Pick<typeof db, 'select'>,
+  subscriptionId: number,
+): Promise<ProviderSubscription | null> {
+  const rows = (await reader
+    .select()
+    .from(providerSubscriptions)
+    .where(
+      eq(providerSubscriptions.subscriptionId, subscriptionId),
+    )) as ProviderSubscription[];
+  return findItem(rows, 'BASE_PLAN');
+}
+
+/**
+ * Whether a provider's refusal to cancel means there is nothing left to
+ * cancel: Stripe's `resource_missing` ("No such subscription") or its
+ * refusal to touch a subscription already canceled, and Lemon Squeezy's 404
+ * (its client folds the status into the message). Anything else - a
+ * timeout, an auth failure, a 5xx - is a real failure.
+ */
+export function isProviderSubscriptionGone(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const code = (err as { code?: unknown }).code;
+  if (code === 'resource_missing') return true;
+  const message = String((err as { message?: unknown }).message ?? '');
+  if (/no such subscription/i.test(message)) return true;
+  if (/canceled subscription|already (been )?cancell?ed/i.test(message)) {
+    return true;
+  }
+  // LemonSqueezyClient: "Lemon Squeezy DELETE subscriptions/1 failed: HTTP 404"
+  // or the detail LS sends for a missing record.
+  return /^Lemon Squeezy /.test(message) && /HTTP 404|not found/i.test(message);
+}
 
 export interface CreateSubscriptionDto {
   workspaceId: string;
@@ -55,6 +141,8 @@ export interface SubscriptionResponse {
 
 @Injectable()
 export class SubscriptionService {
+  private readonly logger = new Logger(SubscriptionService.name);
+
   constructor(
     private stripeService: StripeService,
     private customerService: CustomerService,
@@ -91,10 +179,13 @@ export class SubscriptionService {
     const ws = await db
       .select()
       .from(workspace)
-      .where(and(
+      .where(
+        and(
           eq(workspace.id, dto.workspaceId),
           eq(workspace.ownerId, dto.userId),
-          liveWorkspaces()))
+          liveWorkspaces(),
+        ),
+      )
       .limit(1);
 
     if (ws.length === 0) {
@@ -353,7 +444,13 @@ export class SubscriptionService {
     const ws = await db
       .select()
       .from(workspace)
-      .where(and(eq(workspace.id, workspaceId), eq(workspace.ownerId, userId), liveWorkspaces()))
+      .where(
+        and(
+          eq(workspace.id, workspaceId),
+          eq(workspace.ownerId, userId),
+          liveWorkspaces(),
+        ),
+      )
       .limit(1);
 
     if (ws.length === 0) {
@@ -418,10 +515,13 @@ export class SubscriptionService {
     const ws = await db
       .select()
       .from(workspace)
-      .where(and(
+      .where(
+        and(
           eq(workspace.id, dto.workspaceId),
           eq(workspace.ownerId, dto.userId),
-          liveWorkspaces()))
+          liveWorkspaces(),
+        ),
+      )
       .limit(1);
     if (ws.length === 0) {
       throw new NotFoundException(
@@ -714,12 +814,19 @@ export class SubscriptionService {
     workspaceId: string,
     userId: string,
     cancelAtPeriodEnd: boolean = true,
+    reason?: CancelReason,
   ): Promise<{ message: string }> {
     // Verify ownership
     const ws = await db
       .select()
       .from(workspace)
-      .where(and(eq(workspace.id, workspaceId), eq(workspace.ownerId, userId), liveWorkspaces()))
+      .where(
+        and(
+          eq(workspace.id, workspaceId),
+          eq(workspace.ownerId, userId),
+          liveWorkspaces(),
+        ),
+      )
       .limit(1);
 
     if (ws.length === 0) {
@@ -728,14 +835,10 @@ export class SubscriptionService {
       );
     }
 
-    // Get subscription — subscriptions are per-account, so look it up by the
-    // (already-verified) owner rather than the workspace.
-    const subscription = await db
-      .select()
-      .from(subscriptions)
-      .where(eq(subscriptions.userId, userId))
-      .limit(1)
-      .then((rows) => rows[0]);
+    // Read here as well as in cancelForAccount: the route keeps its own
+    // answers (404 without a subscription, 400 on FREE, the period end in
+    // the message), which 'none' alone cannot tell apart.
+    const subscription = await this.accountSubscription(userId);
 
     if (!subscription) {
       throw new NotFoundException('Subscription not found for this workspace');
@@ -746,38 +849,108 @@ export class SubscriptionService {
       throw new BadRequestException('Cannot cancel free plan');
     }
 
-    // Cancel at whichever provider bills this account.
+    const outcome = await this.cancelForAccount(userId, cancelAtPeriodEnd, {
+      reason,
+      changedByUserId: userId,
+    });
+    if (outcome === 'none') {
+      throw new BadRequestException(
+        cancelAtPeriodEnd && subscription.cancelAtPeriodEnd
+          ? 'Subscription is already set to cancel at the end of the billing period'
+          : 'Subscription is already canceled',
+      );
+    }
+
+    return cancelAtPeriodEnd
+      ? {
+          message: `Subscription will be canceled at the end of the billing period (${subscription.currentPeriodEnd})`,
+        }
+      : { message: 'Subscription canceled immediately' };
+  }
+
+  /**
+   * Cancels the account's subscription at whichever provider bills it, with
+   * no workspace in the picture: the route above, deleting the last owned
+   * workspace, and deleting the account all come here. 'none' when there is
+   * nothing to cancel (isCancellable: no subscription, FREE, already
+   * canceled, or already ending at the period end when that is asked again);
+   * the provider is never called and nothing is logged then.
+   *
+   * Every cancel is logged in `subscription_changes` with the reason, so a
+   * churn report can read why.
+   */
+  async cancelForAccount(
+    userId: string,
+    atPeriodEnd: boolean,
+    opts: {
+      reason?: CancelReason;
+      changedByUserId?: string | null;
+      /**
+       * The provider says the subscription is already gone (cancelled, or
+       * no such subscription): treat it as cancelled here too instead of
+       * failing. Account deletion sets it - a subscription that no longer
+       * bills must not block deleting the account.
+       */
+      goneIsCancelled?: boolean;
+    } = {},
+  ): Promise<'cancelled' | 'none'> {
+    const subscription = await this.accountSubscription(userId);
+    if (
+      !subscription ||
+      !isCancellable(
+        subscription,
+        atPeriodEnd,
+        await loadBasePlanRow(db, subscription.id),
+      )
+    ) {
+      return 'none';
+    }
+
     const adapter = await this.providers.adapterForSubscription(
       subscription.id,
     );
-    await adapter.cancel(subscription.id, cancelAtPeriodEnd);
-
-    // Update database
-    if (cancelAtPeriodEnd) {
-      await db
-        .update(subscriptions)
-        .set({
-          cancelAtPeriodEnd: true,
-          updatedAt: new Date(),
-        })
-        .where(eq(subscriptions.id, subscription.id));
-
-      return {
-        message: `Subscription will be canceled at the end of the billing period (${subscription.currentPeriodEnd})`,
-      };
-    } else {
-      await db
-        .update(subscriptions)
-        .set({
-          status: 'canceled',
-          canceledAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(subscriptions.id, subscription.id));
-
-      return {
-        message: 'Subscription canceled immediately',
-      };
+    try {
+      await adapter.cancel(subscription.id, atPeriodEnd);
+    } catch (error) {
+      if (!opts.goneIsCancelled || !isProviderSubscriptionGone(error)) {
+        throw error;
+      }
+      this.logger.warn(
+        `Subscription ${subscription.id}: the provider has nothing left to cancel (${(error as Error)?.message}); recorded as cancelled`,
+      );
     }
+
+    await db
+      .update(subscriptions)
+      .set(
+        atPeriodEnd
+          ? { cancelAtPeriodEnd: true, updatedAt: new Date() }
+          : {
+              status: 'canceled',
+              canceledAt: new Date(),
+              updatedAt: new Date(),
+            },
+      )
+      .where(eq(subscriptions.id, subscription.id));
+
+    await db.insert(subscriptionChanges).values({
+      subscriptionId: subscription.id,
+      changeType: 'SUBSCRIPTION_CANCELLED',
+      newValue: { atPeriodEnd },
+      changedByUserId: opts.changedByUserId ?? null,
+      reason: opts.reason ?? null,
+    });
+
+    return 'cancelled';
+  }
+
+  /** Subscriptions are per account: one row per user. */
+  private async accountSubscription(userId: string) {
+    return db
+      .select()
+      .from(subscriptions)
+      .where(eq(subscriptions.userId, userId))
+      .limit(1)
+      .then((rows) => rows[0]);
   }
 }

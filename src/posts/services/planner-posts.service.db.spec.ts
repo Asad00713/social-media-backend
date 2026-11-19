@@ -7,10 +7,25 @@ import {
 import { posts } from '../../drizzle/schema/posts.schema';
 import { users } from '../../drizzle/schema/users.schema';
 import { workspace } from '../../drizzle/schema/workspace.schema';
+import { LabelsService } from '../../labels/labels.service';
+import { PostLabelsService } from '../../labels/post-labels.service';
 import { PlannerPostsService } from './planner-posts.service';
 
 const HOUR = 3600 * 1000;
-const READY_MIGRATION = '0041_post_ready.sql';
+/**
+ * The seed inserts through drizzle, which names every schema column of users
+ * and workspace, so every migration after the local baseline that adds one
+ * must be applied (0070, 0071, 0073, 0092, 0093). 0094 for labelIds.
+ */
+const MIGRATIONS = [
+  '0041_post_ready.sql',
+  '0070_users_sessions_revoked_at.sql',
+  '0071_users_pending_email.sql',
+  '0073_users_email_changed_at.sql',
+  '0092_user_account_settings.sql',
+  '0093_workspace_settings.sql',
+  '0094_workspace_labels.sql',
+];
 
 async function seed(db: DbType) {
   const stamp = Math.random().toString(36).slice(2);
@@ -35,7 +50,7 @@ async function seed(db: DbType) {
 
 describeDb('PlannerPostsService (database)', () => {
   it('range excludes drafts and keeps scheduled-only and published-now posts', async () => {
-    await withRollbackDb([READY_MIGRATION], async (db) => {
+    await withRollbackDb(MIGRATIONS, async (db) => {
       const { user, a } = await seed(db);
       const now = Date.now();
       const base = { workspaceId: a.id, createdById: user.id, content: 'x' };
@@ -60,7 +75,7 @@ describeDb('PlannerPostsService (database)', () => {
   });
 
   it('range keeps a failed "Publish now" at its attempt (updated_at)', async () => {
-    await withRollbackDb([READY_MIGRATION], async (db) => {
+    await withRollbackDb(MIGRATIONS, async (db) => {
       const { user, a } = await seed(db);
       const now = Date.now();
       const base = { workspaceId: a.id, createdById: user.id, content: 'x' };
@@ -100,7 +115,7 @@ describeDb('PlannerPostsService (database)', () => {
   });
 
   it('getOne rejects a post that belongs to another workspace', async () => {
-    await withRollbackDb([READY_MIGRATION], async (db) => {
+    await withRollbackDb(MIGRATIONS, async (db) => {
       const { user, a, b } = await seed(db);
       const [p] = await db
         .insert(posts)
@@ -111,13 +126,19 @@ describeDb('PlannerPostsService (database)', () => {
           status: 'draft',
         } as never)
         .returning();
-      const svc = new PlannerPostsService(db as never);
+      const postLabels = new PostLabelsService(db, new LabelsService(db));
+      await postLabels.setForPost(b.id, p.id, ['Zeta', 'Alpha']);
+      const ids = (await postLabels.idsForPosts([p.id])).get(p.id);
+      const svc = new PlannerPostsService(db as never, postLabels);
       await expect(svc.getOne(a.id, p.id)).rejects.toBeInstanceOf(
         NotFoundException,
       );
+      // labelIds come through present(), in name order.
       await expect(svc.getOne(b.id, p.id)).resolves.toMatchObject({
         id: p.id,
+        labelIds: ids,
       });
+      expect(ids).toHaveLength(2);
     });
   });
 });

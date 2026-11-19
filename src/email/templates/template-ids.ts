@@ -6,6 +6,7 @@ export const TEMPLATE_IDS = [
   'email-changed',
   'password-changed',
   'new-sign-in',
+  'sign-in-method-changed',
   'workspace-invitation',
   'invitation-accepted',
   'removed-from-workspace',

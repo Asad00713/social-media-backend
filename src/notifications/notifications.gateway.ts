@@ -16,7 +16,10 @@ import type { Notification } from 'src/drizzle/schema';
 import type { DbType } from '../drizzle/db';
 import { DRIZZLE } from '../drizzle/drizzle.module';
 import { users } from '../drizzle/schema/users.schema';
-import { assertSessionLive } from '../auth/strategies/jwt.strategy';
+import {
+  assertNotDeleted,
+  assertSessionLive,
+} from '../auth/strategies/jwt.strategy';
 
 interface AuthenticatedSocket extends Socket {
   userId?: string;
@@ -71,11 +74,16 @@ export class NotificationsGateway
 
       // A token from before a password change, reset or "This wasn't me" is
       // refused, as on the HTTP side. Checked once, at connect.
+      // A deleted account is refused outright, as the HTTP strategies do.
       const [account] = await this.db
-        .select({ sessionsRevokedAt: users.sessionsRevokedAt })
+        .select({
+          sessionsRevokedAt: users.sessionsRevokedAt,
+          deletedAt: users.deletedAt,
+        })
         .from(users)
         .where(eq(users.id, userId));
       if (!account) throw new Error(`User ${userId} not found`);
+      assertNotDeleted(account.deletedAt);
       assertSessionLive(payload.iat, account.sessionsRevokedAt);
 
       // Store userId on socket
@@ -118,6 +126,15 @@ export class NotificationsGateway
 
       this.logger.log(`User ${userId} disconnected (socket ${client.id})`);
     }
+  }
+
+  /**
+   * Drops every socket of one user on this instance (account deleted). A
+   * socket is checked only at connect, so without this an open tab would go
+   * on receiving events until it reconnects - and then be refused.
+   */
+  disconnectUser(userId: string): void {
+    this.server?.in(`user:${userId}`).disconnectSockets(true);
   }
 
   /**

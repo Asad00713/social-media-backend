@@ -32,13 +32,22 @@ import {
 import { BillingEmailService, billingEmailKey } from './billing-email.service';
 import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
+/**
+ * Days added to the first failed payment to get the "update your card by" date
+ * the settings billing page shows (BillingOverviewService). DISPLAY ONLY:
+ * nothing enforces it. What actually ends dunning is `MAX_FAILED_ATTEMPTS`
+ * (unresolved failed invoices), below, so the date is informational and the
+ * UI must not promise a hard cutoff on it.
+ */
+export const PAYMENT_GRACE_DAYS = 7;
+
 @Injectable()
 export class WebhookService {
   private readonly logger = new Logger(WebhookService.name);
 
   // Configuration for failed payment handling
   private readonly MAX_FAILED_ATTEMPTS = 3;
-  private readonly GRACE_PERIOD_DAYS = 7;
+  private readonly GRACE_PERIOD_DAYS = PAYMENT_GRACE_DAYS;
 
   constructor(
     private subscriptionService: SubscriptionService,

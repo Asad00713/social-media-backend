@@ -7,7 +7,9 @@ const SECRET = 'test-access-secret';
 const REVOKED_AT = new Date(1_700_000_000_500);
 
 function setup(
-  account: { sessionsRevokedAt: Date | null } | undefined,
+  account:
+    | { sessionsRevokedAt: Date | null; deletedAt?: Date | null }
+    | undefined,
   lookupError?: Error,
 ) {
   const jwt = new JwtService({});
@@ -89,5 +91,33 @@ describe('NotificationsGateway.handleConnection session revocation', () => {
     expect(client.disconnect).toHaveBeenCalled();
     expect(client.join).not.toHaveBeenCalled();
     expect(client.emit).not.toHaveBeenCalled();
+  });
+
+  it('refuses a soft-deleted account, whatever the token', async () => {
+    const { gateway, jwt } = setup({
+      sessionsRevokedAt: null,
+      deletedAt: new Date(),
+    });
+    const client = socketWith(tokenAt(jwt, 1_900_000_000));
+
+    await gateway.handleConnection(client as never);
+
+    expect(client.disconnect).toHaveBeenCalled();
+    expect(client.join).not.toHaveBeenCalled();
+    expect(client.emit).not.toHaveBeenCalled();
+  });
+});
+
+describe('NotificationsGateway.disconnectUser', () => {
+  it("drops every socket in the user's room", () => {
+    const { gateway } = setup(undefined);
+    const disconnectSockets = jest.fn();
+    const inRoom = jest.fn().mockReturnValue({ disconnectSockets });
+    gateway.server = { in: inRoom } as never;
+
+    gateway.disconnectUser('u1');
+
+    expect(inRoom).toHaveBeenCalledWith('user:u1');
+    expect(disconnectSockets).toHaveBeenCalledWith(true);
   });
 });

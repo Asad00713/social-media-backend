@@ -17,6 +17,12 @@ import { WorkspaceMembersController } from './workspace-members.controller';
 import { REQUIRE_CAPABILITY } from './require-capability.decorator';
 import { WorkspaceRoleService } from './workspace-role.service';
 
+// The account-live lock (FOR KEY SHARE on users) is proven against Postgres
+// in workspace.create-vs-delete.db.spec.ts; these fakes have no `select`.
+jest.mock('src/users/account-live', () => ({
+  lockLiveAccount: jest.fn().mockResolvedValue(undefined),
+}));
+
 const dialect = new PgDialect();
 const whereOf = (arg: any) => dialect.sqlToQuery(arg.where);
 
@@ -536,6 +542,30 @@ describe('WorkspaceMembersService.restoreMember', () => {
     await expect(
       makeService(db).restoreMember(WS, 'm1', OWNER),
     ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('a removal whose person has since deleted their account is not restorable: 404, nothing written', async () => {
+    const { db, calls } = restoreDb(
+      removedRow({ user: { deletedAt: new Date() } }),
+    );
+    await expect(
+      makeService(db).restoreMember(WS, 'm1', ADMIN),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(calls).toHaveLength(0);
+    // The lookup asks for the user's deleted_at alongside the row.
+    expect(
+      db.query.workspaceInvitation.findFirst.mock.calls[0][0],
+    ).toMatchObject({ with: { user: { columns: { deletedAt: true } } } });
+  });
+
+  it('a live account (deletedAt null) is still restorable', async () => {
+    const { db, calls } = restoreDb(removedRow({ user: { deletedAt: null } }));
+    await makeService(db, { usage: usageWith(5, 1) }).restoreMember(
+      WS,
+      'm1',
+      ADMIN,
+    );
+    expect(calls).toHaveLength(1);
   });
 
   it('404s a row that is not REMOVED in this workspace', async () => {

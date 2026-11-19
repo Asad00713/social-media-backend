@@ -35,7 +35,8 @@ export type MediaSort =
 
 export interface UserRef {
   id: string;
-  name: string;
+  /** Null for a deleted account (the client shows "Deleted user"). */
+  name: string | null;
   avatarUrl: string | null;
 }
 

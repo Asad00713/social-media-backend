@@ -56,6 +56,7 @@ import { BrandKitModule } from './brand-kit/brand-kit.module';
 import { ShortLinksModule } from './short-links/short-links.module';
 import { NotificationPreferencesModule } from './notification-preferences/notification-preferences.module';
 import { PlatformStatusModule } from './platform-status/platform-status.module';
+import { LabelsModule } from './labels/labels.module';
 import { HealthModule } from './health/health.module';
 import { BullBoardModule } from '@bull-board/nestjs';
 import { ExpressAdapter } from '@bull-board/express';
@@ -134,6 +135,7 @@ import { QUEUES } from './queue/queue.module';
     ShortLinksModule,
     NotificationPreferencesModule,
     PlatformStatusModule,
+    LabelsModule,
     HealthModule,
     BullBoardModule.forRoot({
       // Moved off '/admin/queues' so it stops swallowing the admin queue API,

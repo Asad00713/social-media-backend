@@ -1061,7 +1061,7 @@ describe('CampaignsService lifecycle delegation to EvergreenService', () => {
       fakeEvergreen,
     );
 
-    const result = await service.launch(WORKSPACE_ID, CAMPAIGN_ID);
+    const result = await service.launch(WORKSPACE_ID, CAMPAIGN_ID, 'actor-1');
 
     expect(fakeEvergreen.launch).toHaveBeenCalledWith(
       WORKSPACE_ID,
@@ -1116,7 +1116,7 @@ describe('CampaignsService lifecycle delegation to EvergreenService', () => {
       fakeEvergreen,
     );
 
-    const result = await service.resume(WORKSPACE_ID, CAMPAIGN_ID);
+    const result = await service.resume(WORKSPACE_ID, CAMPAIGN_ID, 'actor-1');
 
     expect(fakeEvergreen.resume).toHaveBeenCalledWith(
       WORKSPACE_ID,
@@ -1179,7 +1179,7 @@ describe('CampaignsService lifecycle delegation to EvergreenService', () => {
       fakeEvergreen,
     );
 
-    const result = await service.launch(WORKSPACE_ID, CAMPAIGN_ID);
+    const result = await service.launch(WORKSPACE_ID, CAMPAIGN_ID, 'actor-1');
 
     expect(fakeEvergreen.launch).not.toHaveBeenCalled();
     expect(fakeEvergreen.pause).not.toHaveBeenCalled();

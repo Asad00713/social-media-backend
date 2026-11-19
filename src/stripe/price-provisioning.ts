@@ -10,7 +10,7 @@ export function addonLookupKey(planCode: string, addonType: string): string {
   return `addon_${addonType.toLowerCase()}_${planCode.toLowerCase()}`;
 }
 
-const ADDON_DISPLAY_NAMES: Record<string, string> = {
+export const ADDON_DISPLAY_NAMES: Record<string, string> = {
   EXTRA_CHANNEL: 'Extra Channel',
   EXTRA_MEMBER: 'Extra Team Member',
   EXTRA_WORKSPACE: 'Extra Workspace',

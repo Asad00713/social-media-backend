@@ -1,4 +1,11 @@
-import { pgTable, uuid, timestamp, varchar, pgEnum } from 'drizzle-orm/pg-core';
+import {
+  pgTable,
+  uuid,
+  timestamp,
+  varchar,
+  pgEnum,
+  text,
+} from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 import { workspace } from './workspace.schema';
 import { users } from './users.schema';
@@ -27,9 +34,11 @@ export const workspaceInvitation = pgTable('workspace_invitations', {
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }), // null if user doesn't exist yet
   role: memberRoleEnum('role').notNull().default('MEMBER'),
   status: invitationStatusEnum('status').notNull().default('PENDING'),
-  invitedBy: uuid('invited_by')
-    .notNull()
-    .references(() => users.id),
+  // NULL once the inviter's account is deleted (0095, SET NULL); the
+  // invitation itself is kept.
+  invitedBy: uuid('invited_by').references(() => users.id, {
+    onDelete: 'set null',
+  }),
   token: varchar('token', { length: 255 }).notNull().unique(), // unique token for invitation link
   expiresAt: timestamp('expires_at').notNull(), // invitation expires after X days
   acceptedAt: timestamp('accepted_at'),
@@ -39,6 +48,8 @@ export const workspaceInvitation = pgTable('workspace_invitations', {
   removedBy: uuid('removed_by').references(() => users.id, {
     onDelete: 'set null',
   }),
+  // Optional personal note from the inviter, shown in the invitation email (0093).
+  message: text('message'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });

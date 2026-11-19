@@ -253,6 +253,39 @@ describe('MentionSearchService', () => {
     ]);
   });
 
+  it('leaves out a deleted account instead of offering its placeholder email', async () => {
+    const service = makeService({
+      members: {
+        owner: { id: 'o1', name: 'Asad', email: 'a@example.com' },
+        members: [
+          {
+            role: 'MEMBER',
+            user: {
+              id: 'gone',
+              name: null,
+              email: 'deleted+gone@deleted.invalid',
+            },
+          },
+          {
+            role: 'MEMBER',
+            user: { id: 'm1', name: null, email: 's@example.com' },
+          },
+        ],
+      },
+    });
+
+    const { results } = await service.search({
+      workspaceId: WORKSPACE,
+      userId: USER,
+      query: '',
+    });
+
+    expect(byType(results, 'member').map((r) => r.label)).toEqual([
+      'Asad',
+      's@example.com',
+    ]);
+  });
+
   it('carries a dead channel state, so it is never mentioned silently', async () => {
     const service = makeService({
       channels: [

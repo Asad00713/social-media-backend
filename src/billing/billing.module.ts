@@ -10,6 +10,7 @@ import { AddonService } from './services/addon.service';
 import { PlanChangeService } from './services/plan-change.service';
 import { DashboardService } from './services/dashboard.service';
 import { InvoiceService } from './services/invoice.service';
+import { BillingOverviewService } from './services/billing-overview.service';
 import { PaymentMethodService } from './services/payment-method.service';
 import { SubscriptionLookupService } from './services/subscription-lookup.service';
 import { AccountChannelsService } from './services/account-channels.service';
@@ -76,6 +77,7 @@ const PROVIDER_ADAPTER_REGISTRATION = {
     PlanChangeService,
     DashboardService,
     InvoiceService,
+    BillingOverviewService,
     PaymentMethodService,
     SubscriptionLookupService,
     PostQueueService,

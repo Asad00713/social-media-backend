@@ -13,6 +13,7 @@ import {
   eq,
   and,
   gt,
+  inArray,
   isNull,
   isNotNull,
   lte,
@@ -151,8 +152,9 @@ export class UserInactivityService {
    *  - `lastLoginAt` is the only signal it reads. Someone using the product
    *    through a live session, a scheduled post or a connected channel counts
    *    as absent, because none of those touch that column.
-   *  - The 365-day step *deletes* the user row, and `users` cascades — so the
-   *    workspaces, channels and posts go with it. It selects on
+   *  - The 365-day step *deletes* the user row, and `users` cascaded — so the
+   *    workspaces, channels and posts went with it (since 0095 owners are
+   *    skipped instead: owner_id is RESTRICT). It selects on
    *    `isActive = false`, which is precisely the state the 30-day step puts
    *    people in. A wrong suspension today is a permanent deletion in a year.
    *
@@ -515,8 +517,25 @@ export class UserInactivityService {
       `Found ${usersToDelete.length} users inactive for 365+ days (will be deleted)`,
     );
 
+    // workspace.owner_id is ON DELETE RESTRICT since 0095, so deleting an
+    // owner fails with 23001 and would fail again on every run. Owners are
+    // skipped, once, by id.
+    // TODO(settings Part A, Task 21): route this purge through
+    // AccountDeletionService.deleteAccount (soft delete + anonymise) instead
+    // of a hard DELETE, and decide what happens to an inactive owner's
+    // workspaces there.
+    const owners = await this.workspaceOwnersAmong(
+      usersToDelete.map((u) => u.id),
+    );
+    if (owners.size > 0) {
+      this.logger.warn(
+        `Skipped ${owners.size} inactive workspace owner(s), not deleted: ${[...owners].join(', ')}`,
+      );
+    }
+
     const deletedUsers: string[] = [];
     for (const user of usersToDelete) {
+      if (owners.has(user.id)) continue;
       try {
         // Delete the user
         await this.db.delete(users).where(eq(users.id, user.id));
@@ -540,6 +559,23 @@ export class UserInactivityService {
         { userCount: deletedUsers.length, users: deletedUsers },
       );
     }
+  }
+
+  /**
+   * Which of these users own at least one workspace row.
+   *
+   * Deliberately NOT filtered by liveWorkspaces(): this guards a HARD user
+   * delete, and workspace.owner_id is ON DELETE RESTRICT (0095). A
+   * soft-deleted workspace is still a row until the purge removes it, so its
+   * owner would fail the delete with 23503 all the same.
+   */
+  private async workspaceOwnersAmong(userIds: string[]): Promise<Set<string>> {
+    if (userIds.length === 0) return new Set();
+    const rows = await this.db
+      .select({ ownerId: workspace.ownerId })
+      .from(workspace)
+      .where(inArray(workspace.ownerId, userIds));
+    return new Set(rows.map((r) => r.ownerId));
   }
 
   /**

@@ -297,7 +297,76 @@ describe('UsersService hasPassword', () => {
   });
 });
 
+describe('toPublicUser hasGoogle and passwordChangedAt', () => {
+  const stamp = new Date('2026-11-01T00:00:00Z');
+  const row = {
+    id: 'u1',
+    email: 'sara@daybreak.co',
+    name: 'Sara',
+    role: 'USER',
+    isEmailVerified: true,
+    lastAccessedWorkspaceId: null,
+    onboardingCompletedAt: null,
+    maestroTone: 'professional',
+    useCase: null,
+    avatarUrl: null,
+    avatarColor: 'amber',
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+    password: 'hash',
+    googleSub: 'g1',
+    passwordChangedAt: stamp,
+  } as unknown as User;
+
+  it('maps hasGoogle true and the password date, and never leaks googleSub', () => {
+    const out = toPublicUser(row);
+    expect(out.hasGoogle).toBe(true);
+    expect(out.passwordChangedAt).toBe(stamp);
+    expect(out).not.toHaveProperty('googleSub');
+  });
+
+  it('hasGoogle is false without a Google link, and a never-changed password is null', () => {
+    const out = toPublicUser({
+      ...row,
+      googleSub: null,
+      passwordChangedAt: null,
+    });
+    expect(out.hasGoogle).toBe(false);
+    expect(out.passwordChangedAt).toBeNull();
+    expect(out).not.toHaveProperty('googleSub');
+  });
+
+  it('every public read derives hasGoogle in SQL, selects passwordChangedAt, and never selects google_sub itself', async () => {
+    const findFirst = jest.fn().mockResolvedValue({ id: 'u1' });
+    const service = new UsersService({
+      query: { users: { findFirst } },
+    } as never);
+
+    await service.findOne('u1');
+
+    const real = drizzle({ client: {} as Pool, schema });
+    const { sql } = real.query.users
+      .findFirst(
+        firstArg<Parameters<typeof real.query.users.findFirst>[0]>(findFirst),
+      )
+      .toSQL();
+    expect(sql).toMatch(/"google_sub" is not null/i);
+    expect(sql).not.toMatch(/"google_sub"(?! is not null)/i);
+    expect(sql).toMatch(/"password_changed_at"/i);
+  });
+});
+
 describe('UsersService.resetPassword', () => {
+  it('stamps password_changed_at in the same write as the new password', async () => {
+    const execute = jest.fn().mockResolvedValue(undefined);
+    const service = new UsersService({ execute } as never);
+
+    await service.resetPassword('u1', 'Secret123');
+
+    const { sql } = render(firstArg<SQL>(execute));
+    expect(sql).toMatch(/password_changed_at = \$\d+/);
+  });
+
   it('ends every session in the same write as the new password', async () => {
     const execute = jest.fn().mockResolvedValue(undefined);
     const service = new UsersService({ execute } as never);

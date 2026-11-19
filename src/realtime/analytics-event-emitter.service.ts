@@ -30,6 +30,21 @@ export class AnalyticsEventEmitter {
     this.internalBus.setMaxListeners(50);
   }
 
+  /**
+   * Closes every realtime socket of one user (account deleted). Never
+   * throws: the account is gone either way, and a socket left open is
+   * refused at its next connect.
+   */
+  disconnectUser(userId: string): void {
+    try {
+      this.gateway.disconnectUser(userId);
+    } catch (err) {
+      this.logger.warn(
+        `Could not disconnect the realtime sockets of ${userId}: ${(err as Error).message}`,
+      );
+    }
+  }
+
   emit<K extends AnalyticsEventName>(
     workspaceId: string,
     eventName: K,

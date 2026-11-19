@@ -44,58 +44,98 @@ describe('EvergreenController', () => {
   it('createCampaign delegates to service.createCampaign(workspaceId, userId, dto)', async () => {
     const dto = { name: 'Evergreen' } as CreateEvergreenCampaignDto;
     const result = await controller.createCampaign(workspaceId, user, dto);
-    expect(mockService.createCampaign).toHaveBeenCalledWith(workspaceId, user.userId, dto);
+    expect(mockService.createCampaign).toHaveBeenCalledWith(
+      workspaceId,
+      user.userId,
+      dto,
+    );
     expect(result).toEqual({ id: campaignId });
   });
 
   it('addCategory delegates to service.addCategory(workspaceId, campaignId, dto)', async () => {
     const dto = { name: 'Tips' } as CreateEvergreenCategoryDto;
     await controller.addCategory(workspaceId, campaignId, dto);
-    expect(mockService.addCategory).toHaveBeenCalledWith(workspaceId, campaignId, dto);
+    expect(mockService.addCategory).toHaveBeenCalledWith(
+      workspaceId,
+      campaignId,
+      dto,
+    );
   });
 
   it('updateCategory delegates to service.updateCategory(workspaceId, campaignId, categoryId, dto)', async () => {
     const dto = { name: 'Renamed' } as UpdateEvergreenCategoryDto;
-    await controller.updateCategory(workspaceId, campaignId, categoryId, dto);
+    await controller.updateCategory(
+      workspaceId,
+      campaignId,
+      categoryId,
+      dto,
+      user,
+    );
     expect(mockService.updateCategory).toHaveBeenCalledWith(
       workspaceId,
       campaignId,
       categoryId,
       dto,
+      user.userId,
     );
   });
 
   it('setCategoryActive delegates to service.setCategoryActive(workspaceId, campaignId, categoryId, dto.isActive)', async () => {
     const dto: SetCategoryActiveDto = { isActive: false };
-    await controller.setCategoryActive(workspaceId, campaignId, categoryId, dto);
+    await controller.setCategoryActive(
+      workspaceId,
+      campaignId,
+      categoryId,
+      dto,
+      user,
+    );
     expect(mockService.setCategoryActive).toHaveBeenCalledWith(
       workspaceId,
       campaignId,
       categoryId,
       false,
+      user.userId,
     );
   });
 
   it('removeCategory delegates to service.removeCategory(workspaceId, campaignId, categoryId)', async () => {
     await controller.removeCategory(workspaceId, campaignId, categoryId);
-    expect(mockService.removeCategory).toHaveBeenCalledWith(workspaceId, campaignId, categoryId);
+    expect(mockService.removeCategory).toHaveBeenCalledWith(
+      workspaceId,
+      campaignId,
+      categoryId,
+    );
   });
 
-  it('addPost delegates to service.addPost(workspaceId, campaignId, categoryId, dto)', async () => {
+  it('addPost delegates to service.addPost(workspaceId, campaignId, categoryId, dto, userId)', async () => {
     const dto = { content: {} } as CreateEvergreenPostDto;
-    await controller.addPost(workspaceId, campaignId, categoryId, dto);
-    expect(mockService.addPost).toHaveBeenCalledWith(workspaceId, campaignId, categoryId, dto);
+    await controller.addPost(workspaceId, campaignId, categoryId, dto, user);
+    expect(mockService.addPost).toHaveBeenCalledWith(
+      workspaceId,
+      campaignId,
+      categoryId,
+      dto,
+      user.userId,
+    );
   });
 
-  it('updatePost delegates to service.updatePost(workspaceId, campaignId, categoryId, postId, dto)', async () => {
+  it('updatePost delegates to service.updatePost(workspaceId, campaignId, categoryId, postId, dto, userId)', async () => {
     const dto = { content: {} } as UpdateEvergreenPostDto;
-    await controller.updatePost(workspaceId, campaignId, categoryId, postId, dto);
+    await controller.updatePost(
+      workspaceId,
+      campaignId,
+      categoryId,
+      postId,
+      dto,
+      user,
+    );
     expect(mockService.updatePost).toHaveBeenCalledWith(
       workspaceId,
       campaignId,
       categoryId,
       postId,
       dto,
+      user.userId,
     );
   });
 

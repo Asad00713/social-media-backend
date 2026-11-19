@@ -39,6 +39,8 @@ class FakeRepo {
       return Promise.resolve();
     },
   );
+  paused: Date | null = null;
+  pausedUntil = jest.fn((_userId: string) => Promise.resolve(this.paused));
   seed(workspaceId: string | null, row: PreferenceOverride) {
     const key = workspaceId ?? '';
     this.rows.set(key, [...(this.rows.get(key) ?? []), row]);
@@ -149,6 +151,112 @@ describe('NotificationPreferencesService.shouldSend', () => {
     expect(
       await service.shouldSend(USER, null, 'inactivity_reminder', 'email'),
     ).toBe(false);
+  });
+});
+
+describe('NotificationPreferencesService.shouldSend while paused', () => {
+  const HOUR = 60 * 60 * 1000;
+
+  it.each([
+    ['member_activity', 'app'],
+    ['inbox_mention', 'email'],
+    ['inbox_mention', 'app'],
+    ['approval_request', 'email'],
+  ] as const)('%s/%s is muted', async (event, channel) => {
+    const { service, repo } = setup();
+    repo.paused = new Date(Date.now() + HOUR);
+    expect(await service.shouldSend(USER, WS, event, channel)).toBe(false);
+    expect(repo.pausedUntil).toHaveBeenCalledWith(USER);
+  });
+
+  it.each([
+    ['post_failed', 'app'],
+    ['post_failed', 'email'],
+    ['security_alert', 'app'],
+    ['security_alert', 'email'],
+  ] as const)('%s/%s still goes out', async (event, channel) => {
+    const { service, repo } = setup();
+    repo.paused = new Date(Date.now() + HOUR);
+    expect(await service.shouldSend(USER, WS, event, channel)).toBe(true);
+  });
+
+  it('the exemption lifts the pause only: the person own switch still wins', async () => {
+    const { service, repo } = setup();
+    repo.paused = new Date(Date.now() + HOUR);
+    repo.seed(WS, { event: 'post_failed', channel: 'email', enabled: false });
+    repo.seed(null, {
+      event: 'security_alert',
+      channel: 'app',
+      enabled: false,
+    });
+    expect(await service.shouldSend(USER, WS, 'post_failed', 'email')).toBe(
+      false,
+    );
+    expect(await service.shouldSend(USER, WS, 'security_alert', 'app')).toBe(
+      false,
+    );
+  });
+
+  it('a locked channel (billing_alert/email) is never paused', async () => {
+    const { service, repo } = setup();
+    repo.paused = new Date(Date.now() + HOUR);
+    expect(await service.shouldSend(USER, WS, 'billing_alert', 'email')).toBe(
+      true,
+    );
+  });
+
+  it('an account-level event is paused too', async () => {
+    const { service, repo } = setup();
+    repo.paused = new Date(Date.now() + HOUR);
+    expect(
+      await service.shouldSend(USER, null, 'inactivity_reminder', 'email'),
+    ).toBe(false);
+  });
+
+  it('a muted event never reaches the membership or override lookups', async () => {
+    const { service, repo, roles } = setup();
+    repo.paused = new Date(Date.now() + HOUR);
+    await service.shouldSend(USER, WS, 'member_activity', 'app');
+    expect(roles.getRole).not.toHaveBeenCalled();
+    expect(repo.findForUser).not.toHaveBeenCalled();
+  });
+
+  it('an exempt event does not read the pause at all', async () => {
+    const { service, repo } = setup();
+    repo.paused = new Date(Date.now() + HOUR);
+    await service.shouldSend(USER, WS, 'post_failed', 'email');
+    expect(repo.pausedUntil).not.toHaveBeenCalled();
+  });
+
+  it('an expired pause changes nothing: defaults and overrides apply as before', async () => {
+    const { service, repo } = setup();
+    repo.paused = new Date(Date.now() - 1000);
+    expect(await service.shouldSend(USER, WS, 'inbox_mention', 'email')).toBe(
+      true,
+    );
+    expect(await service.shouldSend(USER, WS, 'member_activity', 'app')).toBe(
+      true,
+    );
+    repo.seed(WS, { event: 'member_activity', channel: 'app', enabled: false });
+    expect(await service.shouldSend(USER, WS, 'member_activity', 'app')).toBe(
+      false,
+    );
+  });
+
+  it('no stored pause changes nothing', async () => {
+    const { service, repo } = setup();
+    repo.paused = null;
+    expect(await service.shouldSend(USER, WS, 'inbox_mention', 'email')).toBe(
+      true,
+    );
+  });
+
+  it('an exempt event still needs membership: the pause does not widen delivery', async () => {
+    const { service, repo } = setup(null);
+    repo.paused = new Date(Date.now() + HOUR);
+    expect(await service.shouldSend(USER, WS, 'post_failed', 'email')).toBe(
+      false,
+    );
   });
 });
 

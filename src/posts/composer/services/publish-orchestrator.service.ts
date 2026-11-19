@@ -20,9 +20,11 @@ import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { posts } from '../../../drizzle/schema/posts.schema';
 import {
   assertApprovedFor,
+  assertPolicyAllowsDirectSend,
   carryApproval,
   type ApprovableContent,
 } from '../../lib/draft-approval';
+import { ApprovalPolicyService } from './approval-policy.service';
 import { socialMediaChannels } from '../../../drizzle/schema/channels.schema';
 import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.schema';
 import type {
@@ -34,6 +36,7 @@ import type {
   ScheduleConfig,
 } from '../types/draft.types';
 import { resolveOrganise, type OrganiseInput } from '../lib/draft-organise';
+import { PostLabelsService } from '../../../labels/post-labels.service';
 import { assertNoOpenBlanks } from '../lib/template-blanks';
 import { warningsField } from '../../lib/publish-warnings';
 import { livePosts } from '../../soft-delete/soft-delete';
@@ -68,6 +71,16 @@ export interface PublishResultSummary {
   postId: string;
 }
 
+/** The shared metadata a "Publish now" row stores, before its filing keys. */
+function publishNowMetadata(draft: Draft): Record<string, unknown> {
+  return {
+    hashtags: draft.base.hashtags,
+    mentions: draft.base.mentions,
+    linkPreview: draft.base.linkPreview,
+    schedule: draft.schedule,
+  };
+}
+
 /**
  * Publishes (or retries publishing) a draft that lives entirely in the
  * browser. We never store an in-progress draft on the server — the row in
@@ -88,6 +101,11 @@ export class PublishOrchestratorService {
     private readonly credentials: ChannelCredentialsLookup,
     @Inject(DRIZZLE) private readonly db: any,
     private readonly reminders: PostReminderService,
+    // Not @Optional: the module must provide it. Optional in the type only so
+    // a unit test that never touches labels can leave it out.
+    private readonly postLabels?: PostLabelsService,
+    // Not @Optional either; optional in the type for the same reason.
+    private readonly approvalPolicy?: ApprovalPolicyService,
   ) {}
 
   async publishInline(
@@ -331,7 +349,34 @@ export class PublishOrchestratorService {
       updatedAt: new Date().toISOString(),
     });
 
+    // Labels once the publish is done ("absent keeps, present sets"; null =
+    // none), so a label failure never strands the post in 'publishing'.
+    if (input.labels !== undefined) {
+      await this.setLabelsAfter(workspaceId, draft.id, input.labels);
+    }
+
     return { draftStatus, channels: finalChannels, postId: draft.id };
+  }
+
+  /**
+   * Labels on a post that is already scheduled or published. Best-effort: the
+   * post and its job (or publish) are done by now, so a label failure must not
+   * turn them into a 500 the client would retry. Logged, never thrown.
+   */
+  private async setLabelsAfter(
+    workspaceId: string,
+    postId: string,
+    labels: string[] | null,
+  ): Promise<void> {
+    try {
+      await this.postLabels?.setForPost(workspaceId, postId, labels ?? []);
+    } catch (error) {
+      this.logger.warn(
+        `Labels not saved on post ${postId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   /**
@@ -354,7 +399,13 @@ export class PublishOrchestratorService {
       const rows = (await this.db
         .select({ targets: posts.targets })
         .from(posts)
-        .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId), livePosts()))
+        .where(
+          and(
+            eq(posts.id, draftId),
+            eq(posts.workspaceId, workspaceId),
+            livePosts(),
+          ),
+        )
         .limit(1)) as { targets: unknown }[];
       const targets = Array.isArray(rows?.[0]?.targets)
         ? (rows[0].targets as ChannelTarget[])
@@ -407,7 +458,9 @@ export class PublishOrchestratorService {
 
   /**
    * Throws unless the stored draft needs no approval or has one for exactly
-   * this content; returns the `approval` key to keep on the row.
+   * this content; returns the `approval` key to keep on the row. A post by
+   * someone the workspace approval policy covers (`draft.createdById` is the
+   * caller) must carry an approval request at all.
    */
   private async approvalFor(
     workspaceId: string,
@@ -416,14 +469,30 @@ export class PublishOrchestratorService {
     const [existing] = await this.db
       .select({ metadata: posts.metadata })
       .from(posts)
-      .where(and(eq(posts.id, draft.id), eq(posts.workspaceId, workspaceId), livePosts()))
+      .where(
+        and(
+          eq(posts.id, draft.id),
+          eq(posts.workspaceId, workspaceId),
+          livePosts(),
+        ),
+      )
       .limit(1);
     const outgoing: ApprovableContent = {
       content: draft.base.text,
       mediaItems: draft.base.mediaItems,
       platformContent: draft.perPlatform,
       targets: draft.channels,
+      // The publisher-read keys upsertPostsRow stores (filing keys never
+      // count, see NON_VOIDING_METADATA_KEYS).
+      metadata: publishNowMetadata(draft),
     };
+    assertPolicyAllowsDirectSend(
+      (await this.approvalPolicy?.coversAuthor(
+        workspaceId,
+        draft.createdById,
+      )) ?? false,
+      existing?.metadata,
+    );
     assertApprovedFor(existing?.metadata, outgoing);
     return carryApproval(existing?.metadata, outgoing);
   }
@@ -435,12 +504,18 @@ export class PublishOrchestratorService {
     carried: Record<string, unknown> = {},
     organise: OrganiseInput = {},
   ): Promise<void> {
-    // The stored filing, so a publish that does not send campaign or labels
-    // keeps them rather than wiping them with the rest of the metadata.
+    // The stored filing, so a publish that does not send a campaign keeps it
+    // rather than wiping it with the rest of the metadata.
     const [existing] = await this.db
       .select({ metadata: posts.metadata })
       .from(posts)
-      .where(and(eq(posts.id, draft.id), eq(posts.workspaceId, workspaceId), livePosts()))
+      .where(
+        and(
+          eq(posts.id, draft.id),
+          eq(posts.workspaceId, workspaceId),
+          livePosts(),
+        ),
+      )
       .limit(1);
 
     // Project to legacy PostTarget shape (with `status` field).
@@ -450,10 +525,7 @@ export class PublishOrchestratorService {
     }));
 
     const metadata = {
-      hashtags: draft.base.hashtags,
-      mentions: draft.base.mentions,
-      linkPreview: draft.base.linkPreview,
-      schedule: draft.schedule,
+      ...publishNowMetadata(draft),
       ...(await resolveOrganise(
         this.db,
         workspaceId,

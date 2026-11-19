@@ -59,3 +59,18 @@ describe('roleCan', () => {
     expect(roleCan('OWNER', 'reports:manage')).toBe(true);
   });
 });
+
+describe('settings capabilities (spec §4.2)', () => {
+  it.each([
+    ['settings:view', 'GUEST', false],
+    ['settings:view', 'MEMBER', true],
+    ['workspace:manage', 'MEMBER', false],
+    ['workspace:manage', 'ADMIN', true],
+    ['labels:manage', 'GUEST', false],
+    ['labels:manage', 'MEMBER', true],
+    ['billing:manage', 'ADMIN', false],
+    ['workspace:delete', 'ADMIN', false],
+  ] as const)('%s for %s is %s', (cap, role, ok) => {
+    expect(roleCan(role, cap)).toBe(ok);
+  });
+});

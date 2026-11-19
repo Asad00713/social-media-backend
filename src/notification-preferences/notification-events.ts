@@ -92,6 +92,17 @@ export const ACCOUNT_STORED_EVENTS: ReadonlySet<PreferenceEventKey> = new Set([
   'security_alert',
 ]);
 
+/**
+ * Events a paused user still receives, on every channel (email and in-app):
+ * "Pause notifications" mutes everything except failed posts and security
+ * alerts. Locked channels (billing alerts by email, ...) are also never
+ * paused, but they short-circuit before the pause is read.
+ */
+export const PAUSE_EXEMPT_EVENTS: ReadonlySet<PreferenceEventKey> = new Set([
+  'post_failed',
+  'security_alert',
+]);
+
 /** Where `event`'s override row lives for a request about `workspaceId`. */
 export function storageWorkspaceId(
   event: PreferenceEventKey,

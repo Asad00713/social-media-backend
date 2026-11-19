@@ -41,6 +41,7 @@ export class PlannerController {
       tab: query.tab,
       limit: query.limit ?? DEFAULT_LIST_LIMIT,
       cursor: query.cursor,
+      labels: query.labels,
     });
   }
 

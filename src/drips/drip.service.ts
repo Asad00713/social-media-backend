@@ -19,6 +19,7 @@ import {
 } from '../drizzle/schema/drips.schema';
 import { socialMediaChannels } from '../drizzle/schema/channels.schema';
 import { QUEUES } from '../queue/queue.module';
+import { ApprovalPolicyService } from '../posts/composer/services/approval-policy.service';
 
 export interface CreateDripCampaignDto {
   name: string;
@@ -50,6 +51,13 @@ export interface UpdateDripCampaignDto {
   autoApprove?: boolean;
 }
 
+/** Fields that change what an active drip campaign publishes. */
+const DRIP_PUBLISH_FIELDS = [
+  'autoApprove',
+  'tone',
+  'additionalPrompt',
+] as const;
+
 @Injectable()
 export class DripService {
   private readonly logger = new Logger(DripService.name);
@@ -57,7 +65,22 @@ export class DripService {
   constructor(
     @InjectQueue(QUEUES.DRIP_CAMPAIGNS)
     private readonly dripQueue: Queue,
+    // Not @Optional: PostsModule exports it. Optional in the type only so
+    // the unit specs that build the service positionally need not pass it.
+    private readonly approvalPolicy?: ApprovalPolicyService,
   ) {}
+
+  /**
+   * The workspace approval policy: drip posts carry no per-post approval,
+   * so a covered person may not set any going out (activate, approve, or
+   * edit-and-approve). Called before the first write.
+   */
+  private async assertMayActivate(
+    workspaceId: string,
+    userId: string,
+  ): Promise<void> {
+    await this.approvalPolicy?.assertMayActivate(workspaceId, userId);
+  }
 
   /**
    * Create a new drip campaign
@@ -170,6 +193,7 @@ export class DripService {
         `Cannot activate campaign with status: ${campaign.status}`,
       );
     }
+    await this.assertMayActivate(workspaceId, userId);
 
     // Generate all drip posts for the campaign
     await this.generateDripPosts(campaign);
@@ -428,6 +452,8 @@ export class DripService {
         'Can only edit posts in pending_review status',
       );
     }
+    // Editing approves the post (status 'approved' below).
+    await this.assertMayActivate(workspaceId, userId);
 
     // Track user edits
     const userEdits = {
@@ -477,6 +503,7 @@ export class DripService {
         'Can only approve posts in pending_review status',
       );
     }
+    await this.assertMayActivate(workspaceId, userId);
 
     const [updatedPost] = await db
       .update(dripPosts)
@@ -579,6 +606,18 @@ export class DripService {
           `Cannot update ${disallowedFields.join(', ')} for non-draft campaigns`,
         );
       }
+    }
+
+    // On an ACTIVE campaign these change what goes out (whether AI posts
+    // publish without review, and what the AI writes): an activation in all
+    // but name, so the approval policy applies.
+    if (
+      campaign.status === 'active' &&
+      DRIP_PUBLISH_FIELDS.some(
+        (f) => dto[f] !== undefined && dto[f] !== campaign[f],
+      )
+    ) {
+      await this.assertMayActivate(workspaceId, userId);
     }
 
     const [updatedCampaign] = await db

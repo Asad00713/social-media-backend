@@ -359,7 +359,10 @@ export const usageEvents = pgTable('usage_events', {
   quantityBefore: integer('quantity_before').notNull(),
   quantityAfter: integer('quantity_after').notNull(),
   quantityDelta: integer('quantity_delta').notNull(),
-  triggeredByUserId: uuid('triggered_by_user_id').references(() => users.id),
+  // SET NULL (0095): the event outlives the account that caused it.
+  triggeredByUserId: uuid('triggered_by_user_id').references(() => users.id, {
+    onDelete: 'set null',
+  }),
   metadata: jsonb('metadata'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
@@ -456,7 +459,10 @@ export const subscriptionChanges = pgTable('subscription_changes', {
   newValue: jsonb('new_value'),
   prorationAmountCents: integer('proration_amount_cents'),
   effectiveDate: timestamp('effective_date').defaultNow().notNull(),
-  changedByUserId: uuid('changed_by_user_id').references(() => users.id),
+  // SET NULL (0095): the change log outlives the account that made it.
+  changedByUserId: uuid('changed_by_user_id').references(() => users.id, {
+    onDelete: 'set null',
+  }),
   reason: text('reason'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });

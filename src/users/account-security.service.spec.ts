@@ -1,4 +1,5 @@
-import { BadRequestException, Logger } from '@nestjs/common';
+import { BadRequestException, ConflictException, Logger } from '@nestjs/common';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import * as bcrypt from 'bcrypt';
 import type { GeoLocation, GeoipService } from '../auth/services/geoip.service';
 import { AppLinks } from '../email/links/app-links';
@@ -10,6 +11,7 @@ import { NotifyService } from '../notifications/notify.service';
 import type { RecipientsService } from '../notifications/recipients.service';
 import type { EnqueueEmail } from '../email/queue/email-job';
 import type { PasswordChangedProps } from '../email/templates/security/password-changed';
+import type { SignInMethodChangedProps } from '../email/templates/security/sign-in-method-changed';
 import { AccountSecurityService } from './account-security.service';
 
 const OLD = 'OldPass123';
@@ -29,6 +31,8 @@ function setup(
     appAllowed?: boolean;
     user?: unknown;
     geo?: GeoLocation | null;
+    /** What `update ... returning()` answers; defaults to the unlinked row. */
+    updated?: unknown[];
   } = {},
 ) {
   const password =
@@ -38,7 +42,24 @@ function setup(
     .mockResolvedValue(
       opts.user === undefined ? { id: 'u1', password } : opts.user,
     );
-  const where = jest.fn().mockResolvedValue(undefined);
+  const returning = jest.fn().mockResolvedValue(
+    opts.updated ?? [
+      {
+        id: 'u1',
+        email: 'u1@example.test',
+        name: 'U',
+        password,
+        googleSub: null,
+        passwordChangedAt: null,
+      },
+    ],
+  );
+  // Awaitable on its own (changePassword) and chainable into returning().
+  const where = jest
+    .fn()
+    .mockImplementation(() =>
+      Object.assign(Promise.resolve(undefined), { returning }),
+    );
   const set = jest.fn().mockReturnValue({ where });
   const update = jest.fn().mockReturnValue({ set });
   const db = { query: { users: { findFirst } }, update };
@@ -86,6 +107,7 @@ function setup(
     db,
     set,
     where,
+    returning,
     shouldSend,
     enqueue,
     tokens,
@@ -237,6 +259,55 @@ describe('AccountSecurityService.changePassword', () => {
     expect(emitter.passwordChanged).toHaveBeenCalledWith('u1');
   });
 
+  it('stamps passwordChangedAt with the same instant as the session revocation', async () => {
+    const { service, set } = setup();
+    jest.spyOn(service, 'sendPasswordChanged').mockResolvedValue(undefined);
+
+    await service.changePassword(
+      'u1',
+      { currentPassword: OLD, newPassword: NEW },
+      CTX,
+    );
+
+    const written = firstArg<{
+      passwordChangedAt: Date;
+      sessionsRevokedAt: Date;
+    }>(set);
+    expect(written.passwordChangedAt).toBeInstanceOf(Date);
+    expect(written.passwordChangedAt).toBe(written.sessionsRevokedAt);
+  });
+
+  it('revokeOtherSessions: false keeps the other sessions: the password and its date are written, sessionsRevokedAt is not', async () => {
+    const { service, set } = setup();
+    jest.spyOn(service, 'sendPasswordChanged').mockResolvedValue(undefined);
+
+    await service.changePassword(
+      'u1',
+      { currentPassword: OLD, newPassword: NEW, revokeOtherSessions: false },
+      CTX,
+    );
+
+    const written = firstArg<Record<string, unknown>>(set);
+    expect(written.password).toEqual(expect.any(String));
+    expect(written.passwordChangedAt).toBeInstanceOf(Date);
+    expect(written).not.toHaveProperty('sessionsRevokedAt');
+  });
+
+  it('revokeOtherSessions: true revokes, like omitting it', async () => {
+    const { service, set } = setup();
+    jest.spyOn(service, 'sendPasswordChanged').mockResolvedValue(undefined);
+
+    await service.changePassword(
+      'u1',
+      { currentPassword: OLD, newPassword: NEW, revokeOtherSessions: true },
+      CTX,
+    );
+
+    const written = firstArg<Record<string, unknown>>(set);
+    expect(written.sessionsRevokedAt).toBeInstanceOf(Date);
+    expect(written.passwordChangedAt).toBeInstanceOf(Date);
+  });
+
   it('does not ring the bell when the security_alert app switch is off, and still emails', async () => {
     const { service, enqueue, emitter } = setup({ appAllowed: false });
     const notice = jest.spyOn(service, 'sendPasswordChanged');
@@ -371,5 +442,209 @@ describe('AccountSecurityService.verifyCurrentPassword', () => {
       service.verifyCurrentPassword({ password: bcrypt.hashSync(OLD, 4) }, ''),
     );
     expect(body.code).toBe('CURRENT_PASSWORD_REQUIRED');
+  });
+});
+
+describe('AccountSecurityService.disconnectGoogle', () => {
+  let warn: jest.SpyInstance;
+  beforeEach(() => {
+    warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  const linked = (password: string | null = bcrypt.hashSync(OLD, 4)) => ({
+    id: 'u1',
+    password,
+    googleSub: 'google-sub-1',
+  });
+
+  async function conflictOf(p: Promise<unknown>): Promise<unknown> {
+    try {
+      await p;
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConflictException);
+      return (e as ConflictException).getResponse();
+    }
+    throw new Error('expected a ConflictException');
+  }
+
+  it('a Google-only account (no password) → 409 NO_PASSWORD and nothing is written', async () => {
+    const { service, db, enqueue } = setup({ user: linked(null) });
+    const body = await conflictOf(service.disconnectGoogle('u1', OLD, CTX));
+    expect(body).toMatchObject({
+      statusCode: 409,
+      error: 'Conflict',
+      code: 'NO_PASSWORD',
+    });
+    expect(db.update).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it('Google is not linked → 409 GOOGLE_NOT_CONNECTED and nothing is written', async () => {
+    const { service, db, enqueue } = setup({
+      user: { id: 'u1', password: bcrypt.hashSync(OLD, 4), googleSub: null },
+    });
+    const body = await conflictOf(service.disconnectGoogle('u1', OLD, CTX));
+    expect(body).toMatchObject({
+      statusCode: 409,
+      error: 'Conflict',
+      code: 'GOOGLE_NOT_CONNECTED',
+    });
+    expect(db.update).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it('an unknown user is a 404', async () => {
+    const { service } = setup({ user: null });
+    await expect(
+      service.disconnectGoogle('u1', OLD, CTX),
+    ).rejects.toMatchObject({ status: 404 });
+  });
+
+  it.each([['Wrong999'], [''], ['   ']])(
+    'wrong password %p → 400 WRONG_PASSWORD (never 401), nothing written, no email',
+    async (attempt) => {
+      const { service, db, enqueue } = setup({ user: linked() });
+      const body = await bodyOf(service.disconnectGoogle('u1', attempt, CTX));
+      expect(body).toEqual({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'WRONG_PASSWORD',
+        message: "That password isn't right.",
+      });
+      expect(db.update).not.toHaveBeenCalled();
+      expect(enqueue).not.toHaveBeenCalled();
+    },
+  );
+
+  it('success clears googleSub, keeps the password and sessions, and returns hasGoogle: false', async () => {
+    const { service, set } = setup({ user: linked() });
+    jest.spyOn(service, 'sendSignInMethodChanged').mockResolvedValue();
+
+    const result = await service.disconnectGoogle('u1', OLD, CTX);
+
+    const written = firstArg<Record<string, unknown>>(set);
+    expect(written.googleSub).toBeNull();
+    expect(written.updatedAt).toBeInstanceOf(Date);
+    // Only the link goes: no password change, no session revocation.
+    expect(written).not.toHaveProperty('password');
+    expect(written).not.toHaveProperty('sessionsRevokedAt');
+    expect(result).toMatchObject({
+      id: 'u1',
+      email: 'u1@example.test',
+      hasGoogle: false,
+      hasPassword: true,
+    });
+    expect(result).not.toHaveProperty('password');
+    expect(result).not.toHaveProperty('googleSub');
+  });
+
+  it('the write only matches a row that is still linked, so two clicks cannot both succeed', async () => {
+    const { service, where } = setup({ user: linked() });
+    jest.spyOn(service, 'sendSignInMethodChanged').mockResolvedValue();
+
+    await service.disconnectGoogle('u1', OLD, CTX);
+
+    const query = new PgDialect().sqlToQuery(
+      firstArg<Parameters<PgDialect['sqlToQuery']>[0]>(where),
+    );
+    expect(query.sql).toContain('"users"."id" = $1');
+    expect(query.sql).toContain('"users"."google_sub" is not null');
+    expect(query.params).toEqual(['u1']);
+  });
+
+  it('lost the race (the write matched no row) → 409 GOOGLE_NOT_CONNECTED, no email', async () => {
+    const { service, enqueue } = setup({ user: linked(), updated: [] });
+    const body = await conflictOf(service.disconnectGoogle('u1', OLD, CTX));
+    expect(body).toMatchObject({ code: 'GOOGLE_NOT_CONNECTED' });
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it('queues the sign-in-method-changed email on the security footer, with no bell', async () => {
+    const { service, enqueue, tokens, shouldSend, emitter } = setup({
+      user: linked(),
+    });
+    const notice = jest.spyOn(service, 'sendSignInMethodChanged');
+
+    await service.disconnectGoogle('u1', OLD, CTX);
+    await noticeSettled(notice);
+
+    expect(tokens.securityToken).toHaveBeenCalledWith({
+      uid: 'u1',
+      act: 'not_me',
+    });
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    const job = firstArg<EnqueueEmail<SignInMethodChangedProps>>(enqueue);
+    expect(job.template.id).toBe('sign-in-method-changed');
+    expect(job.template.footer).toBe('security');
+    expect(job.template.event).toBeNull();
+    expect(job.to).toEqual({ email: 'u1@example.test', userId: 'u1' });
+    expect(job.workspaceId).toBeNull();
+    expect(job.idempotencyKey).toMatch(/^sign-in-method-changed\.u1\.\d+$/);
+    expect(job.props.when).toMatch(/^[A-Z][a-z]{2} \d+, \d{4} at /);
+    expect(job.props).toEqual({
+      when: job.props.when,
+      device: 'Chrome on Windows',
+      location: 'Pakistan',
+      method: 'google',
+      change: 'disconnected',
+      resetUrl: 'https://api.test/email/security/sec-token',
+    });
+    // The security_alert event is mandatory mail with no in-app bell here.
+    expect(shouldSend).not.toHaveBeenCalled();
+    expect(emitter.passwordChanged).not.toHaveBeenCalled();
+  });
+
+  it('no country and no user agent: location is null and the device is generic', async () => {
+    const { service, enqueue } = setup({ user: linked(), geo: null });
+    await service.sendSignInMethodChanged('u1', { ip: null, userAgent: null });
+    const job = firstArg<EnqueueEmail<SignInMethodChangedProps>>(enqueue);
+    expect(job.props).toMatchObject({
+      device: 'Unknown browser',
+      location: null,
+    });
+  });
+
+  it('a notify failure (outbox down) does not fail the disconnect', async () => {
+    const { service, enqueue, set } = setup({ user: linked() });
+    const notice = jest.spyOn(service, 'sendSignInMethodChanged');
+    enqueue.mockRejectedValue(new Error('redis is down'));
+
+    const result = await service.disconnectGoogle('u1', OLD, CTX);
+    await noticeSettled(notice);
+
+    expect(result.hasGoogle).toBe(false);
+    expect(set).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('a token-signing failure does not fail the disconnect either', async () => {
+    const { service, tokens } = setup({ user: linked() });
+    const notice = jest.spyOn(service, 'sendSignInMethodChanged');
+    tokens.securityToken.mockImplementation(() => {
+      throw new Error('JWT_ACCESS_SECRET is not configured');
+    });
+
+    await expect(
+      service.disconnectGoogle('u1', OLD, CTX),
+    ).resolves.toMatchObject({ hasGoogle: false });
+    await noticeSettled(notice);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('answers without waiting for a slow GeoIP lookup, after the write landed', async () => {
+    const { service, where, enqueue, geoip } = setup({ user: linked() });
+    geoip.lookup.mockReturnValue(new Promise<never>(() => undefined));
+    const notice = jest.spyOn(service, 'sendSignInMethodChanged');
+
+    await expect(
+      service.disconnectGoogle('u1', OLD, CTX),
+    ).resolves.toMatchObject({ hasGoogle: false });
+
+    expect(where).toHaveBeenCalledTimes(1);
+    expect(where.mock.invocationCallOrder[0]).toBeLessThan(
+      notice.mock.invocationCallOrder[0],
+    );
+    expect(enqueue).not.toHaveBeenCalled();
   });
 });

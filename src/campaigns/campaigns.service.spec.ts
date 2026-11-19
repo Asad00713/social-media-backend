@@ -565,7 +565,7 @@ describe('CampaignsService write methods (mocked db)', () => {
         date: '2026-08-10',
         channelId: '1',
         patch: { caption: 'hi' },
-      }),
+      }, 'actor-1'),
     ).rejects.toThrow('Campaign not found');
   });
 
@@ -592,7 +592,7 @@ describe('CampaignsService write methods (mocked db)', () => {
         date: '2026-08-10',
         channelId: '1',
         patch: { caption: 'hi' },
-      }),
+      }, 'actor-1'),
     ).rejects.toThrow('Event not found');
   });
 
@@ -1453,7 +1453,7 @@ describe('CampaignsService write methods (mocked db)', () => {
     });
     const service = loadServiceWithFakeDb(db, publishing);
 
-    await expect(service.launch(WORKSPACE_ID, CAMPAIGN_ID)).rejects.toThrow(/no publishable/i);
+    await expect(service.launch(WORKSPACE_ID, CAMPAIGN_ID, 'actor-1')).rejects.toThrow(/no publishable/i);
     expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
   });
 
@@ -1468,7 +1468,7 @@ describe('CampaignsService write methods (mocked db)', () => {
     });
     const service = loadServiceWithFakeDb(db, publishing);
 
-    const result = await service.launch(WORKSPACE_ID, CAMPAIGN_ID);
+    const result = await service.launch(WORKSPACE_ID, CAMPAIGN_ID, 'actor-1');
 
     expect(publishing.materializeAndEnqueue).toHaveBeenCalledTimes(1);
     expect(publishing.materializeAndEnqueue).toHaveBeenCalledWith(
@@ -1504,7 +1504,7 @@ describe('CampaignsService write methods (mocked db)', () => {
     });
     const service = loadServiceWithFakeDb(db, publishing);
 
-    const result = await service.launch(WORKSPACE_ID, CAMPAIGN_ID);
+    const result = await service.launch(WORKSPACE_ID, CAMPAIGN_ID, 'actor-1');
 
     expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
     expect(result.status).toBe('active');
@@ -1518,7 +1518,7 @@ describe('CampaignsService write methods (mocked db)', () => {
     const { db } = buildFakeDb({ campaignRow: undefined });
     const service = loadServiceWithFakeDb(db, publishing);
 
-    await expect(service.launch(WORKSPACE_ID, CAMPAIGN_ID)).rejects.toThrow('Campaign not found');
+    await expect(service.launch(WORKSPACE_ID, CAMPAIGN_ID, 'actor-1')).rejects.toThrow('Campaign not found');
   });
 
   it('rejects relaunching an already-active campaign (idempotency guard)', async () => {
@@ -1532,7 +1532,7 @@ describe('CampaignsService write methods (mocked db)', () => {
     });
     const service = loadServiceWithFakeDb(db, publishing);
 
-    await expect(service.launch(WORKSPACE_ID, CAMPAIGN_ID)).rejects.toThrow(
+    await expect(service.launch(WORKSPACE_ID, CAMPAIGN_ID, 'actor-1')).rejects.toThrow(
       'Campaign is already launched.',
     );
     expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
@@ -1563,7 +1563,7 @@ describe('CampaignsService write methods (mocked db)', () => {
     });
     const service = loadServiceWithFakeDb(db, publishing);
 
-    await expect(service.launch(WORKSPACE_ID, CAMPAIGN_ID)).rejects.toThrow(/no publishable/i);
+    await expect(service.launch(WORKSPACE_ID, CAMPAIGN_ID, 'actor-1')).rejects.toThrow(/no publishable/i);
     expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
     expect(updates.slotUpdates.find((u) => u.id === 'slot-already-scheduled')).toBeUndefined();
   });
@@ -1707,7 +1707,7 @@ describe('CampaignsService write methods (mocked db)', () => {
       });
       const service = loadServiceWithFakeDb(db, publishing);
 
-      const result = await service.resume(WORKSPACE_ID, CAMPAIGN_ID);
+      const result = await service.resume(WORKSPACE_ID, CAMPAIGN_ID, 'actor-1');
 
       expect(publishing.materializeAndEnqueue).toHaveBeenCalledTimes(1);
       expect(publishing.materializeAndEnqueue).toHaveBeenCalledWith(
@@ -1742,7 +1742,7 @@ describe('CampaignsService write methods (mocked db)', () => {
       });
       const service = loadServiceWithFakeDb(db, publishing);
 
-      const result = await service.resume(WORKSPACE_ID, CAMPAIGN_ID);
+      const result = await service.resume(WORKSPACE_ID, CAMPAIGN_ID, 'actor-1');
 
       expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
       expect(result.status).toBe('active');
@@ -1760,7 +1760,7 @@ describe('CampaignsService write methods (mocked db)', () => {
       });
       const service = loadServiceWithFakeDb(db, publishing);
 
-      const result = await service.resume(WORKSPACE_ID, CAMPAIGN_ID);
+      const result = await service.resume(WORKSPACE_ID, CAMPAIGN_ID, 'actor-1');
 
       expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
       expect(result.status).toBe('active');
@@ -1772,7 +1772,7 @@ describe('CampaignsService write methods (mocked db)', () => {
       const { db } = buildFakeDb({ campaignRow: undefined });
       const service = loadServiceWithFakeDb(db, publishing);
 
-      await expect(service.resume(WORKSPACE_ID, CAMPAIGN_ID)).rejects.toThrow('Campaign not found');
+      await expect(service.resume(WORKSPACE_ID, CAMPAIGN_ID, 'actor-1')).rejects.toThrow('Campaign not found');
     });
   });
 
@@ -1810,7 +1810,7 @@ describe('CampaignsService write methods (mocked db)', () => {
         date: futureDate,
         channelId: '1',
         patch: { caption: 'New caption' },
-      });
+      }, 'actor-1');
 
       expect(publishing.cancelSlotJob).not.toHaveBeenCalled();
       expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
@@ -1840,7 +1840,7 @@ describe('CampaignsService write methods (mocked db)', () => {
           date: futureDate,
           channelId: '1',
           patch: { caption: 'New caption' },
-        }),
+        }, 'actor-1'),
       ).rejects.toThrow(/already been published/i);
 
       expect(updates.slotUpdates.find((u) => u.id === 'slot-1')).toBeUndefined();
@@ -1874,7 +1874,7 @@ describe('CampaignsService write methods (mocked db)', () => {
         date: futureDate,
         channelId: '1',
         patch: { caption: 'New caption' },
-      });
+      }, 'actor-1');
 
       expect(publishing.cancelSlotJob).toHaveBeenCalledWith('job-old');
       expect(deletes.postIds).toEqual(['post-old']);
@@ -1925,7 +1925,7 @@ describe('CampaignsService write methods (mocked db)', () => {
         date: futureDate,
         channelId: '1',
         patch: { caption: 'New caption' },
-      });
+      }, 'actor-1');
 
       expect(publishing.materializeAndEnqueue).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1961,7 +1961,7 @@ describe('CampaignsService write methods (mocked db)', () => {
           date: futureDate,
           channelId: '1',
           patch: { caption: 'New caption' },
-        }),
+        }, 'actor-1'),
       ).rejects.toThrow(/just started publishing/i);
 
       expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
@@ -1996,7 +1996,7 @@ describe('CampaignsService write methods (mocked db)', () => {
         date: pastDate,
         channelId: '1',
         patch: { caption: 'New caption' },
-      });
+      }, 'actor-1');
 
       expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
       const slotUpdate = updates.slotUpdates.find(
@@ -2029,7 +2029,7 @@ describe('CampaignsService write methods (mocked db)', () => {
         date: futureDate,
         channelId: '1',
         patch: { caption: 'New caption' },
-      });
+      }, 'actor-1');
 
       expect(publishing.cancelSlotJob).not.toHaveBeenCalled();
       expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
@@ -2077,7 +2077,7 @@ describe('CampaignsService write methods (mocked db)', () => {
         patch: { caption: 'bye' },
         time: '17:00',
         newTime: '18:00',
-      });
+      }, 'actor-1');
 
       const slotUpdate = updates.slotUpdates.find((u) => u.id === 'slot-1');
       expect(slotUpdate?.set).toMatchObject({ time: '18:00' });
@@ -2117,7 +2117,7 @@ describe('CampaignsService write methods (mocked db)', () => {
           patch: { caption: 'bye' },
           time: '17:00',
           newTime: '18:00',
-        }),
+        }, 'actor-1'),
       ).rejects.toThrow(/already exists for this channel/i);
 
       expect(
@@ -2156,7 +2156,7 @@ describe('CampaignsService write methods (mocked db)', () => {
           patch: { caption: 'bye' },
           time: '17:00',
           newTime: '18:00',
-        }),
+        }, 'actor-1'),
       ).resolves.toBeDefined();
     });
 
@@ -2184,7 +2184,7 @@ describe('CampaignsService write methods (mocked db)', () => {
           patch: { caption: 'bye' },
           time: '08:00',
           newTime: '09:00',
-        }),
+        }, 'actor-1'),
       ).rejects.toThrow(/already passed/i);
 
       expect(updates.slotUpdates.find((u) => u.set.time === '09:00')).toBeUndefined();
@@ -2217,7 +2217,7 @@ describe('CampaignsService write methods (mocked db)', () => {
           patch: { caption: 'bye' },
           time: '08:00',
           newTime: '09:00',
-        }),
+        }, 'actor-1'),
       ).rejects.toThrow(/already passed/i);
 
       expect(publishing.cancelSlotJob).not.toHaveBeenCalled();
@@ -2251,7 +2251,7 @@ describe('CampaignsService write methods (mocked db)', () => {
         patch: { caption: 'bye' },
         time: '17:00',
         newTime: '20:00',
-      });
+      }, 'actor-1');
 
       // Old job cancelled + guarded post delete ran.
       expect(publishing.cancelSlotJob).toHaveBeenCalledWith('job-old');
@@ -2299,7 +2299,7 @@ describe('CampaignsService write methods (mocked db)', () => {
         channelId: '1',
         patch: { caption: 'x' },
         time: '17:00',
-      });
+      }, 'actor-1');
 
       const slotUpdate = updates.slotUpdates.find((u) => u.id === 'slot-1');
       expect((slotUpdate?.set.content as ChannelDayContentJson)?.caption).toBe('x');
