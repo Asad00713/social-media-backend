@@ -773,12 +773,13 @@ Summary from `GET /brand-kit/workspaces/:id`: colour dots (up to 4), "Logo, colo
 |---|---|---|
 | `0090_user_account_settings.sql` | A | `users`: `preferences jsonb`, `password_changed_at`, `notifications_paused_until`, `deleted_at`; planner week-start copy |
 | `0091_workspace_settings.sql` | A | `workspace`: `approval_policy`, `shorten_links_default`, `utm_default`, `invite_link_code`, `invite_link_enabled`; `workspace_invitations.message` |
-| `0092_workspace_labels.sql` | A | `workspace_labels`, `post_labels`, backfill |
-| `0093_users_fk_set_null.sql` | A | NO ACTION → SET NULL on user FKs; `workspace.owner_id` → RESTRICT |
+| `0092_workspace_labels.sql` | A | `workspace_labels`, `post_labels`, backfill (live posts only); their FKs added last, NOT VALID |
+| `0093_users_fk_set_null.sql` | A | NO ACTION → SET NULL on user FKs; `workspace.owner_id` → RESTRICT; all added NOT VALID (no scan under ACCESS EXCLUSIVE) |
 | `0094_user_sessions.sql` | B | `user_sessions` |
 | `0095_two_factor.sql` | B | `users` TOTP columns, `user_backup_codes`, `login_challenges`, `known_devices.mfa_trusted_until` |
 | `0096_brand_voice_maestro_settings.sql` | C | brand profile columns, `workspace.maestro_settings` |
 | `0097_guest_seat_recount.sql` | A | recount `workspace_usage.members_count` as accepted non-guest members (guests use no seat); numbered after Part B/C's reserved files |
+| `0098_users_fk_validate.sql` | A | `VALIDATE CONSTRAINT` for the FKs 0092 and 0093 add NOT VALID, in its own transaction (SHARE UPDATE EXCLUSIVE: blocks no writer) |
 
 Rules: hand-written SQL with a Drizzle schema change in the same commit; `SET LOCAL lock_timeout` on `users`/`workspace`/`posts` ALTERs and an entry in `inbox-lock-timeout.spec.ts`; idempotent where practical (`IF NOT EXISTS`). If another branch lands a migration first, renumber at rebase (filenames order the run).
 

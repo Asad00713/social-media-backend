@@ -17,6 +17,8 @@ import { describeDb, withRollbackDb } from '../../planner/testing/rollback-db';
  *   0093  every foreign key to users stops blocking a user delete: actor
  *         columns SET NULL, the Canva grant CASCADE, and
  *         workspace.owner_id RESTRICT (never deleted by accident).
+ *   0098  validates the foreign keys 0092 and 0093 add NOT VALID, in a
+ *         transaction of its own (no long lock in those files).
  *
  * The harness applies each file twice BEFORE the test body runs, which proves
  * idempotency on an empty table only. A backfill test therefore seeds its
@@ -34,6 +36,9 @@ const FILE_0090 = '0090_user_account_settings.sql';
 const FILE_0091 = '0091_workspace_settings.sql';
 const FILE_0092 = '0092_workspace_labels.sql';
 const FILE_0093 = '0093_users_fk_set_null.sql';
+const FILE_0098 = '0098_users_fk_validate.sql';
+/** posts.deleted_at, which the 0092 backfill reads. */
+const FILE_0088 = '0088_soft_delete_posts_workspaces.sql';
 const rand = () => Math.random().toString(36).slice(2, 10);
 
 async function seedUser(client: PoolClient): Promise<string> {
@@ -521,8 +526,86 @@ async function countRows(client: PoolClient, table: string): Promise<number> {
   return Number(r.rows[0].n);
 }
 
+/** The foreign keys 0092 adds, last and NOT VALID. */
+const LABEL_FKS = [
+  'workspace_labels_workspace_id_fkey',
+  'workspace_labels_created_by_fkey',
+  'post_labels_post_id_fkey',
+  'post_labels_label_id_fkey',
+];
+
+async function fkValidity(
+  client: PoolClient,
+  names: string[],
+): Promise<Record<string, boolean>> {
+  const r = await client.query<{ conname: string; convalidated: boolean }>(
+    `SELECT conname, convalidated FROM pg_constraint
+      WHERE contype = 'f' AND conname = ANY($1::text[])`,
+    [names],
+  );
+  return Object.fromEntries(r.rows.map((x) => [x.conname, x.convalidated]));
+}
+
 describeDb('migration 0092 workspace labels', () => {
-  const MIGRATIONS = [FILE_0092];
+  const MIGRATIONS = [FILE_0088, FILE_0092];
+
+  it('0092 skips soft-deleted posts: their labels reach neither the catalogue nor post_labels', async () => {
+    const result = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const userId = await seedUser(client);
+      const w = await seedWorkspace(client, userId);
+      const live = await seedPost(
+        client,
+        w,
+        userId,
+        { labels: ['Kept'] },
+        '2026-01-01T00:00:00Z',
+      );
+      const gone = await seedPost(
+        client,
+        w,
+        userId,
+        { labels: ['Kept', 'OnlyOnDeleted'] },
+        '2026-01-02T00:00:00Z',
+      );
+      await client.query(`UPDATE posts SET deleted_at = now() WHERE id = $1`, [
+        gone,
+      ]);
+      await rerun0092(client);
+      return {
+        labels: await cataloguePairs(client, w),
+        join: await labelNamesByPost(client, w),
+        live,
+        gone,
+      };
+    });
+
+    expect(result.labels).toEqual([{ name: 'Kept', color: 'blue' }]);
+    expect(result.join[result.live]).toEqual(['Kept']);
+    expect(result.join[result.gone]).toBeUndefined();
+  });
+
+  it('0092 adds its foreign keys NOT VALID (no scan under the lock), and they already refuse a bad row', async () => {
+    const result = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const validity = await fkValidity(client, LABEL_FKS);
+      let code: string | undefined;
+      await client.query('SAVEPOINT bad_row');
+      try {
+        await client.query(
+          `INSERT INTO post_labels (post_id, label_id)
+           VALUES (gen_random_uuid(), gen_random_uuid())`,
+        );
+      } catch (err) {
+        code = (err as { code?: string }).code;
+      }
+      await client.query('ROLLBACK TO SAVEPOINT bad_row');
+      return { validity, code };
+    });
+
+    expect(result.validity).toEqual(
+      Object.fromEntries(LABEL_FKS.map((n) => [n, false])),
+    );
+    expect(result.code).toBe('23503');
+  });
 
   it('0092 backfills one catalogue row per distinct label and one post_labels row per (post, label)', async () => {
     const result = await withRollbackDb(MIGRATIONS, async (_db, client) => {
@@ -1080,6 +1163,116 @@ describeDb('migration 0093 user foreign keys', () => {
     expect(survivors).toEqual({ users: 1, workspaces: 1 });
   });
 });
+
+/** The constraint names 0093 writes, `<table>_<column>_fkey`. */
+const USER_FKS = USER_FK_ACTIONS.map(
+  ({ table, column }) => `${table}_${column}_fkey`,
+);
+
+describeDb(
+  'migration 0093 locks: NOT VALID, and a guard that names the table',
+  () => {
+    it('0093 leaves its foreign keys NOT VALID: no table is scanned while users is held ACCESS EXCLUSIVE', async () => {
+      const validity = await withRollbackDb([FILE_0093], (_db, client) =>
+        fkValidity(client, USER_FKS),
+      );
+      // canva_connections may not exist in this database (created by push).
+      expect(Object.keys(validity)).toEqual(
+        expect.arrayContaining(USER_FKS.filter((n) => !n.startsWith('canva_'))),
+      );
+      for (const [name, valid] of Object.entries(validity)) {
+        expect([name, valid]).toEqual([name, false]);
+      }
+    });
+
+    it('0093 fails the boot naming the table, column and constraint a NO ACTION key is on', async () => {
+      const message = await withRollbackDb([FILE_0093], async (_db, client) => {
+        await client.query(
+          `CREATE TABLE fk_guard_probe (id serial PRIMARY KEY,
+           made_by uuid CONSTRAINT fk_guard_probe_made_by_fkey REFERENCES users (id))`,
+        );
+        await client.query('SAVEPOINT guard');
+        try {
+          await client.query(
+            readFileSync(join(MIGRATIONS_DIR, FILE_0093), 'utf8'),
+          );
+          return null;
+        } catch (err) {
+          return (err as Error).message;
+        } finally {
+          await client.query('ROLLBACK TO SAVEPOINT guard');
+        }
+      });
+
+      expect(message).toContain(
+        'table fk_guard_probe, column made_by (constraint fk_guard_probe_made_by_fkey)',
+      );
+    });
+  },
+);
+
+describeDb(
+  'migration 0098 validates the NOT VALID user and label foreign keys',
+  () => {
+    const MIGRATIONS = [FILE_0088, FILE_0092, FILE_0093, FILE_0098];
+
+    it('0098 validates every key 0092 and 0093 left NOT VALID (applied twice: idempotent)', async () => {
+      const validity = await withRollbackDb(MIGRATIONS, (_db, client) =>
+        fkValidity(client, [...USER_FKS, ...LABEL_FKS]),
+      );
+      for (const name of [
+        ...USER_FKS.filter((n) => !n.startsWith('canva_')),
+        ...LABEL_FKS,
+      ]) {
+        expect([name, validity[name]]).toEqual([name, true]);
+      }
+    });
+
+    it('0098 fails loudly, naming the constraint, on a row that breaks a key, and changes nothing', async () => {
+      const result = await withRollbackDb(
+        [FILE_0088, FILE_0092, FILE_0093],
+        async (_db, client) => {
+          // A row that predates the constraint: written while it was absent.
+          await client.query(
+            `ALTER TABLE post_labels DROP CONSTRAINT post_labels_post_id_fkey`,
+          );
+          const userId = await seedUser(client);
+          const w = await seedWorkspace(client, userId);
+          const label = await client.query<{ id: string }>(
+            `INSERT INTO workspace_labels (workspace_id, name, color)
+           VALUES ($1, 'x', 'blue') RETURNING id`,
+            [w],
+          );
+          await client.query(
+            `INSERT INTO post_labels (post_id, label_id) VALUES (gen_random_uuid(), $1)`,
+            [label.rows[0].id],
+          );
+          await client.query(
+            `ALTER TABLE post_labels ADD CONSTRAINT post_labels_post_id_fkey
+             FOREIGN KEY (post_id) REFERENCES posts (id) ON DELETE CASCADE NOT VALID`,
+          );
+          await client.query('SAVEPOINT v');
+          let error: { code?: string; constraint?: string } | null = null;
+          try {
+            await client.query(
+              readFileSync(join(MIGRATIONS_DIR, FILE_0098), 'utf8'),
+            );
+          } catch (err) {
+            error = err as { code?: string; constraint?: string };
+          }
+          await client.query('ROLLBACK TO SAVEPOINT v');
+          return { error, validity: await fkValidity(client, LABEL_FKS) };
+        },
+      );
+
+      expect(result.error).toMatchObject({
+        code: '23503',
+        constraint: 'post_labels_post_id_fkey',
+      });
+      expect(result.validity.post_labels_post_id_fkey).toBe(false);
+    });
+  },
+);
 
 /**
  * 0097 recounts workspace_usage.members_count as ACCEPTED non-guest members,

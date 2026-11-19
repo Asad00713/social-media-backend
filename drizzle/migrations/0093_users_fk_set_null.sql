@@ -39,11 +39,16 @@
 --      users; every lock is held until commit. `lock_timeout` (10 s) bounds
 --      each wait behind the still-running old instance (I4); if it trips, the
 --      whole file rolls back and nothing changes. Sign-ins (which write
---      users.last_login_at) wait for this file; it only touches catalog rows
---      plus one validation scan per table.
---   3. Each new constraint is added NOT VALID, then validated. The rows
---      already satisfied the old constraint on the same column, so the scan
---      only reads. All seven tables are small.
+--      users.last_login_at) wait for this file, so it does catalog work
+--      only: no table is scanned here.
+--   3. Each new constraint is added NOT VALID and left that way: new and
+--      updated rows are checked from this commit on, the existing rows are
+--      not read. Validating here would scan each referencing table while
+--      users and that table are held ACCESS EXCLUSIVE. 0098_users_fk_validate
+--      validates them in its own transaction, under SHARE UPDATE EXCLUSIVE,
+--      which blocks no reader and no writer. usage_events and
+--      subscription_changes grow with traffic; no row count was measured
+--      against production (never connected to it), hence the split.
 --   4. DROP NOT NULL on workspace_invitations.invited_by is catalog-only.
 -- No row is written or deleted. Idempotent: running the file again drops
 -- and re-adds the same constraints.
@@ -146,17 +151,19 @@ BEGIN
     END LOOP;
 
     fk_name := target.table_name || '_' || target.column_name || '_fkey';
+    -- NOT VALID, and validated by 0098 (SAFETY 3).
     EXECUTE format(
       'ALTER TABLE %I ADD CONSTRAINT %I FOREIGN KEY (%I) '
         || 'REFERENCES "users" ("id") ON DELETE %s NOT VALID',
       target.table_name, fk_name, target.column_name, target.action);
-    EXECUTE format('ALTER TABLE %I VALIDATE CONSTRAINT %I',
-                   target.table_name, fk_name);
   END LOOP;
 
-  -- No foreign key to users may be left blocking a user delete.
+  -- No foreign key to users may be left blocking a user delete. The message
+  -- names each offending table, its column and the constraint, so the fix
+  -- (add the table to the list above) is obvious from the boot log.
   SELECT string_agg(
-           format('%s.%s', c.conrelid::regclass, a.attname), ', '
+           format('table %s, column %s (constraint %s)',
+                  c.conrelid::regclass, a.attname, c.conname), '; '
            ORDER BY c.conrelid::regclass::text, a.attname)
     INTO leftover
     FROM pg_constraint c
@@ -167,6 +174,7 @@ BEGIN
      AND c.confdeltype = 'a';
   IF leftover IS NOT NULL THEN
     RAISE EXCEPTION
-      '0093: foreign keys to users still ON DELETE NO ACTION: %', leftover;
+      '0093: foreign keys to users still ON DELETE NO ACTION, which would block account deletes: %. Add each to the list in this file.',
+      leftover;
   END IF;
 END $$;

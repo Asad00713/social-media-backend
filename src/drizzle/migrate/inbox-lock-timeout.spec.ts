@@ -41,10 +41,13 @@ import { readMigrations } from './runner';
  * 0090 adds four columns to users (ACCESS EXCLUSIVE, catalog-only).
  * 0091 adds five columns to workspace and one to workspace_invitations
  * (ACCESS EXCLUSIVE, catalog-only), then a unique index on workspace (SHARE).
- * 0092 creates workspace_labels and post_labels with foreign keys to
- * workspace, users, posts and workspace_labels (SHARE ROW EXCLUSIVE on each).
+ * 0092 creates workspace_labels and post_labels, backfills them, and only
+ * then adds their foreign keys to workspace, users, posts and
+ * workspace_labels NOT VALID (SHARE ROW EXCLUSIVE on each, to the commit).
  * 0093 drops and re-adds the foreign keys to users on six tables plus
- * workspace.owner_id (ACCESS EXCLUSIVE on each table and on users).
+ * workspace.owner_id NOT VALID (ACCESS EXCLUSIVE on each table and on users).
+ * 0098 validates those keys (SHARE UPDATE EXCLUSIVE on each referencing
+ * table, ROW SHARE on the referenced one).
  */
 const FILES = [
   '0046_inbox_items_thread_key.sql',
@@ -70,6 +73,7 @@ const FILES = [
   '0091_workspace_settings.sql',
   '0092_workspace_labels.sql',
   '0093_users_fk_set_null.sql',
+  '0098_users_fk_validate.sql',
 ];
 
 const firstStatement = (sql: string): string =>

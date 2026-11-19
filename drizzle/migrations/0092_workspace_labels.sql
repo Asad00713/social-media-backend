@@ -26,16 +26,28 @@
 --
 -- SAFETY
 -- The boot migrator runs this file in ONE transaction; no BEGIN/COMMIT, no
--- CONCURRENTLY.
---   1. Both tables are new, so there is nothing to rewrite. Their foreign
---      keys to workspace, users, posts and workspace_labels take SHARE ROW
---      EXCLUSIVE on the referenced tables, which waits behind writers on the
---      still-running old instance; `lock_timeout` (10 s) bounds that wait
---      (I4). If it trips, the whole file rolls back.
---   2. The backfill only READS posts (ACCESS SHARE) and inserts into the two
---      new tables, so it blocks nobody. It is set-based: two INSERT ... SELECT
---      statements, no row-by-row loop.
---   3. The old backend never touches the new tables, so applying this before
+-- CONCURRENTLY. Every lock is held until that transaction commits, so the
+-- order of the statements decides who waits and for how long.
+--   1. Both tables are new, so there is nothing to rewrite. They are created
+--      WITHOUT foreign keys: a foreign key takes SHARE ROW EXCLUSIVE on the
+--      table it references, and taken up front it would hold posts and
+--      workspace against every write (a save, a publish, a settings change)
+--      for the whole backfill below.
+--   2. The backfill READS posts (ACCESS SHARE, which blocks no reader and no
+--      writer) and inserts into the two new tables, which nobody else uses
+--      yet. It is set-based: two INSERT ... SELECT statements, no row-by-row
+--      loop. Soft-deleted posts are skipped: their labels are not carried
+--      into the catalogue.
+--   3. Last, the four foreign keys are added NOT VALID: catalog-only, no
+--      scan, so SHARE ROW EXCLUSIVE on posts, workspace, users and
+--      workspace_labels is held from that statement to the commit right
+--      after it, not through the backfill. `lock_timeout` (10 s) bounds each
+--      wait behind the still-running old instance (I4); if it trips, the
+--      whole file rolls back. New rows are checked from here on.
+--   4. 0098_users_fk_validate.sql validates them in its own transaction:
+--      VALIDATE CONSTRAINT takes SHARE UPDATE EXCLUSIVE on the table it
+--      checks and ROW SHARE on the referenced one, which blocks no writer.
+--   5. The old backend never touches the new tables, so applying this before
 --      the deploy is safe.
 -- Idempotent: CREATE ... IF NOT EXISTS, and both backfill INSERTs carry
 -- ON CONFLICT DO NOTHING, so running the file again adds nothing. The label
@@ -57,12 +69,12 @@ SET LOCAL lock_timeout = '10s';
 
 CREATE TABLE IF NOT EXISTS "workspace_labels" (
   "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  "workspace_id" uuid NOT NULL REFERENCES "workspace" ("id") ON DELETE CASCADE,
+  "workspace_id" uuid NOT NULL,
   "name" varchar(40) NOT NULL,
   "color" text NOT NULL
     CHECK ("color" IN ('blue', 'orange', 'green', 'purple', 'pink', 'teal', 'red', 'grey')),
   "description" varchar(120),
-  "created_by" uuid REFERENCES "users" ("id") ON DELETE SET NULL,
+  "created_by" uuid,
   "created_at" timestamptz NOT NULL DEFAULT now(),
   "updated_at" timestamptz NOT NULL DEFAULT now(),
   "deleted_at" timestamptz
@@ -73,8 +85,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS "workspace_labels_name_uq"
   WHERE "deleted_at" IS NULL;
 
 CREATE TABLE IF NOT EXISTS "post_labels" (
-  "post_id" uuid NOT NULL REFERENCES "posts" ("id") ON DELETE CASCADE,
-  "label_id" uuid NOT NULL REFERENCES "workspace_labels" ("id") ON DELETE CASCADE,
+  "post_id" uuid NOT NULL,
+  "label_id" uuid NOT NULL,
   "created_at" timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY ("post_id", "label_id")
 );
@@ -116,6 +128,7 @@ FROM (
         END
       ) WITH ORDINALITY AS e ("value", "ord")
       WHERE jsonb_typeof(e."value") = 'string'
+        AND p."deleted_at" IS NULL
     ) c
     WHERE c."name" <> '' AND char_length(c."name") <= 40
   ) o
@@ -145,6 +158,7 @@ FROM (
       END
     ) AS e ("value")
     WHERE jsonb_typeof(e."value") = 'string'
+      AND p."deleted_at" IS NULL
   ) c
   WHERE c."name" <> '' AND char_length(c."name") <= 40
 ) o
@@ -153,3 +167,42 @@ JOIN "workspace_labels" l
  AND lower(l."name") = o."key"
  AND l."deleted_at" IS NULL
 ON CONFLICT DO NOTHING;
+
+-- The foreign keys, last and NOT VALID (SAFETY 3); 0098 validates them. The
+-- names are the ones an inline REFERENCES would have given, so a database
+-- that ran an earlier draft of this file (FKs inline) skips them here.
+DO $$
+BEGIN
+  ALTER TABLE "workspace_labels"
+    ADD CONSTRAINT "workspace_labels_workspace_id_fkey"
+    FOREIGN KEY ("workspace_id") REFERENCES "workspace" ("id")
+    ON DELETE CASCADE NOT VALID;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$
+BEGIN
+  ALTER TABLE "workspace_labels"
+    ADD CONSTRAINT "workspace_labels_created_by_fkey"
+    FOREIGN KEY ("created_by") REFERENCES "users" ("id")
+    ON DELETE SET NULL NOT VALID;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$
+BEGIN
+  ALTER TABLE "post_labels"
+    ADD CONSTRAINT "post_labels_post_id_fkey"
+    FOREIGN KEY ("post_id") REFERENCES "posts" ("id")
+    ON DELETE CASCADE NOT VALID;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$
+BEGIN
+  ALTER TABLE "post_labels"
+    ADD CONSTRAINT "post_labels_label_id_fkey"
+    FOREIGN KEY ("label_id") REFERENCES "workspace_labels" ("id")
+    ON DELETE CASCADE NOT VALID;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
