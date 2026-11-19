@@ -37,6 +37,7 @@ import { ChatbotModule } from './chatbot/chatbot.module';
 import { MaestroModule } from './maestro/maestro.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { SchedulingModule } from './common/scheduling/scheduling.module';
+import { ProcessRoleModule } from './common/process-role/process-role.module';
 import { AnalyticsModule } from './channels/analytics/analytics.module';
 import { RealtimeModule } from './realtime/realtime.module';
 import { ComposerModule } from './posts/composer/composer.module';
@@ -152,6 +153,11 @@ import { QUEUES } from './queue/queue.module';
       { name: QUEUES.INBOX_POLLING, adapter: BullMQAdapter },
       { name: QUEUES.EMAIL, adapter: BullMQAdapter },
     ),
+    // LAST on purpose: both of its gates read registries that the modules
+    // above populate (BullMQ's WorkerHost providers, ScheduleModule's cron
+    // jobs). Each gate logs the count it acted on, so a wrong order shows
+    // up as a zero in the logs rather than as silent non-enforcement.
+    ProcessRoleModule,
   ],
   controllers: [AppController, SiteVerificationController],
   providers: [

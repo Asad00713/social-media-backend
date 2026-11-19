@@ -113,3 +113,46 @@ Seeing all three means the drain window is long enough. If the logs stop
 partway, raise the draining seconds.
 
 See `docs/graceful-shutdown-and-health.md` for what those hooks do.
+
+---
+
+## Update 2026-11-19: the migration is NOT owed, and Draining was 0 again
+
+Both findings come from reading the dashboard directly, not from inference.
+
+### The migration does not apply to this service
+
+Service → Settings → Config-as-code says:
+
+> Config as Code is deprecated. Prefer Infrastructure as Code. Existing config
+> files keep working until 2026-12-01. Starting 2026-08-28, services that have
+> never used Config as Code cannot opt in.
+
+**The file-path list is empty.** `social-media-backend` never used Config as
+Code, so there is no config file to migrate, the 2026-12-01 date does not apply
+to it, and opt-in is closed in any case.
+
+The repo's `railway.json` is confirmed dead — Railway does not read it. Only
+the `Dockerfile` matters, whose `CMD` runs the migrator and then the app.
+
+This had been recorded as an owed job with a deadline. It is closed.
+
+### Draining had reverted to 0
+
+| Setting | Found 2026-11-19 | Set to |
+| ------- | ---------------- | ------ |
+| Draining | **0 sec** | **30 sec** |
+| Overlap | 0 sec | left at 0 |
+| Enable Teardown | on | on |
+
+This doc records Draining being set to 60 on 2026-11-17. Two days later it was
+0. **Why it reverted is not known** — it was not determined from the dashboard,
+and guessing would be worse than saying so.
+
+The practical consequence: **check Draining after any settings change, and
+after a run of deploys.** At 0, `beforeApplicationShutdown` never runs, so
+`WorkerDrainService` never drains and an in-flight publish is cut off.
+
+Overlap was deliberately left at 0: raising it runs two containers at once,
+which is safe since the cron lock (BE #255) but is a separate decision that
+belongs with the web/worker split (`docs/process-role-split.md`).
