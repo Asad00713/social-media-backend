@@ -512,10 +512,22 @@ describe('StripeAdapter portal, invoices and billing profile', () => {
       const out = await adapter.createPortalLink(1, 'portal');
 
       expect(out).toEqual({ url: 'https://stripe.test/portal/s1' });
-      expect(sessionsCreate).toHaveBeenCalledWith({
-        customer: 'cus_9',
-        return_url: 'https://app.test/w/ws-last/settings/billing',
+      expect(sessionsCreate).toHaveBeenCalledWith(
+        {
+          customer: 'cus_9',
+          return_url: 'https://app.test/w/ws-last/settings/billing',
+        },
+        { timeout: 10_000 },
+      );
+    });
+
+    it("bounds the Stripe call at 10 s, not Stripe's 80 s default", async () => {
+      const { adapter, sessionsCreate } = build({
+        stripeCustomers: [{ id: 'cus_9' }],
+        users: [{ id: 'ws-last' }],
       });
+      await adapter.createPortalLink(1, 'update_payment_method');
+      expect(sessionsCreate.mock.calls[0][1]).toEqual({ timeout: 10_000 });
     });
 
     it('returns to the workspace the caller names, ahead of any lookup', async () => {
@@ -532,6 +544,7 @@ describe('StripeAdapter portal, invoices and billing profile', () => {
         expect.objectContaining({
           return_url: 'https://app.test/w/ws-route/settings/billing',
         }),
+        { timeout: 10_000 },
       );
     });
 
@@ -548,6 +561,7 @@ describe('StripeAdapter portal, invoices and billing profile', () => {
           customer: 'cus_9',
           flow_data: { type: 'payment_method_update' },
         }),
+        { timeout: 10_000 },
       );
     });
 
@@ -564,6 +578,7 @@ describe('StripeAdapter portal, invoices and billing profile', () => {
         expect.objectContaining({
           return_url: 'https://app.test/w/ws-owned/settings/billing',
         }),
+        { timeout: 10_000 },
       );
     });
 
@@ -576,6 +591,7 @@ describe('StripeAdapter portal, invoices and billing profile', () => {
 
       expect(sessionsCreate).toHaveBeenCalledWith(
         expect.objectContaining({ return_url: 'https://app.test/' }),
+        { timeout: 10_000 },
       );
     });
 

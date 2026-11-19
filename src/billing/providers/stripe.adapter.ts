@@ -29,6 +29,9 @@ import {
   PurchaseResult,
 } from './payment-provider.interface';
 
+/** Per-request bound on the Stripe calls a settings page waits for (LS: LS_REQUEST_TIMEOUT_MS). */
+export const STRIPE_REQUEST_TIMEOUT_MS = 10_000;
+
 const PROVIDER = 'stripe' as const;
 
 /** The subset of a `provider_subscriptions` row this adapter acts on. */
@@ -436,9 +439,8 @@ export class StripeAdapter implements PaymentProviderAdapter {
       );
     }
 
-    const session = await this.stripe
-      .getClient()
-      .billingPortal.sessions.create({
+    const session = await this.stripe.getClient().billingPortal.sessions.create(
+      {
         customer,
         return_url: opts?.workspaceId
           ? this.links.billing(opts.workspaceId)
@@ -446,7 +448,11 @@ export class StripeAdapter implements PaymentProviderAdapter {
         ...(intent === 'update_payment_method'
           ? { flow_data: { type: 'payment_method_update' as const } }
           : {}),
-      });
+      },
+      // Stripe's own default is 80 s; a settings page must not hang that
+      // long. The same bound as Lemon Squeezy's client.
+      { timeout: STRIPE_REQUEST_TIMEOUT_MS },
+    );
     return { url: session.url };
   }
 
