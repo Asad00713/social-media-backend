@@ -101,99 +101,106 @@ async function ownedCount(ownerId: string): Promise<number> {
   return Number(r.rows[0].n);
 }
 
-describeDb('WorkspaceService.create vs account delete (two connections)', () => {
-  beforeAll(async () => {
-    setup = new Client({ connectionString: url(), options: searchPath });
-    await setup.connect();
-    await setup.query(`CREATE SCHEMA ${SCHEMA}`);
-    for (const table of COPIED_TABLES) {
+describeDb(
+  'WorkspaceService.create vs account delete (two connections)',
+  () => {
+    beforeAll(async () => {
+      setup = new Client({ connectionString: url(), options: searchPath });
+      await setup.connect();
+      await setup.query(`CREATE SCHEMA ${SCHEMA}`);
+      for (const table of COPIED_TABLES) {
+        await setup.query(
+          `CREATE TABLE ${SCHEMA}.${table} (LIKE public.${table} INCLUDING ALL)`,
+        );
+      }
+      // LIKE copies no foreign key; the real one takes KEY SHARE on users too.
       await setup.query(
-        `CREATE TABLE ${SCHEMA}.${table} (LIKE public.${table} INCLUDING ALL)`,
-      );
-    }
-    // LIKE copies no foreign key; the real one takes KEY SHARE on users too.
-    await setup.query(
-      `ALTER TABLE ${SCHEMA}.workspace
+        `ALTER TABLE ${SCHEMA}.workspace
          ADD FOREIGN KEY (owner_id) REFERENCES ${SCHEMA}.users (id)`,
-    );
-    for (const file of MIGRATIONS) {
-      await setup.query('BEGIN');
-      await setup.query(readFileSync(join(MIGRATIONS_DIR, file), 'utf8'));
-      await setup.query('COMMIT');
-    }
-    poolB = new Pool({ connectionString: url(), max: 1, options: searchPath });
-    const r = await poolB.query<{ pid: number }>(
-      `SELECT pg_backend_pid() AS pid`,
-    );
-    pidB = r.rows[0].pid;
-    service = makeService(drizzle(poolB, { schema }) as unknown as DbType);
-  });
-
-  afterAll(async () => {
-    await poolB?.end();
-    if (setup) {
-      await setup.query(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
-      await setup.end();
-    }
-  });
-
-  async function deleterHoldsUser(userId: string): Promise<Client> {
-    const a = new Client({ connectionString: url(), options: searchPath });
-    await a.connect();
-    await a.query('BEGIN');
-    await a.query(`SELECT id FROM users WHERE id = $1 FOR UPDATE`, [userId]);
-    return a;
-  }
-
-  it('a create that waited on a delete which then committed is refused 401 ACCOUNT_DELETED, and writes no workspace', async () => {
-    const userId = await seedUser();
-    const a = await deleterHoldsUser(userId);
-    try {
-      const create = service.create({ name: `Race ${SCHEMA} 1` }, userId);
-      const settled = create.then(
-        () => null,
-        (e: unknown) => e,
       );
-      await untilBWaits();
-      await a.query(`UPDATE users SET deleted_at = now() WHERE id = $1`, [
+      for (const file of MIGRATIONS) {
+        await setup.query('BEGIN');
+        await setup.query(readFileSync(join(MIGRATIONS_DIR, file), 'utf8'));
+        await setup.query('COMMIT');
+      }
+      poolB = new Pool({
+        connectionString: url(),
+        max: 1,
+        options: searchPath,
+      });
+      const r = await poolB.query<{ pid: number }>(
+        `SELECT pg_backend_pid() AS pid`,
+      );
+      pidB = r.rows[0].pid;
+      service = makeService(drizzle(poolB, { schema }) as unknown as DbType);
+    });
+
+    afterAll(async () => {
+      await poolB?.end();
+      if (setup) {
+        await setup.query(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
+        await setup.end();
+      }
+    });
+
+    async function deleterHoldsUser(userId: string): Promise<Client> {
+      const a = new Client({ connectionString: url(), options: searchPath });
+      await a.connect();
+      await a.query('BEGIN');
+      await a.query(`SELECT id FROM users WHERE id = $1 FOR UPDATE`, [userId]);
+      return a;
+    }
+
+    it('a create that waited on a delete which then committed is refused 401 ACCOUNT_DELETED, and writes no workspace', async () => {
+      const userId = await seedUser();
+      const a = await deleterHoldsUser(userId);
+      try {
+        const create = service.create({ name: `Race ${SCHEMA} 1` }, userId);
+        const settled = create.then(
+          () => null,
+          (e: unknown) => e,
+        );
+        await untilBWaits();
+        await a.query(`UPDATE users SET deleted_at = now() WHERE id = $1`, [
+          userId,
+        ]);
+        await a.query('COMMIT');
+
+        const error = await settled;
+        expect(error).toMatchObject({
+          status: 401,
+          response: { code: 'ACCOUNT_DELETED' },
+        });
+        expect(await ownedCount(userId)).toBe(0);
+      } finally {
+        await a.end();
+      }
+    });
+
+    it('a create that waited on a delete which rolled back goes ahead', async () => {
+      const userId = await seedUser();
+      const a = await deleterHoldsUser(userId);
+      try {
+        const create = service.create({ name: `Race ${SCHEMA} 2` }, userId);
+        await untilBWaits();
+        await a.query('ROLLBACK');
+
+        await expect(create).resolves.toMatchObject({ ownerId: userId });
+        expect(await ownedCount(userId)).toBe(1);
+      } finally {
+        await a.end();
+      }
+    });
+
+    it('a create on an account already deleted is refused without waiting', async () => {
+      const userId = await seedUser();
+      await setup.query(`UPDATE users SET deleted_at = now() WHERE id = $1`, [
         userId,
       ]);
-      await a.query('COMMIT');
-
-      const error = await settled;
-      expect(error).toMatchObject({
-        status: 401,
-        response: { code: 'ACCOUNT_DELETED' },
-      });
+      await expect(
+        service.create({ name: `Race ${SCHEMA} 3` }, userId),
+      ).rejects.toMatchObject({ response: { code: 'ACCOUNT_DELETED' } });
       expect(await ownedCount(userId)).toBe(0);
-    } finally {
-      await a.end();
-    }
-  });
-
-  it('a create that waited on a delete which rolled back goes ahead', async () => {
-    const userId = await seedUser();
-    const a = await deleterHoldsUser(userId);
-    try {
-      const create = service.create({ name: `Race ${SCHEMA} 2` }, userId);
-      await untilBWaits();
-      await a.query('ROLLBACK');
-
-      await expect(create).resolves.toMatchObject({ ownerId: userId });
-      expect(await ownedCount(userId)).toBe(1);
-    } finally {
-      await a.end();
-    }
-  });
-
-  it('a create on an account already deleted is refused without waiting', async () => {
-    const userId = await seedUser();
-    await setup.query(`UPDATE users SET deleted_at = now() WHERE id = $1`, [
-      userId,
-    ]);
-    await expect(
-      service.create({ name: `Race ${SCHEMA} 3` }, userId),
-    ).rejects.toMatchObject({ response: { code: 'ACCOUNT_DELETED' } });
-    expect(await ownedCount(userId)).toBe(0);
-  });
-});
+    });
+  },
+);

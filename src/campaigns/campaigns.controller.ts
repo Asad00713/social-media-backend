@@ -245,12 +245,7 @@ export class CampaignsController {
     @Body() dto: UpdateEventDto,
     @CurrentUser() user: { userId: string; email: string },
   ) {
-    return this.campaignsService.updateEvent(
-      workspaceId,
-      id,
-      dto,
-      user.userId,
-    );
+    return this.campaignsService.updateEvent(workspaceId, id, dto, user.userId);
   }
 
   @RequireCapability('posts:publish')

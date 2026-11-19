@@ -52,7 +52,11 @@ export interface UpdateDripCampaignDto {
 }
 
 /** Fields that change what an active drip campaign publishes. */
-const DRIP_PUBLISH_FIELDS = ['autoApprove', 'tone', 'additionalPrompt'] as const;
+const DRIP_PUBLISH_FIELDS = [
+  'autoApprove',
+  'tone',
+  'additionalPrompt',
+] as const;
 
 @Injectable()
 export class DripService {
