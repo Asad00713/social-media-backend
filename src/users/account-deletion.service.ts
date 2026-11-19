@@ -73,7 +73,7 @@ interface RemovedMembership {
 
 /** What the transaction hands to the after-commit cleanup. */
 interface DeletionOutcome {
-  /** Workspaces whose member count drops: ACCEPTED, non-GUEST rows only. */
+  /** Workspaces whose member count dropped: ACCEPTED, non-GUEST rows only. */
   seatWorkspaces: string[];
   /** The avatar the row pointed at, deleted from R2 after commit. */
   avatarUrl: string | null;
@@ -165,18 +165,6 @@ export class AccountDeletionService {
       this.deleteInTransaction(tx, userId, input),
     );
     if (!outcome) return;
-
-    // After commit, as a normal member removal does: a failed count update is
-    // logged and never undoes the delete.
-    for (const workspaceId of outcome.seatWorkspaces) {
-      try {
-        await this.usage.decrementMemberCount(workspaceId, userId, userId);
-      } catch (error) {
-        this.logger.warn(
-          `Account delete ${userId}: member count of ${workspaceId} not decremented: ${(error as Error)?.message}`,
-        );
-      }
-    }
 
     await this.deleteAvatar(userId, outcome.avatarUrl);
   }
@@ -276,6 +264,19 @@ export class AccountDeletionService {
       })
       .where(eq(users.id, userId));
 
+    // The audit trail is kept (who did what, by id), but not the address or
+    // name it recorded about this person: `actor_email` on what they did as
+    // an admin, `target_label` (often their email or name) on what was done
+    // to them. Before the insert below, which carries neither.
+    await tx
+      .update(adminAuditLogs)
+      .set({ actorEmail: null })
+      .where(eq(adminAuditLogs.actorId, userId));
+    await tx
+      .update(adminAuditLogs)
+      .set({ targetLabel: null })
+      .where(eq(adminAuditLogs.targetId, userId));
+
     // No PII: ids only, never the old email or name.
     await tx.insert(adminAuditLogs).values({
       action: input.actor === 'self' ? 'user.self_delete' : 'user.admin_delete',
@@ -286,18 +287,23 @@ export class AccountDeletionService {
       targetLabel: null,
     });
 
-    return {
-      // A guest holds no seat (members_count counts ADMIN and MEMBER), and a
-      // PENDING row never did. Guests are still REMOVED above.
-      seatWorkspaces: [
-        ...new Set(
-          removed
-            .filter((r) => r.status === 'ACCEPTED' && r.role !== 'GUEST')
-            .map((r) => r.workspaceId),
-        ),
-      ],
-      avatarUrl: locked.avatarUrl,
-    };
+    // A guest holds no seat (members_count counts ADMIN and MEMBER), and a
+    // PENDING row never did. Guests are still REMOVED above. On `tx` (the
+    // counter is transaction-aware): the freed seats commit with the delete,
+    // or nothing does - never a delete whose seats stay taken, nor seats
+    // freed for memberships a rolled-back delete kept.
+    const seatWorkspaces = [
+      ...new Set(
+        removed
+          .filter((r) => r.status === 'ACCEPTED' && r.role !== 'GUEST')
+          .map((r) => r.workspaceId),
+      ),
+    ];
+    for (const workspaceId of seatWorkspaces) {
+      await this.usage.decrementMemberCount(workspaceId, userId, userId, tx);
+    }
+
+    return { seatWorkspaces, avatarUrl: locked.avatarUrl };
   }
 
   /**

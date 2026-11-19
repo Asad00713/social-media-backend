@@ -1,4 +1,5 @@
 import type { PoolClient } from 'pg';
+import { sql } from 'drizzle-orm';
 import {
   describeDb,
   withRollbackDb,
@@ -584,7 +585,7 @@ describeDb('AccountDeletionService (database)', () => {
       });
 
       expect(usage.decrementMemberCount.mock.calls).toEqual([
-        [wB, me.id, me.id],
+        [wB, me.id, me.id, expect.anything()],
       ]);
       expect(
         await count(
@@ -623,6 +624,100 @@ describeDb('AccountDeletionService (database)', () => {
       expect(r2.isOwnPublicUrl).toHaveBeenCalledWith(url, 'avatar');
       expect(r2.deleteObject.mock.calls).toEqual([[key]]);
       expect((await userRow(client, me.id)).avatar_url).toBeNull();
+    });
+  });
+
+  it('the audit trail keeps its rows but not the email or name it recorded about the person', async () => {
+    await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const me = await seedUser(client);
+      const other = await seedUser(client);
+      // What I did as an admin, and what an admin did to me.
+      const mine = await client.query<{ id: string }>(
+        `INSERT INTO admin_audit_logs (action, actor_id, actor_email, target_type, target_id, target_label)
+         VALUES ('user.suspend', $1, $2, 'user', $3, 'Other Person') RETURNING id`,
+        [me.id, me.email, other.id],
+      );
+      const toMe = await client.query<{ id: string }>(
+        `INSERT INTO admin_audit_logs (action, actor_id, actor_email, target_type, target_id, target_label)
+         VALUES ('user.suspend', $1, $2, 'user', $3, $4) RETURNING id`,
+        [other.id, other.email, me.id, me.email],
+      );
+      const { service } = makeService(db);
+
+      await service.deleteAccount(me.id, {
+        confirmEmail: me.email,
+        actor: 'self',
+        actorId: me.id,
+      });
+
+      const rows = await client.query<{
+        id: string;
+        actor_id: string;
+        actor_email: string | null;
+        target_id: string;
+        target_label: string | null;
+      }>(
+        `SELECT id, actor_id, actor_email, target_id, target_label
+           FROM admin_audit_logs WHERE id = ANY($1::uuid[]) ORDER BY id`,
+        [[mine.rows[0].id, toMe.rows[0].id]],
+      );
+      const byId = new Map(rows.rows.map((r) => [r.id, r]));
+      // Mine: my email gone; the other person's label is theirs, kept.
+      expect(byId.get(mine.rows[0].id)).toMatchObject({
+        actor_id: me.id,
+        actor_email: null,
+        target_label: 'Other Person',
+      });
+      // To me: the label (my email) gone; the admin's own email kept.
+      expect(byId.get(toMe.rows[0].id)).toMatchObject({
+        target_id: me.id,
+        target_label: null,
+        actor_email: other.email,
+      });
+    });
+  });
+
+  it("the seats are freed on the delete's own transaction: a failed count rolls the whole delete back", async () => {
+    await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const me = await seedUser(client);
+      const hina = await seedUser(client);
+      const w1 = await seedWorkspace(client, hina.id, 'Seats');
+      const m1 = await seedInvitation(
+        client,
+        w1,
+        me.email,
+        me.id,
+        'ACCEPTED',
+        hina.id,
+      );
+      const { service, usage } = makeService(db);
+      // The counter writes on the transaction it is handed, then fails.
+      usage.decrementMemberCount.mockImplementation(
+        async (_w: string, _u: string, _r: string, tx: DbType) => {
+          await tx.execute(
+            sql`UPDATE users SET name = 'written-in-tx' WHERE id = ${hina.id}`,
+          );
+          throw new Error('counter down');
+        },
+      );
+
+      await expect(
+        service.deleteAccount(me.id, {
+          confirmEmail: me.email,
+          actor: 'self',
+          actorId: me.id,
+        }),
+      ).rejects.toThrow('counter down');
+
+      // Nothing of the delete committed: not the user, not the membership,
+      // not the counter's own write.
+      expect((await userRow(client, me.id)).deleted_at).toBeNull();
+      expect((await userRow(client, hina.id)).name).toBe('Old Name');
+      const m = await client.query<{ status: string }>(
+        `SELECT status FROM workspace_invitations WHERE id = $1`,
+        [m1],
+      );
+      expect(m.rows[0].status).toBe('ACCEPTED');
     });
   });
 });

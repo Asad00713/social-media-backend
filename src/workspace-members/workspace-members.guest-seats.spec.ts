@@ -639,10 +639,12 @@ describe('changing a role moves a seat only across the guest line', () => {
         OWNER,
       );
       expect(sets[0]).toMatchObject({ role: 'GUEST' });
+      // On the role change's own transaction, not the pool.
       expect(usage.decrementMemberCount).toHaveBeenCalledWith(
         WS,
         OWNER,
         MEMBER_USER,
+        expect.objectContaining({ update: expect.any(Function) }),
       );
       expect(usage.incrementMemberCount).not.toHaveBeenCalled();
     }
@@ -700,19 +702,19 @@ describe('changing a role moves a seat only across the guest line', () => {
     expect(ended).toEqual({ committed: 0, rolledBack: 1 });
   });
 
-  it('a demotion whose seat cannot be freed still commits (the count errs high)', async () => {
-    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+  it('a demotion whose seat cannot be freed rolls back with it: the role and the count move together', async () => {
     const { db, ended } = roleDb('MEMBER');
     const usage = makeUsage(5, 2);
     usage.decrementMemberCount.mockRejectedValue(new Error('usage db down'));
-    const res = await makeService(db, usage).updateMemberRole(
-      WS,
-      'm1',
-      { role: 'GUEST' } as any,
-      OWNER,
-    );
-    expect(res.role).toBe('GUEST');
-    expect(ended).toEqual({ committed: 1, rolledBack: 0 });
+    await expect(
+      makeService(db, usage).updateMemberRole(
+        WS,
+        'm1',
+        { role: 'GUEST' } as any,
+        OWNER,
+      ),
+    ).rejects.toThrow('usage db down');
+    expect(ended).toEqual({ committed: 0, rolledBack: 1 });
   });
 
   it('moving between two seat roles, or guest to guest, touches no counter and checks no seat', async () => {

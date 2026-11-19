@@ -1050,18 +1050,16 @@ export class WorkspaceMembersService {
           tx,
         );
       } else if (seatDelta === -1) {
-        try {
-          await this.usageService.decrementMemberCount(
-            workspaceId,
-            currentUserId,
-            current.userId || undefined,
-          );
-        } catch (error) {
-          // On the pool, not `tx`, as remove does: a failed statement on `tx`
-          // would abort the role change. A demotion that fails to free the
-          // seat errs high (conservative): log it and keep the change.
-          console.error('Failed to track member role change:', error);
-        }
+        // On `tx` too: the freed seat commits with the demotion, or neither
+        // does. A pool write here could free the seat while the role change
+        // rolled back (or the reverse), and the next seat check, which reads
+        // under this same lock, would see a count nobody committed.
+        await this.usageService.decrementMemberCount(
+          workspaceId,
+          currentUserId,
+          current.userId || undefined,
+          tx,
+        );
       }
       return row;
     });

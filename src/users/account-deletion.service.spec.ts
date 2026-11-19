@@ -178,20 +178,10 @@ describe('AccountDeletionService.deleteAccount', () => {
     expect(db.transaction).not.toHaveBeenCalled();
   });
 
-  it('after commit, each workspace left gets its member count decremented; a failure does not fail the delete', async () => {
+  it('no member count is moved after commit: the seats move on the transaction (account-deletion.db.spec)', async () => {
     const { service, usage } = setup({ leftWorkspaces: ['w1', 'w2'] });
-    usage.decrementMemberCount.mockRejectedValueOnce(new Error('no usage row'));
-
-    await expect(
-      service.deleteAccount('u1', SELF('old@example.com')),
-    ).resolves.toBeUndefined();
-    expect(usage.decrementMemberCount).toHaveBeenCalledWith('w1', 'u1', 'u1');
-    expect(usage.decrementMemberCount).toHaveBeenCalledWith('w2', 'u1', 'u1');
-  });
-
-  it('a concurrent delete that won (transaction returns null) decrements nothing', async () => {
-    const { service, usage } = setup({ leftWorkspaces: null });
     await service.deleteAccount('u1', SELF('old@example.com'));
+    // The transaction is faked here, so nothing inside it runs.
     expect(usage.decrementMemberCount).not.toHaveBeenCalled();
   });
 
