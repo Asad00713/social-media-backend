@@ -41,6 +41,7 @@ import { ScheduledInboxProcessor } from './processors/scheduled-inbox.processor'
 import { ScheduledMessagesService } from './services/scheduled-messages.service';
 import { SlackBackfillService } from './services/slack-backfill.service';
 import { YoutubeInboxBudgetService } from './services/youtube-inbox-budget.service';
+import { NonCommentableMediaService } from './services/non-commentable-media.service';
 import { YoutubeRetentionService } from './services/youtube-retention.service';
 import { YoutubeRetentionScheduler } from './schedulers/youtube-retention.scheduler';
 import {
@@ -146,6 +147,7 @@ import {
     ScheduledInboxProcessor,
     SlackBackfillService,
     YoutubeInboxBudgetService,
+    NonCommentableMediaService,
     YoutubeRetentionService,
     YoutubeRetentionScheduler,
     RedisClientProvider,
