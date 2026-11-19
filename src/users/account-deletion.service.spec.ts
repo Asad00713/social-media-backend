@@ -68,13 +68,17 @@ function setup(opts: {
     ),
     deleteObject: jest.fn(opts.deleteObject ?? (() => Promise.resolve())),
   };
+  const notifications = { disconnectUser: jest.fn() };
+  const realtime = { disconnectUser: jest.fn() };
   const service = new AccountDeletionService(
     db as unknown as DbType,
     subscriptions as unknown as SubscriptionService,
     usage as unknown as UsageService,
     r2 as unknown as CloudflareR2Service,
+    notifications as never,
+    realtime as never,
   );
-  return { service, db, subscriptions, usage, r2 };
+  return { service, db, subscriptions, usage, r2, notifications, realtime };
 }
 
 const SELF = (confirmEmail?: string) => ({
@@ -191,6 +195,32 @@ describe('AccountDeletionService.deleteAccount', () => {
       actorId: 'u1',
     });
     expect(db.transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("after commit, the deleted account's live sockets are closed on both gateways", async () => {
+    const { service, db, notifications, realtime } = setup({});
+    await service.deleteAccount('u1', SELF('old@example.com'));
+    expect(notifications.disconnectUser).toHaveBeenCalledWith('u1');
+    expect(realtime.disconnectUser).toHaveBeenCalledWith('u1');
+    expect(db.transaction.mock.invocationCallOrder[0]).toBeLessThan(
+      notifications.disconnectUser.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('a socket failure never fails the delete', async () => {
+    const { service, notifications } = setup({});
+    notifications.disconnectUser.mockImplementation(() => {
+      throw new Error('no server yet');
+    });
+    await expect(
+      service.deleteAccount('u1', SELF('old@example.com')),
+    ).resolves.toBeUndefined();
+  });
+
+  it('a delete that lost the race (transaction returns null) closes no socket', async () => {
+    const { service, notifications } = setup({ leftWorkspaces: null });
+    await service.deleteAccount('u1', SELF('old@example.com'));
+    expect(notifications.disconnectUser).not.toHaveBeenCalled();
   });
 
   it('an unknown user is 404', async () => {

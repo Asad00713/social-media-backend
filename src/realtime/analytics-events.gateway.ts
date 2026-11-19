@@ -12,7 +12,10 @@ import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { and, eq } from 'drizzle-orm';
-import { assertSessionLive } from '../auth/strategies/jwt.strategy';
+import {
+  assertNotDeleted,
+  assertSessionLive,
+} from '../auth/strategies/jwt.strategy';
 import { db } from '../drizzle/db';
 import { users } from '../drizzle/schema/users.schema';
 import { WorkspaceRoleService } from '../workspace-members/workspace-role.service';
@@ -104,9 +107,11 @@ export class AnalyticsEventsGateway
       // once, at connect.
       const account = await db.query.users.findFirst({
         where: eq(users.id, userId),
-        columns: { sessionsRevokedAt: true },
+        columns: { sessionsRevokedAt: true, deletedAt: true },
       });
       if (!account) throw new Error(`User ${userId} not found`);
+      // A deleted account is refused outright, as the HTTP strategies do.
+      assertNotDeleted(account.deletedAt);
       assertSessionLive(payload.iat, account.sessionsRevokedAt);
 
       socket.userId = userId;
@@ -258,7 +263,8 @@ export class AnalyticsEventsGateway
         where: and(
           eq(workspace.id, workspaceId),
           eq(workspace.ownerId, userId),
-          liveWorkspaces()),
+          liveWorkspaces(),
+        ),
         columns: { id: true },
       });
       if (owned) return true;
@@ -318,6 +324,11 @@ export class AnalyticsEventsGateway
     payload: UserEventPayloadMap[K],
   ): void {
     this.server.to(this.userRoom(userId)).emit(eventName, payload);
+  }
+
+  /** Drops every socket of one user on this instance (account deleted). */
+  disconnectUser(userId: string): void {
+    this.server?.in(this.userRoom(userId)).disconnectSockets(true);
   }
 
   private userRoom(userId: string): string {

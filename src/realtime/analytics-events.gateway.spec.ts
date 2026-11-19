@@ -93,6 +93,22 @@ describe('AnalyticsEventsGateway.handleConnection', () => {
     expect(fake.userId).toBe('u1');
   });
 
+  it('disconnects a soft-deleted account (row kept, deleted_at set)', async () => {
+    findUser.mockResolvedValue({
+      sessionsRevokedAt: null,
+      deletedAt: new Date(),
+    });
+    const { gateway, socket, fake, disconnect } = build({
+      sub: 'u1',
+      iat: ISSUED_AT,
+    });
+
+    await gateway.handleConnection(socket);
+
+    expect(disconnect).toHaveBeenCalledWith(true);
+    expect(fake.userId).toBeUndefined();
+  });
+
   it('disconnects a token for a deleted account', async () => {
     findUser.mockResolvedValue(undefined);
     const { gateway, socket, disconnect } = build({

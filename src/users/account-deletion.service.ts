@@ -42,6 +42,8 @@ import {
 } from '../media/cloudflare-r2.service';
 import { normalizeEmail } from './normalize-email';
 import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
+import { NotificationsGateway } from '../notifications/notifications.gateway';
+import { AnalyticsEventEmitter } from '../realtime/analytics-event-emitter.service';
 
 type Executor = DbType | Parameters<Parameters<DbType['transaction']>[0]>[0];
 type Tx = Parameters<Parameters<DbType['transaction']>[0]>[0];
@@ -126,6 +128,11 @@ export class AccountDeletionService {
     private readonly subscriptions: SubscriptionService,
     private readonly usage: UsageService,
     private readonly r2: CloudflareR2Service,
+    // Last two: positional specs construct this service directly. Not
+    // @Optional - both modules are global and always provide them; optional
+    // in the type only so a spec that never deletes can leave them out.
+    private readonly notificationsGateway?: NotificationsGateway,
+    private readonly realtime?: AnalyticsEventEmitter,
   ) {}
 
   async deleteAccount(
@@ -186,7 +193,25 @@ export class AccountDeletionService {
     );
     if (!outcome) return;
 
+    // After commit: the open tabs of the deleted account lose their live
+    // sockets now, not at their next reconnect (which the gateways then
+    // refuse). This instance only; a socket on another instance is refused
+    // at its next connect.
+    this.disconnectSockets(userId);
+
     await this.deleteAvatar(userId, outcome.avatarUrl);
+  }
+
+  /** Never throws: the account is already deleted. */
+  private disconnectSockets(userId: string): void {
+    try {
+      this.notificationsGateway?.disconnectUser(userId);
+    } catch (error) {
+      this.logger.warn(
+        `Account delete ${userId}: notification sockets not closed: ${(error as Error)?.message}`,
+      );
+    }
+    this.realtime?.disconnectUser(userId);
   }
 
   /**
