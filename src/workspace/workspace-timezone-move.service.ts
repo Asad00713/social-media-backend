@@ -6,6 +6,7 @@ import { DRIZZLE } from '../drizzle/drizzle.module';
 import type { DbType } from '../drizzle/db';
 import { socialMediaChannels } from '../drizzle/schema/channels.schema';
 import { posts, type PostTarget } from '../drizzle/schema/posts.schema';
+import { workspace } from '../drizzle/schema/workspace.schema';
 import { QUEUES } from '../queue/queue.module';
 import { utcToWallClock, wallClockToUtc } from '../common/utils/wall-clock';
 import { isHeld, isJobPending } from '../posts/lib/held-targets';
@@ -27,19 +28,33 @@ export const TZ_MOVE_INLINE_LIMIT = 100;
 /** Batch size when the queued job reads its posts back. */
 const READ_BATCH = 500;
 
+/** Why posts stayed on their previous time (see TimezoneMoveResult). */
+export interface TimezoneUnmovedReasons {
+  /**
+   * Its time in the new zone has already gone by. It is not moved: moving it
+   * would publish it at once, which nobody asked for. It keeps its time.
+   */
+  past: number;
+  /** Re-timed, published or cancelled by someone while the move ran. */
+  changed: number;
+  /** Its publish job could not be moved (logged; row and job still agree). */
+  jobNotMoved: number;
+}
+
 /**
  * What "Also move existing" did. `queued` is true when the posts are being
  * moved on the queue; the counts are then the ones it will process.
- * `unmovedPosts`: posts left on their previous time. That is a post someone
- * re-timed, published or cancelled while the move ran (theirs to keep), or
- * one whose publish job could not be moved (logged; its row and its live job
- * still agree). Inline only: a queued move answers 0 and logs its own.
+ * `unmovedPosts`: posts left on their previous time, the sum of
+ * `unmovedReasons`. On a queued move only `past` is known when it answers
+ * (it is decided by the plan); posts changed while the job runs, or whose
+ * job cannot move, are logged by the job, not counted here.
  */
 export interface TimezoneMoveResult {
   movedChannels: number;
   rescheduledPosts: number;
   queued: boolean;
   unmovedPosts: number;
+  unmovedReasons: TimezoneUnmovedReasons;
 }
 
 /** One planned post move, as the queued job carries it (ISO instants). */
@@ -87,8 +102,9 @@ export interface PlannedMove {
  * Where each post goes: the same wall-clock time, read in the zone its first
  * target channel had before the move (else `fromZone`), now in `toZone`.
  * A held post is skipped (jobless on purpose: resuming re-enqueues it), as is
- * one whose instant does not change. A new instant already past becomes `now`:
- * it publishes at once, as a past-due reschedule does.
+ * one whose instant does not change. A post whose new instant has already
+ * gone by is NOT moved: it keeps its time (moving it to "now" would publish
+ * it at once, unasked). Its id goes into `past`, so the caller can say so.
  */
 export function planPostMoves(
   rows: MovablePost[],
@@ -96,6 +112,7 @@ export function planPostMoves(
   fromZone: string,
   toZone: string,
   now: Date,
+  past: string[] = [],
 ): PlannedMove[] {
   const plan: PlannedMove[] = [];
   for (const row of rows) {
@@ -110,11 +127,11 @@ export function planPostMoves(
     if (!moved) continue;
     const next = moved.getTime() + old.getUTCMilliseconds();
     if (next === old.getTime()) continue;
-    plan.push({
-      postId: row.id,
-      from: old,
-      at: new Date(Math.max(next, now.getTime())),
-    });
+    if (next < now.getTime()) {
+      past.push(row.id);
+      continue;
+    }
+    plan.push({ postId: row.id, from: old, at: new Date(next) });
   }
   return plan;
 }
@@ -164,6 +181,16 @@ export class WorkspaceTimezoneMoveService {
         sql`SELECT pg_advisory_xact_lock(hashtext(${`tz-move:${workspaceId}`}))`,
       );
 
+      // The zone the posts are in NOW, read under the lock: a move that
+      // committed while this one waited has changed it, and the caller's
+      // `fromZone` was read before the wait. Falls back to it if the row is
+      // gone (a delete in between; writeFirst then finds no row either).
+      const [current] = await tx
+        .select({ timezone: workspace.timezone })
+        .from(workspace)
+        .where(eq(workspace.id, workspaceId));
+      const sourceZone = current?.timezone ?? fromZone;
+
       const channels = await tx
         .select({
           id: socialMediaChannels.id,
@@ -174,12 +201,14 @@ export class WorkspaceTimezoneMoveService {
       const channelZones = Object.fromEntries(
         channels.map((c) => [String(c.id), c.timezone]),
       );
+      const past: string[] = [];
       const plan = planPostMoves(
         await this.scheduledPosts(tx, workspaceId),
         channelZones,
-        fromZone,
+        sourceZone,
         toZone,
         now,
+        past,
       );
       const queued = plan.length > TZ_MOVE_INLINE_LIMIT;
 
@@ -190,7 +219,7 @@ export class WorkspaceTimezoneMoveService {
       if (queued) {
         const data: TimezoneMoveJob = {
           workspaceId,
-          fromZone,
+          fromZone: sourceZone,
           toZone,
           channelZones,
           posts: plan.map((m) => ({
@@ -216,6 +245,7 @@ export class WorkspaceTimezoneMoveService {
           queuedCount: plan.length,
           written: [],
           notWritten: 0,
+          past: past.length,
         };
       }
 
@@ -225,15 +255,22 @@ export class WorkspaceTimezoneMoveService {
         queuedCount: 0,
         written,
         notWritten: plan.length - written.length,
+        past: past.length,
       };
     });
+    if (outcome.past > 0) {
+      this.logger.log(
+        `Time-zone move for workspace ${workspaceId}: ${outcome.past} posts kept their time, their time in ${toZone} has already gone by`,
+      );
+    }
 
     if (outcome.queuedCount > 0) {
       return {
         movedChannels: outcome.movedChannels,
         rescheduledPosts: outcome.queuedCount,
         queued: true,
-        unmovedPosts: 0,
+        unmovedPosts: outcome.past,
+        unmovedReasons: { past: outcome.past, changed: 0, jobNotMoved: 0 },
       };
     }
 
@@ -245,9 +282,14 @@ export class WorkspaceTimezoneMoveService {
       movedChannels: outcome.movedChannels,
       rescheduledPosts: moved,
       queued: false,
-      // Planned but changed before the write, changed before the job moved,
-      // or whose job could not move.
-      unmovedPosts: outcome.notWritten + skipped + failed,
+      // Past in the new zone, planned but changed before the write, changed
+      // before the job moved, or whose job could not move.
+      unmovedPosts: outcome.past + outcome.notWritten + skipped + failed,
+      unmovedReasons: {
+        past: outcome.past,
+        changed: outcome.notWritten + skipped,
+        jobNotMoved: failed,
+      },
     };
   }
 

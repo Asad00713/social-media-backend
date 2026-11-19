@@ -1,4 +1,5 @@
 import { ConflictException, Logger } from '@nestjs/common';
+import { getTableName } from 'drizzle-orm';
 import type { Job } from 'bullmq';
 import type { PostTarget } from '../drizzle/schema/posts.schema';
 import { PostRescheduleService } from '../posts/services/post-reschedule.service';
@@ -106,10 +107,9 @@ describe('planPostMoves', () => {
     ).toEqual([]);
   });
 
-  it('a new instant already past becomes now', () => {
-    // 09:00 Karachi on 17 Nov is 04:00Z; 09:00 New York is 14:00Z, after NOW.
-    // Going the other way, 09:00 New York (14:00Z) to 09:00 Karachi (04:00Z)
-    // lands before NOW.
+  it('a post whose new instant has already gone by is not moved: it keeps its time and is reported as past', () => {
+    // 09:00 New York (14:00Z) to 09:00 Karachi (04:00Z) lands before NOW.
+    const past: string[] = [];
     expect(
       planPostMoves(
         [
@@ -118,15 +118,17 @@ describe('planPostMoves', () => {
             scheduledAt: new Date('2026-11-17T14:00:00Z'),
             targets: [],
           },
+          // Going the other way stays in the future and is moved.
+          { id: 'b', scheduledAt: KARACHI_9AM, targets: [] },
         ],
         {},
         'America/New_York',
         'Asia/Karachi',
         NOW,
-      ),
-    ).toEqual([
-      { postId: 'a', from: new Date('2026-11-17T14:00:00Z'), at: NOW },
-    ]);
+        past,
+      ).map((m) => m.postId),
+    ).toEqual(['b']);
+    expect(past).toEqual(['a']);
   });
 
   it('keeps the milliseconds of the stored time', () => {
@@ -399,26 +401,40 @@ describe('WorkspaceTimezoneMoveService.moveExisting: lock, check, then write', (
     jobState?: string | null;
     queueDown?: boolean;
     postCount?: number;
+    /** workspace.timezone as the row holds it under the lock. */
+    storedZone?: string;
+    /** When post i is scheduled (default 09:00 Karachi, in the future). */
+    at?: Date | ((i: number) => Date);
+    /** The posts' first channel (default 1, whose zone is Karachi). */
+    channelId?: string;
   }) {
     const calls: string[] = [];
     const posts = Array.from({ length: opts.postCount ?? 0 }, (_, i) => ({
       id: `p${i}`,
-      scheduledAt: KARACHI_9AM,
-      targets: [target('1')],
+      scheduledAt:
+        typeof opts.at === 'function' ? opts.at(i) : (opts.at ?? KARACHI_9AM),
+      targets: [target(opts.channelId ?? '1')],
     }));
-    let reads = 0;
     const tx = {
       execute: jest.fn(() => {
         calls.push('lock');
         return Promise.resolve();
       }),
+      // Keyed on the table read, not on call order.
       select: jest.fn(() => ({
-        from: jest.fn(() => ({
+        from: jest.fn((table: unknown) => ({
           where: jest.fn(() => {
-            reads += 1;
-            calls.push(reads === 1 ? 'read-channels' : 'read-posts');
+            const name = getTableName(table as never);
+            calls.push(`read-${name}`);
+            if (name === 'workspace') {
+              return Promise.resolve([
+                { timezone: opts.storedZone ?? 'Asia/Karachi' },
+              ]);
+            }
             return Promise.resolve(
-              reads === 1 ? [{ id: 1, timezone: 'Asia/Karachi' }] : posts,
+              name === 'social_media_channels'
+                ? [{ id: 1, timezone: 'Asia/Karachi' }]
+                : posts,
             );
           }),
         })),
@@ -489,9 +505,10 @@ describe('WorkspaceTimezoneMoveService.moveExisting: lock, check, then write', (
     await service.moveExisting('ws-1', 'Asia/Karachi', 'America/New_York', {
       writeFirst,
     });
-    expect(calls.slice(0, 4)).toEqual([
+    expect(calls.slice(0, 5)).toEqual([
       'lock',
-      'read-channels',
+      'read-workspace',
+      'read-social_media_channels',
       'read-posts',
       'check',
     ]);
@@ -523,7 +540,65 @@ describe('WorkspaceTimezoneMoveService.moveExisting: lock, check, then write', (
       rescheduledPosts: 0,
       queued: false,
       unmovedPosts: 2,
+      unmovedReasons: { past: 0, changed: 2, jobNotMoved: 0 },
     });
+  });
+
+  it('a post whose time in the new zone has gone by is not written, and is counted as past', async () => {
+    // 13:00Z today: 18:00 Karachi. Its wall clock read in Karachi and placed
+    // in Honolulu (UTC-10) is far later; placed in Kiritimati (UTC+14) it is
+    // 18:00+14 = 04:00Z, which is before NOW (12:00Z).
+    const at = new Date('2026-11-17T13:00:00Z');
+    const { service, tx } = make({ jobState: null, postCount: 2, at });
+    await expect(
+      service.moveExisting('ws-1', 'Asia/Karachi', 'Pacific/Kiritimati'),
+    ).resolves.toMatchObject({
+      unmovedPosts: 2,
+      unmovedReasons: { past: 2, changed: 0, jobNotMoved: 0 },
+    });
+    // Only the channels' zone is written: no post update.
+    expect(tx.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('queued: the posts already past are counted at once, not answered as 0', async () => {
+    const past = new Date('2026-11-17T13:00:00Z');
+    const { service, queue } = make({
+      jobState: null,
+      postCount: TZ_MOVE_INLINE_LIMIT + 5,
+      // Three past, the rest at 09:00 Karachi in January (moved).
+      at: (i) => (i < 3 ? past : KARACHI_9AM),
+    });
+    await expect(
+      service.moveExisting('ws-1', 'Asia/Karachi', 'Pacific/Kiritimati'),
+    ).resolves.toEqual({
+      movedChannels: 0,
+      rescheduledPosts: TZ_MOVE_INLINE_LIMIT + 2,
+      queued: true,
+      unmovedPosts: 3,
+      unmovedReasons: { past: 3, changed: 0, jobNotMoved: 0 },
+    });
+    const job = (queue.add.mock.calls[0] as unknown[])[1] as TimezoneMoveJob;
+    expect(job.posts).toHaveLength(TZ_MOVE_INLINE_LIMIT + 2);
+  });
+
+  it("reads the zone the posts are in under the lock, not the caller's earlier read", async () => {
+    // A move to New York committed while this one waited: the row now says
+    // New York, the caller still passes Karachi. The posts' channel has no
+    // zone of its own, so the workspace zone is theirs: New York to New York
+    // changes no instant and no post is written.
+    const { service, tx } = make({
+      jobState: null,
+      postCount: 2,
+      storedZone: 'America/New_York',
+      at: NEW_YORK_9AM,
+      channelId: '99',
+    });
+    await expect(
+      service.moveExisting('ws-1', 'Asia/Karachi', 'America/New_York'),
+    ).resolves.toMatchObject({ unmovedPosts: 0, rescheduledPosts: 0 });
+    // The channels' zone only; with the stale Karachi zone both posts would
+    // have been re-timed (two more updates).
+    expect(tx.update).toHaveBeenCalledTimes(1);
   });
 
   it('queued: an unreachable queue refuses the move before any write', async () => {

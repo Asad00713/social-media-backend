@@ -299,6 +299,7 @@ describeDb('WorkspaceTimezoneMoveService (database)', () => {
         rescheduledPosts: 1,
         queued: false,
         unmovedPosts: 0,
+        unmovedReasons: { past: 0, changed: 0, jobNotMoved: 0 },
       });
       expect(await channelZones(client, ws)).toEqual([
         'America/New_York',
@@ -396,6 +397,7 @@ describeDb('WorkspaceTimezoneMoveService (database)', () => {
         rescheduledPosts: 0,
         queued: false,
         unmovedPosts: 0,
+        unmovedReasons: { past: 0, changed: 0, jobNotMoved: 0 },
       });
       for (const id of [slotPost, evergreenPost]) {
         expect((await postRow(client, id)).scheduled_at).toEqual(KARACHI_9AM);
@@ -406,7 +408,7 @@ describeDb('WorkspaceTimezoneMoveService (database)', () => {
     });
   });
 
-  it('a post whose new instant is already past is set to now and published at once', async () => {
+  it('a post whose new instant is already past is NOT moved: it keeps its time, gets no new job, and is reported as past', async () => {
     await withRollbackDb(MIGRATIONS, async (db, client) => {
       const { ws, channel } = await karachiWorkspace(client);
       // A Karachi time whose wall-clock, read in New York, was five minutes
@@ -434,14 +436,14 @@ describeDb('WorkspaceTimezoneMoveService (database)', () => {
         'America/New_York',
       );
 
-      expect(result.rescheduledPosts).toBe(1);
+      expect(result).toMatchObject({
+        rescheduledPosts: 0,
+        unmovedPosts: 1,
+        unmovedReasons: { past: 1, changed: 0, jobNotMoved: 0 },
+      });
       const row = await postRow(client, post);
-      expect(row.scheduled_at!.getTime()).toBeGreaterThanOrEqual(
-        now.getTime() - 1000,
-      );
-      expect(row.scheduled_at!.getTime()).toBeLessThanOrEqual(Date.now());
-      expect(publishing.added[0].opts.delay).toBe(0);
-      expectNoColonJobIds(publishing);
+      expect(row.scheduled_at!.getTime()).toBe(karachiSameWall.getTime());
+      expect(publishing.added).toHaveLength(0);
     });
   });
 
@@ -474,6 +476,7 @@ describeDb('WorkspaceTimezoneMoveService (database)', () => {
         rescheduledPosts: 1,
         queued: false,
         unmovedPosts: 1,
+        unmovedReasons: { past: 0, changed: 0, jobNotMoved: 1 },
       });
       // Row and job agree: the old job still fires at the old time.
       expect((await postRow(client, stuck)).scheduled_at).toEqual(KARACHI_9AM);
@@ -538,6 +541,7 @@ describeDb('WorkspaceTimezoneMoveService (database)', () => {
         rescheduledPosts: 0,
         queued: false,
         unmovedPosts: 0,
+        unmovedReasons: { past: 0, changed: 0, jobNotMoved: 0 },
       });
       expect(await channelZones(client, ws)).toEqual(['America/New_York']);
       expectNoColonJobIds(publishing);
@@ -582,6 +586,7 @@ describeDb('WorkspaceTimezoneMoveService (database)', () => {
         rescheduledPosts: total,
         queued: true,
         unmovedPosts: 0,
+        unmovedReasons: { past: 0, changed: 0, jobNotMoved: 0 },
       });
       expect(await channelZones(client, ws)).toEqual(['America/New_York']);
       // Nothing moved yet: the job carries the plan.
