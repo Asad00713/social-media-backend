@@ -337,13 +337,18 @@ export class AccountDeletionService {
     // counter is transaction-aware): the freed seats commit with the delete,
     // or nothing does - never a delete whose seats stay taken, nor seats
     // freed for memberships a rolled-back delete kept.
+    //
+    // SORTED: the UPDATE ... RETURNING above yields workspaces in plan order,
+    // and each decrement locks that workspace's usage row until commit. Two
+    // concurrent deletes of people sharing workspaces would otherwise lock
+    // W1 then W2 against W2 then W1 (deadlock); one fixed order cannot.
     const seatWorkspaces = [
       ...new Set(
         removed
           .filter((r) => r.status === 'ACCEPTED' && r.role !== 'GUEST')
           .map((r) => r.workspaceId),
       ),
-    ];
+    ].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     for (const workspaceId of seatWorkspaces) {
       await this.usage.decrementMemberCount(workspaceId, userId, userId, tx);
     }

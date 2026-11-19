@@ -315,3 +315,64 @@ describe('AccountDeletionService.deleteAccount', () => {
     });
   });
 });
+
+describe('AccountDeletionService seat decrements inside the transaction', () => {
+  /**
+   * Two concurrent deletes of people who share workspaces lock usage rows
+   * in whatever order each UPDATE ... RETURNING happened to yield: A takes
+   * W1 then W2 while B takes W2 then W1 = deadlock. A fixed order cannot.
+   */
+  it('decrements in sorted workspace order, whatever order RETURNING gave', async () => {
+    const { service, usage } = setup({});
+    // A fake tx: every chain is awaitable and resolves to the next queued
+    // result; the locked user row first, then no owned workspaces.
+    const queue: unknown[][] = [
+      [{ email: 'old@example.com', deletedAt: null, avatarUrl: null }],
+      [],
+    ];
+    const chain = (): Record<string, unknown> => {
+      const result = queue.shift() ?? [];
+      const b: Record<string, unknown> = {};
+      for (const m of ['from', 'where', 'orderBy', 'for', 'set', 'values']) {
+        b[m] = () => b;
+      }
+      b.then = (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) =>
+        Promise.resolve(result).then(res, rej);
+      return b;
+    };
+    const tx = {
+      select: jest.fn(chain),
+      update: jest.fn(chain),
+      insert: jest.fn(chain),
+      delete: jest.fn(chain),
+    };
+    const internals = service as unknown as {
+      removeMemberships: jest.Mock;
+      deletePersonalRows: jest.Mock;
+      deleteInTransaction: (
+        tx: unknown,
+        userId: string,
+        input: unknown,
+      ) => Promise<{ seatWorkspaces: string[] }>;
+    };
+    internals.removeMemberships = jest.fn().mockResolvedValue([
+      { workspaceId: 'w-c', role: 'MEMBER', status: 'ACCEPTED' },
+      { workspaceId: 'w-a', role: 'ADMIN', status: 'ACCEPTED' },
+      { workspaceId: 'w-b', role: 'MEMBER', status: 'ACCEPTED' },
+      { workspaceId: 'w-a', role: 'MEMBER', status: 'ACCEPTED' },
+      { workspaceId: 'w-g', role: 'GUEST', status: 'ACCEPTED' },
+    ]);
+    internals.deletePersonalRows = jest.fn().mockResolvedValue(undefined);
+
+    const outcome = await internals.deleteInTransaction(tx, 'u1', {
+      actor: 'self',
+      actorId: 'u1',
+    });
+
+    const order = (usage.decrementMemberCount.mock.calls as string[][]).map(
+      (c) => c[0],
+    );
+    expect(order).toEqual(['w-a', 'w-b', 'w-c']);
+    expect(outcome.seatWorkspaces).toEqual(['w-a', 'w-b', 'w-c']);
+  });
+});
