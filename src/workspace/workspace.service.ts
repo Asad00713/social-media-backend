@@ -1,3 +1,4 @@
+import { lockLiveAccount } from '../users/account-live';
 import {
   BadRequestException,
   ConflictException,
@@ -153,27 +154,37 @@ export class WorkspaceService {
 
     const slug = this.generateSlug(createWorkspaceDto.name);
 
-    const existingWorkspace = await this.db.query.workspace.findFirst({
-      where: eq(workspace.slug, slug),
+    // One transaction: the owner's account is held live (FOR KEY SHARE, see
+    // lockLiveAccount) from the slug check to the insert. Account deletion
+    // refuses an owner of a live workspace, but it checks that before its
+    // own commit; without this lock a create that read the user before the
+    // delete committed would hand a deleted account a fresh workspace.
+    const newWorkspace = await this.db.transaction(async (tx) => {
+      await lockLiveAccount(tx, userId);
+
+      const existingWorkspace = await tx.query.workspace.findFirst({
+        where: eq(workspace.slug, slug),
+      });
+
+      if (existingWorkspace) {
+        throw new ConflictException(
+          `Workspace with name "${createWorkspaceDto.name}" already exists. Please choose a different name.`,
+        );
+      }
+
+      const [inserted] = await tx
+        .insert(workspace)
+        .values({
+          name: createWorkspaceDto.name,
+          slug: slug,
+          description: createWorkspaceDto.description || null,
+          logo: createWorkspaceDto.logo || null,
+          timezone: createWorkspaceDto.timezone || 'UTC',
+          ownerId: userId,
+        })
+        .returning();
+      return inserted;
     });
-
-    if (existingWorkspace) {
-      throw new ConflictException(
-        `Workspace with name "${createWorkspaceDto.name}" already exists. Please choose a different name.`,
-      );
-    }
-
-    const [newWorkspace] = await this.db
-      .insert(workspace)
-      .values({
-        name: createWorkspaceDto.name,
-        slug: slug,
-        description: createWorkspaceDto.description || null,
-        logo: createWorkspaceDto.logo || null,
-        timezone: createWorkspaceDto.timezone || 'UTC',
-        ownerId: userId,
-      })
-      .returning();
 
     // Auto-create FREE subscription for the new workspace
     try {

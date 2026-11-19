@@ -19,6 +19,7 @@ import {
   lockWorkspaceSeats,
   WorkspaceMembersService,
 } from './workspace-members.service';
+import { lockLiveAccount } from '../users/account-live';
 
 /** Crockford base32, lower case: no i, l, o or u, so a code reads aloud. */
 export const INVITE_CODE_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz';
@@ -169,6 +170,10 @@ export class InviteLinkService {
     const email = normalizeEmail(user.email);
 
     const joined = await this.db.transaction(async (tx) => {
+      // First, before the seat lock: an account deleted while this request
+      // was in flight must not come back as a member (see lockLiveAccount).
+      await lockLiveAccount(tx, userId);
+
       const found = await tx.query.workspace.findFirst({
         where: this.openLinkFilter(code),
         columns: { id: true },

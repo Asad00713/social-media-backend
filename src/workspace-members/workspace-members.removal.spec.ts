@@ -17,6 +17,12 @@ import { WorkspaceMembersController } from './workspace-members.controller';
 import { REQUIRE_CAPABILITY } from './require-capability.decorator';
 import { WorkspaceRoleService } from './workspace-role.service';
 
+// The account-live lock (FOR KEY SHARE on users) is proven against Postgres
+// in workspace.create-vs-delete.db.spec.ts; these fakes have no `select`.
+jest.mock('src/users/account-live', () => ({
+  lockLiveAccount: jest.fn().mockResolvedValue(undefined),
+}));
+
 const dialect = new PgDialect();
 const whereOf = (arg: any) => dialect.sqlToQuery(arg.where);
 

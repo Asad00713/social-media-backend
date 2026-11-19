@@ -5,6 +5,12 @@ import type { ConfigService } from '@nestjs/config';
 import { AppLinks } from 'src/email/links/app-links';
 import { WorkspaceMembersService } from './workspace-members.service';
 
+// The account-live lock (FOR KEY SHARE on users) is proven against Postgres
+// in workspace.create-vs-delete.db.spec.ts; these fakes have no `select`.
+jest.mock('src/users/account-live', () => ({
+  lockLiveAccount: jest.fn().mockResolvedValue(undefined),
+}));
+
 /**
  * Guests are free: they never use a seat. Pinned from every side a seat is
  * checked or counted: the invite gates, resend, accept, restore, remove,

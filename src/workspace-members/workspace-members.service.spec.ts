@@ -18,6 +18,12 @@ import {
   WorkspaceMembersService,
 } from './workspace-members.service';
 
+// The account-live lock (FOR KEY SHARE on users) is proven against Postgres
+// in workspace.create-vs-delete.db.spec.ts; these fakes have no `select`.
+jest.mock('src/users/account-live', () => ({
+  lockLiveAccount: jest.fn().mockResolvedValue(undefined),
+}));
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Everything the service sends or notifies through, faked. */
@@ -263,8 +269,12 @@ describe('WorkspaceMembersService.previewInvitation', () => {
       query: {
         workspaceInvitation: {
           findFirst: jest.fn().mockResolvedValue({
-            email: 'new@acme.com', role: 'MEMBER', status: 'PENDING', expiresAt: past,
-            workspace: { name: 'Acme' }, inviter: { name: 'Sam' },
+            email: 'new@acme.com',
+            role: 'MEMBER',
+            status: 'PENDING',
+            expiresAt: past,
+            workspace: { name: 'Acme' },
+            inviter: { name: 'Sam' },
           }),
         },
       },
@@ -272,8 +282,12 @@ describe('WorkspaceMembersService.previewInvitation', () => {
     const service = build(db, {} as any, {} as any, noRole);
     const res = await service.previewInvitation('tok123');
     expect(res).toEqual({
-      workspaceName: 'Acme', inviterName: 'Sam', invitedEmail: 'new@acme.com',
-      role: 'MEMBER', status: 'PENDING', expired: true,
+      workspaceName: 'Acme',
+      inviterName: 'Sam',
+      invitedEmail: 'new@acme.com',
+      role: 'MEMBER',
+      status: 'PENDING',
+      expired: true,
     });
     expect((res as any).token).toBeUndefined();
   });
@@ -323,9 +337,7 @@ describe('WorkspaceMembersService.acceptInvitation auto-verify + onboarding', ()
     await service.acceptInvitation('tok', 'user-1');
 
     expect(usersService.verifyEmail).toHaveBeenCalledWith('user-1');
-    expect(usersService.markOnboardingCompleted).toHaveBeenCalledWith(
-      'user-1',
-    );
+    expect(usersService.markOnboardingCompleted).toHaveBeenCalledWith('user-1');
   });
 });
 
@@ -333,25 +345,57 @@ describe('WorkspaceMembersService.batchInvite seat gate', () => {
   it('rejects the whole batch when it exceeds remaining seats', async () => {
     const db: any = withTx({
       query: {
-        workspace: { findFirst: jest.fn().mockResolvedValue({ id: 'w', ownerId: 'owner', name: 'Acme' }) },
+        workspace: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ id: 'w', ownerId: 'owner', name: 'Acme' }),
+        },
         users: { findFirst: jest.fn().mockResolvedValue(undefined) },
         workspaceInvitation: {
           findFirst: jest.fn().mockResolvedValue(undefined),
           findMany: jest.fn().mockResolvedValue([]), // no pending
         },
       },
-      insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: 'i', email: 'x', role: 'MEMBER', token: 't', expiresAt: new Date() }]) }) }),
+      insert: () => ({
+        values: () => ({
+          returning: () =>
+            Promise.resolve([
+              {
+                id: 'i',
+                email: 'x',
+                role: 'MEMBER',
+                token: 't',
+                expiresAt: new Date(),
+              },
+            ]),
+        }),
+      }),
       // count of accepted members:
-      select: () => ({ from: () => ({ where: () => Promise.resolve([{ count: 1 }]) }) }),
+      select: () => ({
+        from: () => ({ where: () => Promise.resolve([{ count: 1 }]) }),
+      }),
     });
     const usageService: any = {
-      getWorkspaceUsage: jest.fn().mockResolvedValue({ membersLimit: 2, membersCount: 1, membersAvailable: 1 }),
+      getWorkspaceUsage: jest
+        .fn()
+        .mockResolvedValue({
+          membersLimit: 2,
+          membersCount: 1,
+          membersAvailable: 1,
+        }),
     };
     const usersService: any = {};
     const svc = build(db, usageService, usersService, noRole);
     // reserved = membersCount(1) + pending(0) = 1; limit 2 → 1 seat left; batch of 2 → exceeds
     await expect(
-      svc.batchInvite('w', [{ email: 'a@x.com', role: 'MEMBER' }, { email: 'b@x.com', role: 'MEMBER' }] as any, 'owner'),
+      svc.batchInvite(
+        'w',
+        [
+          { email: 'a@x.com', role: 'MEMBER' },
+          { email: 'b@x.com', role: 'MEMBER' },
+        ] as any,
+        'owner',
+      ),
     ).rejects.toThrow(/SEAT_LIMIT_EXCEEDED/);
   });
 });
@@ -375,17 +419,28 @@ describe('WorkspaceMembersService.getMembers last seen', () => {
     ]);
     const db: any = {
       query: {
-        workspace: { findFirst: jest.fn().mockResolvedValue({ id: 'ws1', ownerId: 'owner1' }) },
+        workspace: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ id: 'ws1', ownerId: 'owner1' }),
+        },
         users: { findFirst: findFirstUsers },
-        workspaceInvitation: { findFirst: jest.fn().mockResolvedValue(undefined), findMany },
+        workspaceInvitation: {
+          findFirst: jest.fn().mockResolvedValue(undefined),
+          findMany,
+        },
       },
     };
     const service = build(db, {} as any, {} as any, {} as any);
 
     const result = await service.getMembers('ws1', 'owner1');
 
-    expect(findFirstUsers.mock.calls[0][0].columns).toMatchObject({ lastLoginAt: true });
-    expect(findMany.mock.calls[0][0].with.user.columns).toMatchObject({ lastLoginAt: true });
+    expect(findFirstUsers.mock.calls[0][0].columns).toMatchObject({
+      lastLoginAt: true,
+    });
+    expect(findMany.mock.calls[0][0].with.user.columns).toMatchObject({
+      lastLoginAt: true,
+    });
     expect(result.owner?.lastLoginAt).toEqual(lastLogin);
     expect(result.members[0].user?.lastLoginAt).toBeNull();
   });
@@ -867,23 +922,38 @@ describe('WorkspaceMembersService.resendInvitation', () => {
 describe('WorkspaceMembersService.inviteMember email case', () => {
   it('matches users and invitations case-insensitively and stores lowercase', async () => {
     const dialect = new PgDialect();
-    const userFind = jest.fn().mockImplementation(async (arg: any) =>
-      dialect.sqlToQuery(arg.where).sql.includes('"users"."id" =')
-        ? { id: 'owner1', email: 'Owner@Acme.com' }
-        : undefined,
-    );
+    const userFind = jest
+      .fn()
+      .mockImplementation(async (arg: any) =>
+        dialect.sqlToQuery(arg.where).sql.includes('"users"."id" =')
+          ? { id: 'owner1', email: 'Owner@Acme.com' }
+          : undefined,
+      );
     const invFind = jest.fn().mockResolvedValue(undefined);
     const values = jest.fn().mockReturnValue({
       returning: () =>
         Promise.resolve([
-          { id: 'i', email: 'sara@x.com', role: 'MEMBER', token: 't', expiresAt: new Date() },
+          {
+            id: 'i',
+            email: 'sara@x.com',
+            role: 'MEMBER',
+            token: 't',
+            expiresAt: new Date(),
+          },
         ]),
     });
     const db: any = withTx({
       query: {
-        workspace: { findFirst: jest.fn().mockResolvedValue({ id: 'ws1', ownerId: 'owner1', name: 'A' }) },
+        workspace: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ id: 'ws1', ownerId: 'owner1', name: 'A' }),
+        },
         users: { findFirst: userFind },
-        workspaceInvitation: { findFirst: invFind, findMany: jest.fn().mockResolvedValue([]) },
+        workspaceInvitation: {
+          findFirst: invFind,
+          findMany: jest.fn().mockResolvedValue([]),
+        },
       },
       insert: () => ({ values }),
     });
@@ -898,12 +968,18 @@ describe('WorkspaceMembersService.inviteMember email case', () => {
       noRole,
     );
 
-    await service.inviteMember('ws1', { email: ' Sara@X.com ', role: 'MEMBER' } as any, 'owner1');
+    await service.inviteMember(
+      'ws1',
+      { email: ' Sara@X.com ', role: 'MEMBER' } as any,
+      'owner1',
+    );
 
     const emailLookup = dialect.sqlToQuery(userFind.mock.calls[1][0].where);
     expect(emailLookup.sql).toContain('lower("users"."email")');
     expect(emailLookup.params).toEqual(['sara@x.com']);
-    const invLookup = dialect.sqlToQuery(invFind.mock.calls[invFind.mock.calls.length - 1][0].where);
+    const invLookup = dialect.sqlToQuery(
+      invFind.mock.calls[invFind.mock.calls.length - 1][0].where,
+    );
     expect(invLookup.sql).toContain('lower("workspace_invitations"."email")');
     expect(values.mock.calls[0][0].email).toBe('sara@x.com');
 

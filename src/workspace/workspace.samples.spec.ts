@@ -2,6 +2,12 @@ import { Logger } from '@nestjs/common';
 import { WorkspaceService } from './workspace.service';
 import { LibrarySamplesService } from '../media-library/samples/library-samples.service';
 
+// The account-live lock (FOR KEY SHARE on users) is proven against Postgres
+// in workspace.create-vs-delete.db.spec.ts; these fakes have no `select`.
+jest.mock('src/users/account-live', () => ({
+  lockLiveAccount: jest.fn().mockResolvedValue(undefined),
+}));
+
 /**
  * Workspace creation seeds Library samples off the request path. Whatever the
  * seeder does (throws, rejects, hangs), creating the workspace must succeed,
@@ -11,10 +17,11 @@ const WS = { id: 'ws-new', name: 'Acme', slug: 'acme', ownerId: 'user-1' };
 
 function makeService(samples: Pick<LibrarySamplesService, 'seedInBackground'>) {
   const returning = jest.fn().mockResolvedValue([WS]);
-  const db = {
+  const db: Record<string, unknown> = {
     query: { workspace: { findFirst: jest.fn().mockResolvedValue(undefined) } },
     insert: jest.fn(() => ({ values: jest.fn(() => ({ returning })) })),
   };
+  db.transaction = jest.fn((fn: (tx: unknown) => unknown) => fn(db));
   const service = new WorkspaceService(
     db as never,
     { enforceWorkspaceLimit: jest.fn().mockResolvedValue(undefined) } as never,

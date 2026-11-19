@@ -34,6 +34,7 @@ import { RecipientsService } from 'src/notifications/recipients.service';
 import { UsersService } from 'src/users/users.service';
 import { WorkspaceRoleService } from './workspace-role.service';
 import { normalizeEmail } from 'src/users/normalize-email';
+import { lockLiveAccount } from 'src/users/account-live';
 import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -457,6 +458,9 @@ export class WorkspaceMembersService {
     // person serialises here): not already a member, the row still PENDING,
     // then counted once.
     const acceptedInvitation = await this.db.transaction(async (tx) => {
+      // First, before the seat lock: an account deleted while this request
+      // was in flight must not end up ACCEPTED (see lockLiveAccount).
+      await lockLiveAccount(tx, currentUserId);
       await lockWorkspaceSeats(tx, invitation.workspaceId);
 
       const existingMember = await tx.query.workspaceInvitation.findFirst({
@@ -1284,6 +1288,15 @@ export class WorkspaceMembersService {
     // it too): seat check, restore, dropping the re-invitation and counting
     // the seat happen with nobody else changing seats in between.
     const { restored, dropped } = await this.db.transaction(async (tx) => {
+      // First, before the seat lock. The NOT EXISTS on users below reads the
+      // statement's snapshot, so it cannot see a delete that commits while
+      // this runs; the lock waits for that delete and then refuses.
+      await lockLiveAccount(
+        tx,
+        userId,
+        () =>
+          new NotFoundException('Removed member not found in this workspace'),
+      );
       await lockWorkspaceSeats(tx, workspaceId);
 
       if (await this.isUserMember(workspaceId, userId, tx)) {
