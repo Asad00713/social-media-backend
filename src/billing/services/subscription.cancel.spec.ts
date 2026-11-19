@@ -129,6 +129,8 @@ describe('SubscriptionService.cancelForAccount', () => {
   it.each([
     ['FREE', [{ ...PRO, planCode: 'FREE' }]],
     ['already canceled', [{ ...PRO, status: 'canceled' }]],
+    ['incomplete_expired', [{ ...PRO, status: 'incomplete_expired' }]],
+    ['expired', [{ ...PRO, status: 'expired' }]],
     ['no subscription', []],
   ])('%s: none, and no provider call or write', async (_label, rows) => {
     const { service, adapter, providers } = make();
@@ -273,5 +275,119 @@ describe('BillingController.cancelSubscription', () => {
       false,
       'taking_break',
     );
+  });
+});
+
+/** A BASE_PLAN provider row, the default provider's. */
+const baseRow = (providerStatus: string, over: object = {}) => ({
+  id: 1,
+  subscriptionId: 11,
+  provider: 'stripe',
+  itemType: 'BASE_PLAN',
+  isDefault: true,
+  providerStatus,
+  providerSubscriptionId: 'sub_1',
+  endsAt: null,
+  ...over,
+});
+
+describe("cancelForAccount and the provider's own state", () => {
+  it.each(['canceled', 'incomplete_expired', 'expired', 'removed'])(
+    'a local row still active but a BASE_PLAN row %s: none, the provider is never called',
+    async (status) => {
+      const { service, adapter } = make();
+      selectResults = [[PRO], [baseRow(status)]];
+      await expect(service.cancelForAccount('owner-1', false)).resolves.toBe(
+        'none',
+      );
+      expect(adapter.cancel).not.toHaveBeenCalled();
+      expect(updated).toEqual([]);
+    },
+  );
+
+  it('a live BASE_PLAN row (Lemon Squeezy cancelled before ends_at counts as live) is cancelled', async () => {
+    const { service, adapter } = make();
+    selectResults = [
+      [PRO],
+      [
+        baseRow('cancelled', {
+          provider: 'lemonsqueezy',
+          endsAt: new Date(Date.now() + 86_400_000),
+        }),
+      ],
+    ];
+    await expect(service.cancelForAccount('owner-1', false)).resolves.toBe(
+      'cancelled',
+    );
+    expect(adapter.cancel).toHaveBeenCalledWith(11, false);
+  });
+
+  it.each([
+    [
+      'Stripe resource_missing',
+      Object.assign(new Error('No such subscription: sub_1'), {
+        code: 'resource_missing',
+      }),
+    ],
+    [
+      'Stripe already canceled',
+      new Error(
+        'A canceled subscription can only update its cancellation_details and metadata.',
+      ),
+    ],
+    [
+      'Lemon Squeezy 404',
+      new Error('Lemon Squeezy DELETE subscriptions/9 failed: HTTP 404'),
+    ],
+  ])('goneIsCancelled: %s is recorded as cancelled', async (_label, error) => {
+    const { service, adapter } = make();
+    adapter.cancel.mockRejectedValue(error);
+    selectResults = [[PRO], [baseRow('active')]];
+    await expect(
+      service.cancelForAccount('owner-1', false, { goneIsCancelled: true }),
+    ).resolves.toBe('cancelled');
+    expect(updated).toEqual([expect.objectContaining({ status: 'canceled' })]);
+  });
+
+  it('without goneIsCancelled the same refusal still fails', async () => {
+    const { service, adapter } = make();
+    adapter.cancel.mockRejectedValue(
+      Object.assign(new Error('No such subscription'), {
+        code: 'resource_missing',
+      }),
+    );
+    selectResults = [[PRO], [baseRow('active')]];
+    await expect(service.cancelForAccount('owner-1', false)).rejects.toThrow(
+      'No such subscription',
+    );
+    expect(updated).toEqual([]);
+  });
+
+  it('goneIsCancelled never swallows a real failure (timeout, 5xx)', async () => {
+    const { service, adapter } = make();
+    adapter.cancel.mockRejectedValue(
+      new Error('Lemon Squeezy DELETE subscriptions/9 timed out after 10000ms'),
+    );
+    selectResults = [[PRO], [baseRow('active')]];
+    await expect(
+      service.cancelForAccount('owner-1', false, { goneIsCancelled: true }),
+    ).rejects.toThrow('timed out');
+    expect(updated).toEqual([]);
+  });
+});
+
+describe('isCancellable', () => {
+  it('a terminal BASE_PLAN row wins over a local row that still says active', () => {
+    expect(
+      isCancellable(
+        PRO as never,
+        false,
+        baseRow('incomplete_expired') as never,
+      ),
+    ).toBe(false);
+    expect(isCancellable(PRO as never, false, baseRow('active') as never)).toBe(
+      true,
+    );
+    expect(isCancellable(PRO as never, false, null)).toBe(true);
   });
 });

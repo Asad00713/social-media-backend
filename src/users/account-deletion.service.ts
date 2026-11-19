@@ -153,6 +153,9 @@ export class AccountDeletionService {
     try {
       await this.subscriptions.cancelForAccount(userId, false, {
         changedByUserId: input.actorId,
+        // Already cancelled / no such subscription at the provider: nothing
+        // bills, so the delete goes on.
+        goneIsCancelled: true,
       });
     } catch (error) {
       this.logger.error(

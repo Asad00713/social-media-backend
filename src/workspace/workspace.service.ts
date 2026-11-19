@@ -33,6 +33,7 @@ import { UsersService } from 'src/users/users.service';
 import {
   SubscriptionService,
   isCancellable,
+  loadBasePlanRow,
 } from 'src/billing/services/subscription.service';
 import { SubscriptionLookupService } from 'src/billing/services/subscription-lookup.service';
 import { AddonService } from 'src/billing/services/addon.service';
@@ -676,6 +677,7 @@ export class WorkspaceService {
         // its own plan's name (left join: a missing plan row keeps the row).
         this.db
           .select({
+            id: subscriptions.id,
             planCode: subscriptions.planCode,
             status: subscriptions.status,
             cancelAtPeriodEnd: subscriptions.cancelAtPeriodEnd,
@@ -687,8 +689,16 @@ export class WorkspaceService {
           .limit(1),
       ]);
 
-    // remove() cancels at the period end: the same `true` here.
-    const cancelsPlan = ownedOthers === 0 && isCancellable(sub, true);
+    // remove() cancels at the period end: the same `true` here, and the same
+    // BASE_PLAN row cancelForAccount reads, so a plan the provider already
+    // ended is not announced as one that will be cancelled.
+    const cancelsPlan =
+      ownedOthers === 0 &&
+      isCancellable(
+        sub,
+        true,
+        sub ? await loadBasePlanRow(this.db, sub.id) : null,
+      );
 
     let members = 0;
     let guests = 0;
@@ -943,7 +953,16 @@ export class WorkspaceService {
   ): Promise<void> {
     try {
       const subscription = await this.lookup.findByUserId(ownerId);
-      if (!isCancellable(subscription, true)) return;
+      if (
+        !subscription ||
+        !isCancellable(
+          subscription,
+          true,
+          await loadBasePlanRow(this.db, subscription.id),
+        )
+      ) {
+        return;
+      }
       await this.subscriptionService.cancelForAccount(ownerId, true, {
         changedByUserId: callerId,
       });

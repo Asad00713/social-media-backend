@@ -90,6 +90,7 @@ describe('AccountDeletionService.deleteAccount', () => {
 
     expect(subscriptions.cancelForAccount).toHaveBeenCalledWith('u1', false, {
       changedByUserId: 'u1',
+      goneIsCancelled: true,
     });
     expect(db.transaction).toHaveBeenCalledTimes(1);
   });
@@ -159,6 +160,7 @@ describe('AccountDeletionService.deleteAccount', () => {
     });
     expect(subscriptions.cancelForAccount).toHaveBeenCalledWith('u1', false, {
       changedByUserId: 'admin-1',
+      goneIsCancelled: true,
     });
   });
 

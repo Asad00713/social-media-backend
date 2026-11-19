@@ -29,6 +29,8 @@ function make(opts: {
   otherOwned?: number;
   livePlanName: string | null;
   sub: Record<string, unknown> | null;
+  /** The BASE_PLAN provider rows, read after the rest (loadBasePlanRow). */
+  providerRows?: Record<string, unknown>[];
 }) {
   const selects: unknown[][] = [
     [{ n: 2 }],
@@ -41,6 +43,7 @@ function make(opts: {
     opts.livePlanName ? [{ name: opts.livePlanName }] : [],
     opts.sub ? [opts.sub] : [],
     [{ name: 'Free Plan' }],
+    opts.providerRows ?? [],
   ];
   const db = {
     query: {
@@ -118,5 +121,31 @@ describe('WorkspaceService.deletionPreview plan line', () => {
     const preview = await service.deletionPreview(WS);
     expect(preview.cancelsPlan).toBe(false);
     expect(preview.planName).toBe('Free Plan');
+  });
+
+  it('the provider already ended the base plan: nothing to cancel, though the local row is still paused', async () => {
+    const service = make({
+      livePlanName: null,
+      sub: {
+        id: 11,
+        planCode: 'PRO',
+        status: 'paused',
+        cancelAtPeriodEnd: false,
+        planName: 'Pro Plan',
+      },
+      providerRows: [
+        {
+          subscriptionId: 11,
+          provider: 'stripe',
+          itemType: 'BASE_PLAN',
+          isDefault: true,
+          providerStatus: 'incomplete_expired',
+          endsAt: null,
+        },
+      ],
+    });
+
+    const preview = await service.deletionPreview(WS);
+    expect(preview.cancelsPlan).toBe(false);
   });
 });
