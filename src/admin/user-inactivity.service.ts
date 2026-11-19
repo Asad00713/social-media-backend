@@ -153,7 +153,7 @@ export class UserInactivityService {
    *    through a live session, a scheduled post or a connected channel counts
    *    as absent, because none of those touch that column.
    *  - The 365-day step *deletes* the user row, and `users` cascaded — so the
-   *    workspaces, channels and posts went with it (since 0093 owners are
+   *    workspaces, channels and posts went with it (since 0095 owners are
    *    skipped instead: owner_id is RESTRICT). It selects on
    *    `isActive = false`, which is precisely the state the 30-day step puts
    *    people in. A wrong suspension today is a permanent deletion in a year.
@@ -517,7 +517,7 @@ export class UserInactivityService {
       `Found ${usersToDelete.length} users inactive for 365+ days (will be deleted)`,
     );
 
-    // workspace.owner_id is ON DELETE RESTRICT since 0093, so deleting an
+    // workspace.owner_id is ON DELETE RESTRICT since 0095, so deleting an
     // owner fails with 23001 and would fail again on every run. Owners are
     // skipped, once, by id.
     // TODO(settings Part A, Task 21): route this purge through
@@ -565,7 +565,7 @@ export class UserInactivityService {
    * Which of these users own at least one workspace row.
    *
    * Deliberately NOT filtered by liveWorkspaces(): this guards a HARD user
-   * delete, and workspace.owner_id is ON DELETE RESTRICT (0093). A
+   * delete, and workspace.owner_id is ON DELETE RESTRICT (0095). A
    * soft-deleted workspace is still a row until the purge removes it, so its
    * owner would fail the delete with 23503 all the same.
    */

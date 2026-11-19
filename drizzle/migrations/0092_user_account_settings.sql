@@ -1,4 +1,4 @@
--- 0090 - Account settings columns on users, and the Planner week start copy.
+-- 0092 - Account settings columns on users, and the Planner week start copy.
 --
 -- WHY
 -- The Settings redesign gives every person account-level settings that today
@@ -11,7 +11,7 @@
 --   notifications_paused_until   "Pause notifications": nothing but failed
 --                                posts and security alerts is sent before it.
 --   deleted_at                   account soft delete. The row is anonymised in
---                                place rather than removed (see 0093).
+--                                place rather than removed (see 0095).
 -- The Planner week start used to be a per-workspace Planner preference
 -- (planner_preferences.prefs ->> 'weekStartsOn', 0 = Sunday, 1 = Monday). It
 -- is now one account-wide setting, so the most recently updated value of each

@@ -32,8 +32,8 @@ const MIGRATIONS = [
   '0073_users_email_changed_at.sql',
   '0080_member_soft_removal.sql',
   '0088_soft_delete_posts_workspaces.sql',
-  '0090_user_account_settings.sql',
-  '0091_workspace_settings.sql',
+  '0092_user_account_settings.sql',
+  '0093_workspace_settings.sql',
 ];
 const COPIED_TABLES = ['users', 'workspace', 'workspace_invitations', 'posts'];
 

@@ -7,18 +7,18 @@ import { describeDb, withRollbackDb } from '../../planner/testing/rollback-db';
 /**
  * Settings redesign, Part A: one describeDb block per migration.
  *
- *   0090  users gains preferences, password_changed_at,
+ *   0092  users gains preferences, password_changed_at,
  *         notifications_paused_until and deleted_at, and the Planner week
  *         start is copied into preferences.weekStart.
- *   0091  workspace gains approval_policy, shorten_links_default,
+ *   0093  workspace gains approval_policy, shorten_links_default,
  *         utm_default, invite_link_code, invite_link_enabled;
  *         workspace_invitations gains message.
- *   0092  workspace_labels (the catalogue) and post_labels (the join),
+ *   0094  workspace_labels (the catalogue) and post_labels (the join),
  *         filled from posts.metadata.labels.
- *   0093  every foreign key to users stops blocking a user delete: actor
+ *   0095  every foreign key to users stops blocking a user delete: actor
  *         columns SET NULL, the Canva grant CASCADE, and
  *         workspace.owner_id RESTRICT (never deleted by accident).
- *   0098  validates the foreign keys 0092 and 0093 add NOT VALID, in a
+ *   0097  validates the foreign keys 0094 and 0095 add NOT VALID, in a
  *         transaction of its own (no long lock in those files).
  *
  * The harness applies each file twice BEFORE the test body runs, which proves
@@ -33,12 +33,12 @@ const MIGRATIONS_DIR = join(
   'drizzle',
   'migrations',
 );
-const FILE_0090 = '0090_user_account_settings.sql';
-const FILE_0091 = '0091_workspace_settings.sql';
-const FILE_0092 = '0092_workspace_labels.sql';
-const FILE_0093 = '0093_users_fk_set_null.sql';
-const FILE_0098 = '0098_users_fk_validate.sql';
-/** posts.deleted_at, which the 0092 backfill reads. */
+const FILE_0092 = '0092_user_account_settings.sql';
+const FILE_0093 = '0093_workspace_settings.sql';
+const FILE_0094 = '0094_workspace_labels.sql';
+const FILE_0095 = '0095_users_fk_set_null.sql';
+const FILE_0097 = '0097_users_fk_validate.sql';
+/** posts.deleted_at, which the 0094 backfill reads. */
 const FILE_0088 = '0088_soft_delete_posts_workspaces.sql';
 const rand = () => Math.random().toString(36).slice(2, 10);
 
@@ -76,8 +76,8 @@ async function seedPlannerPrefs(
 }
 
 /** Re-runs the migration file on the seeded rows (the backfill under test). */
-async function rerun0090(client: PoolClient): Promise<void> {
-  await client.query(readFileSync(join(MIGRATIONS_DIR, FILE_0090), 'utf8'));
+async function rerun0092(client: PoolClient): Promise<void> {
+  await client.query(readFileSync(join(MIGRATIONS_DIR, FILE_0092), 'utf8'));
 }
 
 async function preferencesOf(
@@ -91,10 +91,10 @@ async function preferencesOf(
   return r.rows[0].preferences;
 }
 
-describeDb('migration 0090 user account settings', () => {
-  const MIGRATIONS = ['0043_planner_preferences.sql', FILE_0090];
+describeDb('migration 0092 user account settings', () => {
+  const MIGRATIONS = ['0043_planner_preferences.sql', FILE_0092];
 
-  it('0090 adds the four users columns with their defaults', async () => {
+  it('0092 adds the four users columns with their defaults', async () => {
     const columns = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const r = await client.query<{
         column_name: string;
@@ -140,7 +140,7 @@ describeDb('migration 0090 user account settings', () => {
     ]);
   });
 
-  it('0090 copies planner weekStartsOn into preferences.weekStart from the most recently updated row', async () => {
+  it('0092 copies planner weekStartsOn into preferences.weekStart from the most recently updated row', async () => {
     const prefs = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const userId = await seedUser(client);
       const older = await seedWorkspace(client, userId);
@@ -159,14 +159,14 @@ describeDb('migration 0090 user account settings', () => {
         { weekStartsOn: 1 },
         '2026-06-01T00:00:00Z',
       );
-      await rerun0090(client);
+      await rerun0092(client);
       return preferencesOf(client, userId);
     });
 
     expect(prefs).toEqual({ weekStart: 'monday' });
   });
 
-  it('0090 maps weekStartsOn 0 to sunday', async () => {
+  it('0092 maps weekStartsOn 0 to sunday', async () => {
     const prefs = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const userId = await seedUser(client);
       const ws = await seedWorkspace(client, userId);
@@ -177,14 +177,14 @@ describeDb('migration 0090 user account settings', () => {
         { weekStartsOn: 0 },
         '2026-01-01T00:00:00Z',
       );
-      await rerun0090(client);
+      await rerun0092(client);
       return preferencesOf(client, userId);
     });
 
     expect(prefs).toEqual({ weekStart: 'sunday' });
   });
 
-  it('0090 does not overwrite a weekStart the user already chose', async () => {
+  it('0092 does not overwrite a weekStart the user already chose', async () => {
     const prefs = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const userId = await seedUser(client);
       const ws = await seedWorkspace(client, userId);
@@ -199,14 +199,14 @@ describeDb('migration 0090 user account settings', () => {
         `UPDATE users SET preferences = '{"weekStart":"sunday","theme":"x"}'::jsonb WHERE id = $1`,
         [userId],
       );
-      await rerun0090(client);
+      await rerun0092(client);
       return preferencesOf(client, userId);
     });
 
     expect(prefs).toEqual({ weekStart: 'sunday', theme: 'x' });
   });
 
-  it('0090 ignores planner_preferences rows without weekStartsOn', async () => {
+  it('0092 ignores planner_preferences rows without weekStartsOn', async () => {
     const prefs = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const userId = await seedUser(client);
       const ws = await seedWorkspace(client, userId);
@@ -217,17 +217,17 @@ describeDb('migration 0090 user account settings', () => {
         { view: 'week' },
         '2026-01-01T00:00:00Z',
       );
-      await rerun0090(client);
+      await rerun0092(client);
       return preferencesOf(client, userId);
     });
 
     expect(prefs).toEqual({});
   });
 
-  it('0090 leaves preferences {} when the user has no planner_preferences row', async () => {
+  it('0092 leaves preferences {} when the user has no planner_preferences row', async () => {
     const prefs = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const userId = await seedUser(client);
-      await rerun0090(client);
+      await rerun0092(client);
       return preferencesOf(client, userId);
     });
 
@@ -250,10 +250,10 @@ async function expectPgError(
   await client.query('ROLLBACK TO SAVEPOINT expect_error');
 }
 
-describeDb('migration 0091 workspace settings', () => {
-  const MIGRATIONS = [FILE_0091];
+describeDb('migration 0093 workspace settings', () => {
+  const MIGRATIONS = [FILE_0093];
 
-  it('0091 adds the five workspace columns and the invitation message column', async () => {
+  it('0093 adds the five workspace columns and the invitation message column', async () => {
     const { workspaceColumns, invitationColumns } = await withRollbackDb(
       MIGRATIONS,
       async (_db, client) => {
@@ -339,13 +339,13 @@ describeDb('migration 0091 workspace settings', () => {
     ]);
   });
 
-  it('0091 leaves an existing workspace at none / false / false / NULL / false', async () => {
+  it('0093 leaves an existing workspace at none / false / false / NULL / false', async () => {
     const row = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const ownerId = await seedUser(client);
       const workspaceId = await seedWorkspace(client, ownerId);
       // Re-run the file with the workspace already in place, so the defaults
       // are proven on a row that existed before the migration.
-      await client.query(readFileSync(join(MIGRATIONS_DIR, FILE_0091), 'utf8'));
+      await client.query(readFileSync(join(MIGRATIONS_DIR, FILE_0093), 'utf8'));
       const r = await client.query<{
         approval_policy: string;
         shorten_links_default: boolean;
@@ -371,7 +371,7 @@ describeDb('migration 0091 workspace settings', () => {
   });
 
   it.each(['none', 'members', 'everyone'])(
-    '0091 accepts approval_policy %s',
+    '0093 accepts approval_policy %s',
     async (policy) => {
       const stored = await withRollbackDb(MIGRATIONS, async (_db, client) => {
         const ownerId = await seedUser(client);
@@ -391,7 +391,7 @@ describeDb('migration 0091 workspace settings', () => {
     },
   );
 
-  it('0091 rejects an approval_policy outside none / members / everyone (23514)', async () => {
+  it('0093 rejects an approval_policy outside none / members / everyone (23514)', async () => {
     await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const ownerId = await seedUser(client);
       const workspaceId = await seedWorkspace(client, ownerId);
@@ -404,7 +404,7 @@ describeDb('migration 0091 workspace settings', () => {
     });
   });
 
-  it('0091 rejects two workspaces with the same invite_link_code (23505)', async () => {
+  it('0093 rejects two workspaces with the same invite_link_code (23505)', async () => {
     await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const ownerId = await seedUser(client);
       const first = await seedWorkspace(client, ownerId);
@@ -423,7 +423,7 @@ describeDb('migration 0091 workspace settings', () => {
     });
   });
 
-  it('0091 allows many workspaces without an invite_link_code', async () => {
+  it('0093 allows many workspaces without an invite_link_code', async () => {
     const count = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const ownerId = await seedUser(client);
       const first = await seedWorkspace(client, ownerId);
@@ -439,7 +439,7 @@ describeDb('migration 0091 workspace settings', () => {
     expect(count).toBe(2);
   });
 
-  it('0091 creates the unique index under the name the Drizzle schema uses', async () => {
+  it('0093 creates the unique index under the name the Drizzle schema uses', async () => {
     const indexes = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const r = await client.query<{ indexdef: string }>(
         `SELECT indexdef FROM pg_indexes
@@ -474,8 +474,8 @@ async function seedPost(
 }
 
 /** Re-runs the migration file on the seeded posts (the backfill under test). */
-async function rerun0092(client: PoolClient): Promise<void> {
-  await client.query(readFileSync(join(MIGRATIONS_DIR, FILE_0092), 'utf8'));
+async function rerun0094(client: PoolClient): Promise<void> {
+  await client.query(readFileSync(join(MIGRATIONS_DIR, FILE_0094), 'utf8'));
 }
 
 /**
@@ -527,7 +527,7 @@ async function countRows(client: PoolClient, table: string): Promise<number> {
   return Number(r.rows[0].n);
 }
 
-/** The foreign keys 0092 adds, last and NOT VALID. */
+/** The foreign keys 0094 adds, last and NOT VALID. */
 const LABEL_FKS = [
   'workspace_labels_workspace_id_fkey',
   'workspace_labels_created_by_fkey',
@@ -547,10 +547,10 @@ async function fkValidity(
   return Object.fromEntries(r.rows.map((x) => [x.conname, x.convalidated]));
 }
 
-describeDb('migration 0092 workspace labels', () => {
-  const MIGRATIONS = [FILE_0088, FILE_0092];
+describeDb('migration 0094 workspace labels', () => {
+  const MIGRATIONS = [FILE_0088, FILE_0094];
 
-  it('0092 skips soft-deleted posts: their labels reach neither the catalogue nor post_labels', async () => {
+  it('0094 skips soft-deleted posts: their labels reach neither the catalogue nor post_labels', async () => {
     const result = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const userId = await seedUser(client);
       const w = await seedWorkspace(client, userId);
@@ -571,7 +571,7 @@ describeDb('migration 0092 workspace labels', () => {
       await client.query(`UPDATE posts SET deleted_at = now() WHERE id = $1`, [
         gone,
       ]);
-      await rerun0092(client);
+      await rerun0094(client);
       return {
         labels: await cataloguePairs(client, w),
         join: await labelNamesByPost(client, w),
@@ -585,7 +585,7 @@ describeDb('migration 0092 workspace labels', () => {
     expect(result.join[result.gone]).toBeUndefined();
   });
 
-  it('0092 skips posts whose WORKSPACE is soft-deleted: a purge could hard-delete them before the foreign keys exist', async () => {
+  it('0094 skips posts whose WORKSPACE is soft-deleted: a purge could hard-delete them before the foreign keys exist', async () => {
     const result = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const userId = await seedUser(client);
       const live = await seedWorkspace(client, userId);
@@ -609,7 +609,7 @@ describeDb('migration 0092 workspace labels', () => {
         `UPDATE workspace SET deleted_at = now() WHERE id = $1`,
         [doomed],
       );
-      await rerun0092(client);
+      await rerun0094(client);
       return {
         liveLabels: await cataloguePairs(client, live),
         doomedLabels: await cataloguePairs(client, doomed),
@@ -626,7 +626,7 @@ describeDb('migration 0092 workspace labels', () => {
     expect(result.doomedJoin[result.doomedPost]).toBeUndefined();
   });
 
-  it('0092 adds its foreign keys NOT VALID (no scan under the lock), and they already refuse a bad row', async () => {
+  it('0094 adds its foreign keys NOT VALID (no scan under the lock), and they already refuse a bad row', async () => {
     const result = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const validity = await fkValidity(client, LABEL_FKS);
       let code: string | undefined;
@@ -649,7 +649,7 @@ describeDb('migration 0092 workspace labels', () => {
     expect(result.code).toBe('23503');
   });
 
-  it('0092 backfills one catalogue row per distinct label and one post_labels row per (post, label)', async () => {
+  it('0094 backfills one catalogue row per distinct label and one post_labels row per (post, label)', async () => {
     const result = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const userId = await seedUser(client);
       const w = await seedWorkspace(client, userId);
@@ -691,7 +691,7 @@ describeDb('migration 0092 workspace labels', () => {
         '2026-01-05T00:00:00Z',
       );
 
-      await rerun0092(client);
+      await rerun0094(client);
 
       const wJoin = await labelNamesByPost(client, w);
       return {
@@ -722,7 +722,7 @@ describeDb('migration 0092 workspace labels', () => {
     ]);
   });
 
-  it('0092 collapses whitespace and drops empty, over-long and non-string labels', async () => {
+  it('0094 collapses whitespace and drops empty, over-long and non-string labels', async () => {
     const forty = 'a'.repeat(40);
     const result = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const userId = await seedUser(client);
@@ -744,14 +744,14 @@ describeDb('migration 0092 workspace labels', () => {
         },
         '2026-01-01T00:00:00Z',
       );
-      await rerun0092(client);
+      await rerun0094(client);
       return cataloguePairs(client, w);
     });
 
     expect(result.map((r) => r.name)).toEqual(['Hot drinks', forty]);
   });
 
-  it('0092 gives the ninth label in a workspace the first colour again', async () => {
+  it('0094 gives the ninth label in a workspace the first colour again', async () => {
     const pairs = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const userId = await seedUser(client);
       const w = await seedWorkspace(client, userId);
@@ -762,7 +762,7 @@ describeDb('migration 0092 workspace labels', () => {
         { labels: Array.from({ length: 9 }, (_v, i) => `label-${i + 1}`) },
         '2026-01-01T00:00:00Z',
       );
-      await rerun0092(client);
+      await rerun0094(client);
       return cataloguePairs(client, w);
     });
 
@@ -781,7 +781,7 @@ describeDb('migration 0092 workspace labels', () => {
     });
   });
 
-  it('0092 run again creates no duplicates', async () => {
+  it('0094 run again creates no duplicates', async () => {
     const counts = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const userId = await seedUser(client);
       const w = await seedWorkspace(client, userId);
@@ -799,13 +799,13 @@ describeDb('migration 0092 workspace labels', () => {
         { labels: ['promo'] },
         '2026-01-02T00:00:00Z',
       );
-      await rerun0092(client);
+      await rerun0094(client);
       const first = {
         labels: await countRows(client, 'workspace_labels'),
         joins: await countRows(client, 'post_labels'),
       };
-      await rerun0092(client);
-      await rerun0092(client);
+      await rerun0094(client);
+      await rerun0094(client);
       const again = {
         labels: await countRows(client, 'workspace_labels'),
         joins: await countRows(client, 'post_labels'),
@@ -817,7 +817,7 @@ describeDb('migration 0092 workspace labels', () => {
     expect(counts.again).toEqual(counts.first);
   });
 
-  it('0092 leaves posts.metadata.labels in place', async () => {
+  it('0094 leaves posts.metadata.labels in place', async () => {
     const metadata = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const userId = await seedUser(client);
       const w = await seedWorkspace(client, userId);
@@ -828,7 +828,7 @@ describeDb('migration 0092 workspace labels', () => {
         { labels: ['Promo'], keep: 1 },
         '2026-01-01T00:00:00Z',
       );
-      await rerun0092(client);
+      await rerun0094(client);
       const r = await client.query<{ metadata: unknown }>(
         `SELECT metadata FROM posts WHERE id = $1`,
         [postId],
@@ -839,7 +839,7 @@ describeDb('migration 0092 workspace labels', () => {
     expect(metadata).toEqual({ labels: ['Promo'], keep: 1 });
   });
 
-  it('0092 rejects a second live label whose name differs only by case (23505), but accepts it once the first is soft-deleted', async () => {
+  it('0094 rejects a second live label whose name differs only by case (23505), but accepts it once the first is soft-deleted', async () => {
     await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const userId = await seedUser(client);
       const w = await seedWorkspace(client, userId);
@@ -875,7 +875,7 @@ describeDb('migration 0092 workspace labels', () => {
     });
   });
 
-  it('0092 rejects a colour outside the palette (23514)', async () => {
+  it('0094 rejects a colour outside the palette (23514)', async () => {
     await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const userId = await seedUser(client);
       const w = await seedWorkspace(client, userId);
@@ -889,7 +889,7 @@ describeDb('migration 0092 workspace labels', () => {
     });
   });
 
-  it('0092 removes post_labels rows with their post and with their label', async () => {
+  it('0094 removes post_labels rows with their post and with their label', async () => {
     const counts = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const userId = await seedUser(client);
       const w = await seedWorkspace(client, userId);
@@ -907,7 +907,7 @@ describeDb('migration 0092 workspace labels', () => {
         { labels: ['A'] },
         '2026-01-02T00:00:00Z',
       );
-      await rerun0092(client);
+      await rerun0094(client);
       const before = await countRows(client, 'post_labels');
       await client.query(`DELETE FROM posts WHERE id = $1`, [p1]);
       const afterPost = await countRows(client, 'post_labels');
@@ -923,7 +923,7 @@ describeDb('migration 0092 workspace labels', () => {
   });
 });
 
-/** The six actor columns 0093 moves to SET NULL / CASCADE, and owner_id. */
+/** The six actor columns 0095 moves to SET NULL / CASCADE, and owner_id. */
 const USER_FK_ACTIONS = [
   { table: 'workspace_invitations', column: 'invited_by', action: 'n' },
   { table: 'subscription_changes', column: 'changed_by_user_id', action: 'n' },
@@ -967,10 +967,10 @@ async function countWhere(
   return Number(r.rows[0].n);
 }
 
-describeDb('migration 0093 user foreign keys', () => {
-  const MIGRATIONS = [FILE_0093];
+describeDb('migration 0095 user foreign keys', () => {
+  const MIGRATIONS = [FILE_0095];
 
-  it('0093 leaves no foreign key to users at NO ACTION', async () => {
+  it('0095 leaves no foreign key to users at NO ACTION', async () => {
     const leftovers = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const r = await client.query<{ table_name: string; column_name: string }>(
         `SELECT c.conrelid::regclass::text AS table_name,
@@ -988,7 +988,7 @@ describeDb('migration 0093 user foreign keys', () => {
     expect(leftovers).toEqual([]);
   });
 
-  it('0093 gives each listed column exactly one foreign key to users, with the planned action', async () => {
+  it('0095 gives each listed column exactly one foreign key to users, with the planned action', async () => {
     const actions = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const out: Record<string, string[]> = {};
       for (const { table, column } of USER_FK_ACTIONS) {
@@ -1008,7 +1008,7 @@ describeDb('migration 0093 user foreign keys', () => {
     );
   });
 
-  it('0093 makes workspace.owner_id ON DELETE RESTRICT', async () => {
+  it('0095 makes workspace.owner_id ON DELETE RESTRICT', async () => {
     const actions = await withRollbackDb(MIGRATIONS, (_db, client) =>
       userFkActions(client, 'workspace', 'owner_id'),
     );
@@ -1016,7 +1016,7 @@ describeDb('migration 0093 user foreign keys', () => {
     expect(actions).toEqual(['r']);
   });
 
-  it('0093 lets workspace_invitations.invited_by be NULL', async () => {
+  it('0095 lets workspace_invitations.invited_by be NULL', async () => {
     const nullable = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const r = await client.query<{ is_nullable: string }>(
         `SELECT is_nullable FROM information_schema.columns
@@ -1030,7 +1030,7 @@ describeDb('migration 0093 user foreign keys', () => {
     expect(nullable).toBe('YES');
   });
 
-  it('0093 hard-deleting a non-owner who invited, changed a plan, triggered usage, reviewed a drip and connected Canva succeeds', async () => {
+  it('0095 hard-deleting a non-owner who invited, changed a plan, triggered usage, reviewed a drip and connected Canva succeeds', async () => {
     const after = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const ownerId = await seedUser(client);
       const workspaceId = await seedWorkspace(client, ownerId);
@@ -1173,7 +1173,7 @@ describeDb('migration 0093 user foreign keys', () => {
   // (foreign_key_violation), exactly like NO ACTION; 23001 is never raised by
   // a foreign key. What tells RESTRICT apart is that it fires on the
   // statement itself, and the constraint named is the owner one.
-  it('0093 refuses to delete a user who owns a workspace (23503 on workspace_owner_id_fkey), and the workspace survives', async () => {
+  it('0095 refuses to delete a user who owns a workspace (23503 on workspace_owner_id_fkey), and the workspace survives', async () => {
     const survivors = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const ownerId = await seedUser(client);
       const workspaceId = await seedWorkspace(client, ownerId);
@@ -1206,16 +1206,16 @@ describeDb('migration 0093 user foreign keys', () => {
   });
 });
 
-/** The constraint names 0093 writes, `<table>_<column>_fkey`. */
+/** The constraint names 0095 writes, `<table>_<column>_fkey`. */
 const USER_FKS = USER_FK_ACTIONS.map(
   ({ table, column }) => `${table}_${column}_fkey`,
 );
 
 describeDb(
-  'migration 0093 locks: NOT VALID, and a guard that names the table',
+  'migration 0095 locks: NOT VALID, and a guard that names the table',
   () => {
-    it('0093 leaves its foreign keys NOT VALID: no table is scanned while users is held ACCESS EXCLUSIVE', async () => {
-      const validity = await withRollbackDb([FILE_0093], (_db, client) =>
+    it('0095 leaves its foreign keys NOT VALID: no table is scanned while users is held ACCESS EXCLUSIVE', async () => {
+      const validity = await withRollbackDb([FILE_0095], (_db, client) =>
         fkValidity(client, USER_FKS),
       );
       // canva_connections may not exist in this database (created by push).
@@ -1227,8 +1227,8 @@ describeDb(
       }
     });
 
-    it('0093 fails the boot naming the table, column and constraint a NO ACTION key is on', async () => {
-      const message = await withRollbackDb([FILE_0093], async (_db, client) => {
+    it('0095 fails the boot naming the table, column and constraint a NO ACTION key is on', async () => {
+      const message = await withRollbackDb([FILE_0095], async (_db, client) => {
         await client.query(
           `CREATE TABLE fk_guard_probe (id serial PRIMARY KEY,
            made_by uuid CONSTRAINT fk_guard_probe_made_by_fkey REFERENCES users (id))`,
@@ -1236,7 +1236,7 @@ describeDb(
         await client.query('SAVEPOINT guard');
         try {
           await client.query(
-            readFileSync(join(MIGRATIONS_DIR, FILE_0093), 'utf8'),
+            readFileSync(join(MIGRATIONS_DIR, FILE_0095), 'utf8'),
           );
           return null;
         } catch (err) {
@@ -1254,11 +1254,11 @@ describeDb(
 );
 
 describeDb(
-  'migration 0098 validates the NOT VALID user and label foreign keys',
+  'migration 0097 validates the NOT VALID user and label foreign keys',
   () => {
-    const MIGRATIONS = [FILE_0088, FILE_0092, FILE_0093, FILE_0098];
+    const MIGRATIONS = [FILE_0088, FILE_0094, FILE_0095, FILE_0097];
 
-    it('0098 validates every key 0092 and 0093 left NOT VALID (applied twice: idempotent)', async () => {
+    it('0097 validates every key 0094 and 0095 left NOT VALID (applied twice: idempotent)', async () => {
       const validity = await withRollbackDb(MIGRATIONS, (_db, client) =>
         fkValidity(client, [...USER_FKS, ...LABEL_FKS]),
       );
@@ -1273,7 +1273,7 @@ describeDb(
     /**
      * Seeds rows that predate the label foreign keys (written while they were
      * absent): the keys are dropped, orphans inserted, the keys re-added NOT
-     * VALID exactly as 0092 leaves them.
+     * VALID exactly as 0094 leaves them.
      */
     async function seedLabelOrphans(client: PoolClient) {
       await client.query(
@@ -1348,14 +1348,14 @@ describeDb(
       return { userId, w, post, goodLabel, orphanCreator };
     }
 
-    it('0098 removes orphan label rows (a purge between the 0092 backfill and its keys), then validates', async () => {
+    it('0097 removes orphan label rows (a purge between the 0094 backfill and its keys), then validates', async () => {
       const result = await withRollbackDb(
-        [FILE_0088, FILE_0092, FILE_0093],
+        [FILE_0088, FILE_0094, FILE_0095],
         async (_db, client) => {
           const seeded = await seedLabelOrphans(client);
           const before = await fkValidity(client, LABEL_FKS);
           await client.query(
-            readFileSync(join(MIGRATIONS_DIR, FILE_0098), 'utf8'),
+            readFileSync(join(MIGRATIONS_DIR, FILE_0097), 'utf8'),
           );
           const labels = await client.query<{
             id: string;
@@ -1400,7 +1400,7 @@ describeDb(
       );
     });
 
-    it('0098 leaves clean label tables untouched', async () => {
+    it('0097 leaves clean label tables untouched', async () => {
       const result = await withRollbackDb(MIGRATIONS, async (_db, client) => {
         const userId = await seedUser(client);
         const w = await seedWorkspace(client, userId);
@@ -1411,10 +1411,10 @@ describeDb(
           { labels: ['A'] },
           '2026-01-01T00:00:00Z',
         );
-        await rerun0092(client);
-        // MIGRATIONS ran 0098 before the post existed; run it again now.
+        await rerun0094(client);
+        // MIGRATIONS ran 0097 before the post existed; run it again now.
         await client.query(
-          readFileSync(join(MIGRATIONS_DIR, FILE_0098), 'utf8'),
+          readFileSync(join(MIGRATIONS_DIR, FILE_0097), 'utf8'),
         );
         return {
           labels: await countRows(client, 'workspace_labels'),
@@ -1425,9 +1425,9 @@ describeDb(
       expect(result.joins).toBe(1);
     });
 
-    it('0098 still fails loudly, naming the constraint, on a USER key violation it does not repair, and changes nothing', async () => {
+    it('0097 still fails loudly, naming the constraint, on a USER key violation it does not repair, and changes nothing', async () => {
       const result = await withRollbackDb(
-        [FILE_0088, FILE_0092, FILE_0093],
+        [FILE_0088, FILE_0094, FILE_0095],
         async (_db, client) => {
           // A row that predates the constraint: written while it was absent.
           await client.query(
@@ -1452,7 +1452,7 @@ describeDb(
           let error: { code?: string; constraint?: string } | null = null;
           try {
             await client.query(
-              readFileSync(join(MIGRATIONS_DIR, FILE_0098), 'utf8'),
+              readFileSync(join(MIGRATIONS_DIR, FILE_0097), 'utf8'),
             );
           } catch (err) {
             error = err as { code?: string; constraint?: string };
@@ -1477,13 +1477,13 @@ describeDb(
 );
 
 /**
- * 0097 recounts workspace_usage.members_count as ACCEPTED non-guest members,
+ * 0096 recounts workspace_usage.members_count as ACCEPTED non-guest members,
  * so workspaces that counted their guests before guests became free are put
  * right, and only rows that differ are written.
  */
-const FILE_0097 = '0097_guest_seat_recount.sql';
+const FILE_0096 = '0096_guest_seat_recount.sql';
 
-describeDb('0097 guest seat recount', () => {
+describeDb('0096 guest seat recount', () => {
   async function seedUsage(
     client: PoolClient,
     workspaceId: string,
@@ -1522,10 +1522,10 @@ describeDb('0097 guest seat recount', () => {
     ).rows[0];
 
   it('counts ACCEPTED non-guests only, and writes only workspaces whose count differed', async () => {
-    // 0080: REMOVED status. 0090/0091: columns the full-row inserts name.
-    // 0093: invited_by is NULLable, so a seeded row needs no inviter.
+    // 0080: REMOVED status. 0092/0093: columns the full-row inserts name.
+    // 0095: invited_by is NULLable, so a seeded row needs no inviter.
     const result = await withRollbackDb(
-      ['0080_member_soft_removal.sql', FILE_0090, FILE_0091, FILE_0093],
+      ['0080_member_soft_removal.sql', FILE_0092, FILE_0093, FILE_0095],
       async (_db, client) => {
         const owner = await seedUser(client);
         // 2 members + 1 admin + 2 guests accepted, plus a pending member, a
@@ -1558,7 +1558,7 @@ describeDb('0097 guest seat recount', () => {
         await seedRow(client, undercounted, 'ADMIN', 'ACCEPTED');
 
         await client.query(
-          readFileSync(join(MIGRATIONS_DIR, FILE_0097), 'utf8'),
+          readFileSync(join(MIGRATIONS_DIR, FILE_0096), 'utf8'),
         );
         const firstRun = {
           drifted: await usageOf(client, drifted),
@@ -1573,7 +1573,7 @@ describeDb('0097 guest seat recount', () => {
           [drifted],
         );
         await client.query(
-          readFileSync(join(MIGRATIONS_DIR, FILE_0097), 'utf8'),
+          readFileSync(join(MIGRATIONS_DIR, FILE_0096), 'utf8'),
         );
         return { firstRun, secondRun: await usageOf(client, drifted) };
       },

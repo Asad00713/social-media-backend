@@ -8,7 +8,7 @@ import { LabelsService } from './labels.service';
 // 0088: posts.deleted_at, which the usage counts read.
 const MIGRATIONS = [
   '0088_soft_delete_posts_workspaces.sql',
-  '0092_workspace_labels.sql',
+  '0094_workspace_labels.sql',
 ];
 
 async function seedPost(

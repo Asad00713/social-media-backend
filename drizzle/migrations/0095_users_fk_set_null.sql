@@ -1,4 +1,4 @@
--- 0093 - Foreign keys to users stop blocking (or cascading) a user delete.
+-- 0095 - Foreign keys to users stop blocking (or cascading) a user delete.
 --
 -- WHY
 -- Deleting an account (Settings redesign, spec 5.10) must never be blocked
@@ -44,7 +44,7 @@
 --   3. Each new constraint is added NOT VALID and left that way: new and
 --      updated rows are checked from this commit on, the existing rows are
 --      not read. Validating here would scan each referencing table while
---      users and that table are held ACCESS EXCLUSIVE. 0098_users_fk_validate
+--      users and that table are held ACCESS EXCLUSIVE. 0097_users_fk_validate
 --      validates them in its own transaction, under SHARE UPDATE EXCLUSIVE,
 --      which blocks no reader and no writer. usage_events and
 --      subscription_changes grow with traffic; no row count was measured
@@ -123,7 +123,7 @@ BEGIN
   LOOP
     rel := to_regclass(format('%I', target.table_name));
     IF rel IS NULL THEN
-      RAISE NOTICE '0093: table % does not exist, skipped',
+      RAISE NOTICE '0095: table % does not exist, skipped',
         target.table_name;
       CONTINUE;
     END IF;
@@ -134,7 +134,7 @@ BEGIN
        AND a.attname = target.column_name
        AND NOT a.attisdropped;
     IF col IS NULL THEN
-      RAISE EXCEPTION '0093: column %.% does not exist',
+      RAISE EXCEPTION '0095: column %.% does not exist',
         target.table_name, target.column_name;
     END IF;
 
@@ -151,7 +151,7 @@ BEGIN
     END LOOP;
 
     fk_name := target.table_name || '_' || target.column_name || '_fkey';
-    -- NOT VALID, and validated by 0098 (SAFETY 3).
+    -- NOT VALID, and validated by 0097 (SAFETY 3).
     EXECUTE format(
       'ALTER TABLE %I ADD CONSTRAINT %I FOREIGN KEY (%I) '
         || 'REFERENCES "users" ("id") ON DELETE %s NOT VALID',
@@ -174,7 +174,7 @@ BEGIN
      AND c.confdeltype = 'a';
   IF leftover IS NOT NULL THEN
     RAISE EXCEPTION
-      '0093: foreign keys to users still ON DELETE NO ACTION, which would block account deletes: %. Add each to the list in this file.',
+      '0095: foreign keys to users still ON DELETE NO ACTION, which would block account deletes: %. Add each to the list in this file.',
       leftover;
   END IF;
 END $$;

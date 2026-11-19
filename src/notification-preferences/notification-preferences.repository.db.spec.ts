@@ -7,11 +7,11 @@ import {
 } from '../planner/testing/rollback-db';
 import { NotificationPreferencesRepository } from './notification-preferences.repository';
 
-// 0043 is 0090's own prerequisite: 0090 backfills from planner_preferences.
+// 0043 is 0092's own prerequisite: 0092 backfills from planner_preferences.
 const MIGRATIONS = [
   '0043_planner_preferences.sql',
   '0068_notification_preferences.sql',
-  '0090_user_account_settings.sql',
+  '0092_user_account_settings.sql',
 ];
 
 function run<T>(

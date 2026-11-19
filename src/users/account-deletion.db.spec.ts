@@ -16,8 +16,8 @@ import { AccountDeletionService } from './account-deletion.service';
 // 0058: post_comments, seeded to prove they stay. 0060/0067/0068/0072:
 // insight_hidden_steps, channel_connect_links, notification_preferences and
 // known_devices, which the delete clears. 0070/0071/0073: the users columns
-// the anonymising update writes and the schema selects. 0080: REMOVED memberships. 0090: users.deleted_at and preferences.
-// 0091/0092: workspace columns the schema selects. 0093: invited_by and
+// the anonymising update writes and the schema selects. 0080: REMOVED memberships. 0092: users.deleted_at and preferences.
+// 0093/0094: workspace columns the schema selects. 0095: invited_by and
 // changed_by_user_id SET NULL, workspace.owner_id RESTRICT.
 const MIGRATIONS = [
   '0058_post_comments.sql',
@@ -31,10 +31,10 @@ const MIGRATIONS = [
   '0080_member_soft_removal.sql',
   // main: workspace.deleted_at, which the OWNS_WORKSPACES check reads.
   '0088_soft_delete_posts_workspaces.sql',
-  '0090_user_account_settings.sql',
-  '0091_workspace_settings.sql',
-  '0092_workspace_labels.sql',
-  '0093_users_fk_set_null.sql',
+  '0092_user_account_settings.sql',
+  '0093_workspace_settings.sql',
+  '0094_workspace_labels.sql',
+  '0095_users_fk_set_null.sql',
 ];
 
 const rand = () => Math.random().toString(36).slice(2, 10);
@@ -194,7 +194,7 @@ describeDb('AccountDeletionService (database)', () => {
       });
 
       expect((await userRow(client, me.id)).deleted_at).toBeInstanceOf(Date);
-      // Anonymised, never removed: RESTRICT (0093) keeps the owner row, and
+      // Anonymised, never removed: RESTRICT (0095) keeps the owner row, and
       // the purge still finds the soft-deleted workspaces.
       expect(
         await count(

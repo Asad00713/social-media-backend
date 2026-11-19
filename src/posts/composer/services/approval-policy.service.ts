@@ -15,7 +15,7 @@ import {
 } from '../../lib/draft-approval';
 
 /**
- * Whether the workspace approval policy (`workspace.approval_policy`, 0091)
+ * Whether the workspace approval policy (`workspace.approval_policy`, 0093)
  * covers someone holding this role: `members` covers MEMBER and GUEST,
  * `everyone` covers ADMIN, MEMBER and GUEST, `none` nobody. The OWNER is
  * never covered (controller ruling: a workspace always keeps someone who can

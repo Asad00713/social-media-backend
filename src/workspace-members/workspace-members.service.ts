@@ -1547,7 +1547,7 @@ export class WorkspaceMembersService {
     invitation: {
       id: string;
       workspaceId: string;
-      // NULL once the inviter's account was deleted (0093): nobody to tell.
+      // NULL once the inviter's account was deleted (0095): nobody to tell.
       invitedBy: string | null;
       workspace: { name: string; timezone?: string | null };
     },

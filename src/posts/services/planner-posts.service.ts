@@ -20,7 +20,7 @@ export class PlannerPostsService {
   constructor(
     @Inject(DRIZZLE) private readonly db: DbType,
     // Not @Optional: the module must provide it. Optional in the type only so
-    // a DB spec without the 0092 tables can leave it out (labelIds is then []).
+    // a DB spec without the 0094 tables can leave it out (labelIds is then []).
     private readonly postLabels?: PostLabelsService,
   ) {}
 

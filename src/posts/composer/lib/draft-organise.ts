@@ -21,7 +21,7 @@ export const MAX_LABEL_LENGTH = 40;
  * `metadata.campaignSlot`; a composer link carries the id only, so it is a
  * reference to the campaign and never a slot of it.
  *
- * Labels live in `post_labels` (migration 0092) and are written by
+ * Labels live in `post_labels` (migration 0094) and are written by
  * `PostLabelsService.setForPost`, never here; a stale `metadata.labels` is
  * neither read nor carried.
  *

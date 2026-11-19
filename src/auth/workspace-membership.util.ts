@@ -18,7 +18,7 @@ export type PublicWorkspace = Omit<
   | 'maestroOnboardedAt'
   // Served by GET /home/workspaces/:id/summary; kept out of /auth/me.
   | 'weeklyPostGoal'
-  // Workspace settings (0091), served by the workspace settings endpoints.
+  // Workspace settings (0093), served by the workspace settings endpoints.
   // inviteLinkCode is a join secret and never belongs in /auth/me.
   | 'approvalPolicy'
   | 'shortenLinksDefault'

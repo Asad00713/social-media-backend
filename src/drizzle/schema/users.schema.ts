@@ -125,7 +125,7 @@ export const users = pgTable('users', {
   country: varchar('country', { length: 100 }),
   countryCode: varchar('country_code', { length: 2 }), // ISO 3166-1 alpha-2
 
-  // Account settings (migration 0090).
+  // Account settings (migration 0092).
   // The Preferences page: only keys the person has chosen, so {} means "all
   // defaults". Shape and allowed values are enforced by the preferences DTO.
   preferences: jsonb('preferences')

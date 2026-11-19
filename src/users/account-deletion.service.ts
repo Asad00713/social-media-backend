@@ -503,7 +503,7 @@ export class AccountDeletionService {
  * soft-deleted workspace (migration 0088) no longer blocks: it is gone, its
  * posts are kept from publishing by liveWorkspacePosts() on every publish
  * path, and WorkspacePurgeService removes it after 30 days. The owner row
- * that RESTRICT (0093) protects is anonymised, never removed, so the purge
+ * that RESTRICT (0095) protects is anonymised, never removed, so the purge
  * still finds it.
  */
 async function ownedWorkspaces(

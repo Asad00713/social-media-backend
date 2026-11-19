@@ -12,7 +12,7 @@ import {
 } from './workspace-timezone-move.service';
 import { WorkspaceService } from './workspace.service';
 
-// 0091 adds the workspace columns `update` writes and returns. 0066 creates
+// 0093 adds the workspace columns `update` writes and returns. 0066 creates
 // insight_reports, which a zone change reschedules: without it that read
 // fails, and on the harness's single transaction the caught error aborts
 // every later query. 0088 (main) adds the deleted_at columns the post reads
@@ -21,7 +21,7 @@ import { WorkspaceService } from './workspace.service';
 const MIGRATIONS = [
   '0066_insight_reports.sql',
   '0088_soft_delete_posts_workspaces.sql',
-  '0091_workspace_settings.sql',
+  '0093_workspace_settings.sql',
 ];
 
 // 09:00 in Karachi (UTC+5) and in New York (EST, UTC-5) on a January day.

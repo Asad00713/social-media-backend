@@ -15,16 +15,16 @@ const HOUR = 3600 * 1000;
 /**
  * The seed inserts through drizzle, which names every schema column of users
  * and workspace, so every migration after the local baseline that adds one
- * must be applied (0070, 0071, 0073, 0090, 0091). 0092 for labelIds.
+ * must be applied (0070, 0071, 0073, 0092, 0093). 0094 for labelIds.
  */
 const MIGRATIONS = [
   '0041_post_ready.sql',
   '0070_users_sessions_revoked_at.sql',
   '0071_users_pending_email.sql',
   '0073_users_email_changed_at.sql',
-  '0090_user_account_settings.sql',
-  '0091_workspace_settings.sql',
-  '0092_workspace_labels.sql',
+  '0092_user_account_settings.sql',
+  '0093_workspace_settings.sql',
+  '0094_workspace_labels.sql',
 ];
 
 async function seed(db: DbType) {

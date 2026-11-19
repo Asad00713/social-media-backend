@@ -7,12 +7,12 @@ import { describeDb, withRollbackDb } from '../planner/testing/rollback-db';
 import { CloudflareR2Service } from '../media/cloudflare-r2.service';
 import { WorkspaceService } from './workspace.service';
 
-// 0091 adds the workspace columns this service selects and writes; 0088
+// 0093 adds the workspace columns this service selects and writes; 0088
 // (main) workspace.deleted_at, which every read filters on. The harness
 // applies each file twice, so both must stay idempotent.
 const MIGRATIONS = [
   '0088_soft_delete_posts_workspaces.sql',
-  '0091_workspace_settings.sql',
+  '0093_workspace_settings.sql',
 ];
 
 // A real R2 service with a fixed public base: the own-URL rule runs for real

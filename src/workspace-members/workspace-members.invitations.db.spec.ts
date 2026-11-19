@@ -9,17 +9,17 @@ import type { AppLinks } from '../email/links/app-links';
 import { WorkspaceMembersService } from './workspace-members.service';
 
 // 0070/0071/0073: users columns every full users-row read selects (the
-// invite guards read one). 0080: REMOVED status. 0090/0091: columns the
-// full-row reads select, and invitations.message. 0093: invited_by is NULLable, so a seeded row needs no
+// invite guards read one). 0080: REMOVED status. 0092/0093: columns the
+// full-row reads select, and invitations.message. 0095: invited_by is NULLable, so a seeded row needs no
 // real inviter.
 const MIGRATIONS = [
   '0070_users_sessions_revoked_at.sql',
   '0071_users_pending_email.sql',
   '0073_users_email_changed_at.sql',
   '0080_member_soft_removal.sql',
-  '0090_user_account_settings.sql',
-  '0091_workspace_settings.sql',
-  '0093_users_fk_set_null.sql',
+  '0092_user_account_settings.sql',
+  '0093_workspace_settings.sql',
+  '0095_users_fk_set_null.sql',
 ];
 
 const DAY_MS = 24 * 60 * 60 * 1000;

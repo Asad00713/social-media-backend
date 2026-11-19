@@ -1,4 +1,4 @@
--- 0092 - Label catalogue and the post-to-label join table, with a backfill.
+-- 0094 - Label catalogue and the post-to-label join table, with a backfill.
 --
 -- WHY
 -- Labels lived only as free strings in posts.metadata.labels, so renaming or
@@ -40,7 +40,7 @@
 --      into the catalogue. So are posts of a soft-deleted WORKSPACE: the
 --      purge may hard-delete that workspace and its posts at any moment,
 --      and a row written for them between the backfill and step 3's
---      foreign keys would be an orphan no key ever saw (0098 also deletes
+--      foreign keys would be an orphan no key ever saw (0097 also deletes
 --      any such orphan before it validates, as the second line of defence).
 --   3. Last, the four foreign keys are added NOT VALID: catalog-only, no
 --      scan, so SHARE ROW EXCLUSIVE on posts, workspace, users and
@@ -48,7 +48,7 @@
 --      after it, not through the backfill. `lock_timeout` (10 s) bounds each
 --      wait behind the still-running old instance (I4); if it trips, the
 --      whole file rolls back. New rows are checked from here on.
---   4. 0098_users_fk_validate.sql validates them in its own transaction:
+--   4. 0097_users_fk_validate.sql validates them in its own transaction:
 --      VALIDATE CONSTRAINT takes SHARE UPDATE EXCLUSIVE on the table it
 --      checks and ROW SHARE on the referenced one, which blocks no writer.
 --   5. The old backend never touches the new tables, so applying this before
@@ -180,7 +180,7 @@ JOIN "workspace_labels" l
  AND l."deleted_at" IS NULL
 ON CONFLICT DO NOTHING;
 
--- The foreign keys, last and NOT VALID (SAFETY 3); 0098 validates them. The
+-- The foreign keys, last and NOT VALID (SAFETY 3); 0097 validates them. The
 -- names are the ones an inline REFERENCES would have given, so a database
 -- that ran an earlier draft of this file (FKs inline) skips them here.
 DO $$
