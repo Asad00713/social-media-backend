@@ -29,6 +29,11 @@ import {
 import { verifyTelegramWebhookSecret } from './utils/telegram-webhook-secret.util';
 import { secureCompare } from '../common/utils/encryption.util';
 import { parseWhatsAppMessages } from './services/whatsapp-webhook.util';
+import {
+  dedupById,
+  telegramUpdateDedup,
+  whatsappDeliveryDedup,
+} from './utils/webhook-dedup.util';
 import { parseWhatsAppTemplateEvents } from './services/whatsapp-template.util';
 import { InboxService } from '../inbox/inbox.service';
 import { WhatsAppTemplatesService } from '../whatsapp-templates/whatsapp-templates.service';
@@ -277,17 +282,37 @@ export class WebhooksController {
           (m) => m.phoneNumberId === maestroPnid,
         );
       if (forMaestro) {
+        // Keyed on the message id so a replayed delivery does not make
+        // Maestro answer the same message twice - real token spend, and the
+        // person receives the reply again. `removeOnComplete` frees a
+        // `jobId`, so dedup has to be the TTL'd kind. See webhook-dedup.util.
         await this.maestroBridgeQueue.add(
           'whatsapp-update',
           { channel: 'whatsapp', payload: req.body },
-          { removeOnComplete: true, removeOnFail: 100, attempts: 2 },
+          {
+            removeOnComplete: true,
+            removeOnFail: 100,
+            attempts: 2,
+            ...whatsappDeliveryDedup(
+              parseWhatsAppMessages(req.body).map((m) => m.messageId),
+            ),
+          },
         );
         return;
       }
+      // The ingest upserts on `(channelId, platformItemId)`, so a replay
+      // cannot duplicate a row - this stops it redoing the work and the
+      // profile lookups inside it.
       await this.whatsappIngestQueue.add(
         'whatsapp-ingest',
         { payload: req.body },
-        { attempts: 3, backoff: { type: 'exponential', delay: 5000 } },
+        {
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 5000 },
+          ...whatsappDeliveryDedup(
+            parseWhatsAppMessages(req.body).map((m) => m.messageId),
+          ),
+        },
       );
     } catch (err) {
       this.logger.error(
@@ -368,7 +393,17 @@ export class WebhooksController {
                 campaignId: value.campaign_id as string | undefined,
                 createdTime: value.created_time as number | undefined,
               },
-              { attempts: 3, backoff: { type: 'exponential', delay: 5000 } },
+              {
+                attempts: 3,
+                backoff: { type: 'exponential', delay: 5000 },
+                // `lead_intake.service` already refuses a duplicate on
+                // insert; this spares the Graph API fetch that precedes it.
+                ...dedupById(
+                  value.leadgen_id
+                    ? `lead-${String(value.leadgen_id)}`
+                    : undefined,
+                ),
+              },
             );
           } else if (source === 'instagram' && field === 'comments') {
             await this.ingestInstagramComment(accountId, value, eventTime);
@@ -958,10 +993,17 @@ export class WebhooksController {
       );
       throw new HttpException('Forbidden', HttpStatus.FORBIDDEN);
     }
+    // The ingest itself is idempotent (it upserts on `message_id`), so this
+    // is not correctness - it stops a replayed update doing the work, and the
+    // profile fetches inside it, a second time.
     await this.telegramQueue.add(
       'update',
       { channelId: channel.id, workspaceId: channel.workspaceId, update },
-      { removeOnComplete: true, attempts: 3 },
+      {
+        removeOnComplete: true,
+        attempts: 3,
+        ...telegramUpdateDedup(update),
+      },
     );
     return { ok: true };
   }
@@ -988,10 +1030,17 @@ export class WebhooksController {
       // Don't leak which check failed; drop quietly (Telegram won't usefully retry).
       return { ok: true };
     }
+    // `update_id` is Telegram's own idempotency key - unique per update, and
+    // resent unchanged until the webhook answers 2xx.
     await this.maestroBridgeQueue.add(
       'telegram-update',
       { channel: 'telegram', update },
-      { removeOnComplete: true, removeOnFail: 100, attempts: 2 },
+      {
+        removeOnComplete: true,
+        removeOnFail: 100,
+        attempts: 2,
+        ...telegramUpdateDedup(update),
+      },
     );
     return { ok: true };
   }
@@ -1048,10 +1097,20 @@ export class WebhooksController {
     }
     res.status(HttpStatus.OK).send('EVENT_RECEIVED');
     try {
+      // The dedicated Maestro number's own route - a second door to the same
+      // bridge, and the one the first pass at this change missed. The
+      // discovery spec below is what found it.
       await this.maestroBridgeQueue.add(
         'whatsapp-update',
         { channel: 'whatsapp', payload: req.body },
-        { removeOnComplete: true, removeOnFail: 100, attempts: 2 },
+        {
+          removeOnComplete: true,
+          removeOnFail: 100,
+          attempts: 2,
+          ...whatsappDeliveryDedup(
+            parseWhatsAppMessages(req.body).map((m) => m.messageId),
+          ),
+        },
       );
     } catch (err) {
       this.logger.error(
