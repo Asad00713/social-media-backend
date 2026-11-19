@@ -3,9 +3,10 @@ import { GUARDS_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import { AuthController } from './auth.controller';
 import {
+  FORGOT_PASSWORD_THROTTLE,
   LOGIN_THROTTLE,
-  RECOVERY_MAIL_THROTTLE,
   REGISTER_THROTTLE,
+  RESEND_CODE_THROTTLE,
 } from './auth-throttle';
 import { ClientIpThrottlerGuard } from '../common/guards/client-ip-throttler.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
@@ -56,8 +57,8 @@ describe('the limits are the ones that were reasoned about', () => {
   it.each([
     ['register', REGISTER_THROTTLE],
     ['login', LOGIN_THROTTLE],
-    ['forgotPassword', RECOVERY_MAIL_THROTTLE],
-    ['resendVerification', RECOVERY_MAIL_THROTTLE],
+    ['forgotPassword', FORGOT_PASSWORD_THROTTLE],
+    ['resendVerification', RESEND_CODE_THROTTLE],
   ])('%s carries its named limit', (name, expected) => {
     expect(throttleOf(proto[name])).toEqual(expected.default);
   });
@@ -65,11 +66,38 @@ describe('the limits are the ones that were reasoned about', () => {
   it.each([
     ['login', LOGIN_THROTTLE, 10, 15 * 60 * 1000],
     ['register', REGISTER_THROTTLE, 5, 60 * 60 * 1000],
-    ['recovery mail', RECOVERY_MAIL_THROTTLE, 5, 60 * 60 * 1000],
+    ['forgot-password', FORGOT_PASSWORD_THROTTLE, 5, 60 * 60 * 1000],
+    ['resend-code', RESEND_CODE_THROTTLE, 15, 15 * 60 * 1000],
   ])('%s is %p', (_label, bag, limit, ttl) => {
     // Pinned: a number nudged without a reason should fail here, so the
     // reasoning in auth-throttle.ts and the running limit cannot drift apart.
     expect(bag.default).toEqual({ limit, ttl });
+  });
+});
+
+describe('resend is deliberately looser than forgot-password', () => {
+  it('allows more resends per hour than reset mails', () => {
+    const perHour = (bag: { default: { limit: number; ttl: number } }) =>
+      (bag.default.limit * 60 * 60 * 1000) / bag.default.ttl;
+    expect(perHour(RESEND_CODE_THROTTLE)).toBeGreaterThan(
+      perHour(FORGOT_PASSWORD_THROTTLE),
+    );
+  });
+
+  it('never locks a half-finished signup out for more than 15 minutes', () => {
+    // Resend is the only button that screen has. An hour-long window on it
+    // strands the person mid-signup with nowhere to go, which is the failure
+    // the admin/challenge limit already had once.
+    expect(RESEND_CODE_THROTTLE.default.ttl).toBeLessThanOrEqual(
+      15 * 60 * 1000,
+    );
+  });
+
+  it('still caps resend fan-out well below a mail flood', () => {
+    const perHour =
+      (RESEND_CODE_THROTTLE.default.limit * 60 * 60 * 1000) /
+      RESEND_CODE_THROTTLE.default.ttl;
+    expect(perHour).toBeLessThanOrEqual(60);
   });
 });
 

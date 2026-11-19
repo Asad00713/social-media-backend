@@ -97,11 +97,35 @@ stuffing, and a cheap way to saturate the web process.
 In `auth/auth-throttle.ts`, named rather than inline, so the number and the
 reasoning for it cannot drift apart.
 
-| Route                                    | Limit       | Why that number                                                                                                                   |
-| ---------------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `login`                                  | 10 / 15 min | the ceiling `admin/verify` was already tuned to. Ten mistypes in a quarter-hour means using the reset link, not an eleventh guess |
-| `register`                               | 5 / hour    | a person signs up once; 5 covers a typo, a mid-signup abandon, and a few colleagues behind one office NAT                         |
-| `forgot-password`, `resend-verification` | 5 / hour    | a fan-out cap. One person recovering one account needs 1–2                                                                        |
+| Route                 | Limit       | Why that number                                                                                                                   |
+| --------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `login`               | 10 / 15 min | the ceiling `admin/verify` was already tuned to. Ten mistypes in a quarter-hour means using the reset link, not an eleventh guess |
+| `register`            | 5 / hour    | a person signs up once; 5 covers a typo, a mid-signup abandon, and a few colleagues behind one office NAT                         |
+| `forgot-password`     | 5 / hour    | a fan-out cap. One person recovering one account needs 1–2                                                                        |
+| `resend-verification` | 15 / 15 min | looser on purpose — see below                                                                                                     |
+
+### Why resend is looser than reset
+
+These two started as one limit of 5 an hour, which was wrong, and the frontend
+is what showed it. Resend is the only button a half-finished signup has, and the
+real path through that screen is not one press: the first code lands in spam, so
+they press it; still nothing, so they press again; then they spot the typo in
+their address, take "Use a different email", sign up again, and need codes for
+the new address too. Five an hour runs out partway through — and the screen it
+runs out on has nowhere else to go, so the person is locked out of their own
+signup for the rest of the hour.
+
+Worse, the UI would have shown it: `check-email-card.tsx` restarts its countdown
+from the 429's `retryAfterSeconds`, so a one-hour limit renders a literal
+`60:00` ticking down with the resend button disabled behind it.
+
+Fifteen in fifteen minutes is the shape `admin/challenge` arrived at after
+exactly this failure. The shorter window matters more than the bigger number:
+whatever the person does wrong, they are never more than fifteen minutes from
+trying again. It is still a real cap on mail — the 60-second per-account
+cooldown means one address cannot take more than 15 of these anyway, fan-out
+from one caller is bounded at 60 an hour, and the endpoint only ever mails an
+address that already has an unverified account waiting on it.
 
 None of these is near a real user's behaviour, which is the point: a throttle
 tuned against an imagined attacker rather than a real session locks out the
@@ -132,6 +156,8 @@ Mutation-tested:
 | **add a new unbounded public route**                     | **1**           |
 | remove the human 429 body (back to `ThrottlerException`) | 10              |
 | drop the 1-second floor on the wait                      | 2               |
+| make resend as strict as reset (5/hour)                  | 3               |
+| loosen resend to 150 / 15 min                            | 2               |
 
 The unbounded-route one is what the net exists for.
 

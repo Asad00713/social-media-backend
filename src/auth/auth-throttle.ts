@@ -66,14 +66,42 @@ export const REGISTER_THROTTLE = {
 } as const;
 
 /**
- * Account-recovery and resend mail per visitor.
+ * Password-reset mail per visitor.
  *
- * This is a fan-out cap, not a repeat cap: the per-account cooldowns in
- * `AuthService` already refuse a second mail to the same address. Five an hour
- * is generous for the real case (one person recovering one account, perhaps
- * mistyping their address once or twice) and turns "mail a thousand strangers
- * from one host" into a non-event.
+ * A fan-out cap, not a repeat cap: the 5-minute per-account cooldown in
+ * `AuthService` already refuses a second mail to the same address, so this one
+ * answers the other question — how many DIFFERENT addresses one caller may mail.
+ * Five an hour is generous for the real case (one person recovering one
+ * account, perhaps mistyping their address once) and turns "mail a thousand
+ * strangers from one host" into a non-event.
  */
-export const RECOVERY_MAIL_THROTTLE = {
+export const FORGOT_PASSWORD_THROTTLE = {
   default: { limit: 5, ttl: ONE_HOUR_MS },
+} as const;
+
+/**
+ * Verification-code resends per visitor. Deliberately looser than the reset
+ * limit above, and for a user-experience reason rather than a security one.
+ *
+ * Resend is the one button a half-finished signup has. The real path through it
+ * is not one press: the first code lands in spam, so they press it; it is still
+ * not there, so they press again; then they spot the typo in their address,
+ * take "Use a different email", sign up again, and need codes for the new
+ * address too. Five an hour runs out partway through that, and the screen it
+ * runs out on has nowhere else to go — the person is locked out of their own
+ * signup for the rest of the hour.
+ *
+ * Fifteen in fifteen minutes is the shape `admin/challenge` arrived at after
+ * exactly this failure (its comment records a limit of 5 that a couple of
+ * fumbled sign-ins burned through). The shorter window matters more than the
+ * bigger number: whatever a person does wrong, they are never more than fifteen
+ * minutes from trying again.
+ *
+ * It is still a real cap on mail. The per-account cooldown is 60s, so a single
+ * address cannot take more than 15 of these anyway, and fan-out is bounded at
+ * 60 an hour from one caller — against an endpoint that only ever mails an
+ * address that already has an unverified account waiting on it.
+ */
+export const RESEND_CODE_THROTTLE = {
+  default: { limit: 15, ttl: FIFTEEN_MIN_MS },
 } as const;

@@ -15,9 +15,10 @@ import {
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { ClientIpThrottlerGuard } from '../common/guards/client-ip-throttler.guard';
 import {
+  FORGOT_PASSWORD_THROTTLE,
   LOGIN_THROTTLE,
-  RECOVERY_MAIL_THROTTLE,
   REGISTER_THROTTLE,
+  RESEND_CODE_THROTTLE,
 } from './auth-throttle';
 import type { Request, Response } from 'express';
 import { AuthService } from './auth.service';
@@ -301,10 +302,11 @@ export class AuthController {
   @Post('resend-verification')
   @HttpCode(HttpStatus.OK)
   @SkipLaunchGate()
-  // Caps fan-out across addresses; the per-account cooldown in AuthService
-  // (60s) still caps repeats to one address.
+  // Looser than forgot-password on purpose: this is the only button a
+  // half-finished signup has, and an hour-long lockout on it has nowhere to
+  // go. The 60s per-account cooldown still caps repeats to one address.
   @UseGuards(ClientIpThrottlerGuard)
-  @Throttle(RECOVERY_MAIL_THROTTLE)
+  @Throttle(RESEND_CODE_THROTTLE)
   async resendVerification(@Body() dto: ResendVerificationDto) {
     return this.authService.resendVerificationEmail(dto.email);
   }
@@ -318,9 +320,10 @@ export class AuthController {
   @Post('forgot-password')
   @HttpCode(HttpStatus.OK)
   @SkipLaunchGate()
-  // Same fan-out cap; AuthService keeps its 5-minute per-account cooldown.
+  // Fan-out cap across addresses; AuthService keeps its 5-minute per-account
+  // cooldown for repeats to one address.
   @UseGuards(ClientIpThrottlerGuard)
-  @Throttle(RECOVERY_MAIL_THROTTLE)
+  @Throttle(FORGOT_PASSWORD_THROTTLE)
   async forgotPassword(@Body() dto: ForgotPasswordDto) {
     return this.authService.forgotPassword(dto.email);
   }
