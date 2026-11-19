@@ -1,10 +1,21 @@
 import { randomUUID } from 'crypto';
-import { Injectable, Logger, PayloadTooLargeException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  PayloadTooLargeException,
+  UnsupportedMediaTypeException,
+} from '@nestjs/common';
 import {
   CloudinaryService,
   type UploadResult,
 } from '../../media/cloudinary.service';
 import { isStoredDocument, looksLikeDocument } from '../lib/document-file';
+import {
+  assertAllowedMedia,
+  mimeDisagrees,
+  SNIFF_BYTES,
+  storedFormatDisallowed,
+} from '../lib/media-allowlist';
 import { DocumentNeedsR2Exception } from '../lib/storage';
 import { MediaItemService, type MediaItemView } from './media-item.service';
 import { StorageQuotaService } from './storage-quota.service';
@@ -74,11 +85,23 @@ function nameFromUrl(url: string): string {
   }
 }
 
-/** The first bytes of a base64 payload (with or without a data URI). */
-function base64Head(data: string): Buffer {
+/**
+ * The first bytes of a base64 payload (with or without a data URI).
+ *
+ * Derived from `SNIFF_BYTES` rather than the 16 characters this carried
+ * before. 16 characters decode to exactly 12 bytes, which happens to be
+ * precisely what the longest signature reads (a RIFF type, or an ISO-BMFF
+ * brand, both at offsets 8-12) — so the old width worked, with nothing to
+ * spare. Deriving it means a signature that ever needs one more byte does not
+ * silently start reporting every video as unrecognised.
+ *
+ * Base64 encodes 3 bytes per 4 characters, so the character count is 4/3 of
+ * the bytes wanted, rounded up to a whole 4-character group.
+ */
+function base64Head(data: string, bytes = SNIFF_BYTES): Buffer {
   const comma = data.startsWith('data:') ? data.indexOf(',') + 1 : 0;
-  // 16 base64 characters are 12 bytes, enough for every magic number checked.
-  return Buffer.from(data.slice(comma, comma + 16), 'base64');
+  const chars = Math.ceil(bytes / 3) * 4;
+  return Buffer.from(data.slice(comma, comma + chars), 'base64');
 }
 
 /** The path of a URL, or the string itself when it does not parse. */
@@ -144,6 +167,10 @@ export class LibraryIngestService {
       name: i.originalName,
       head: i.buffer.subarray(0, 16),
     });
+    // And then the allowlist, on the bytes themselves. `refuseDocument`
+    // above answers "is this a document" - a DENYLIST, whose default is
+    // allow, so an executable or a script renamed `cat.jpg` passed it.
+    this.assertMedia(i.buffer.subarray(0, SNIFF_BYTES), i.mimeType);
     await this.assertFolder(i);
     await this.quota.assertCanStore(i.workspaceId, i.buffer.length);
     const upload = await this.cloudinary.uploadFromBuffer(i.buffer, {
@@ -168,6 +195,9 @@ export class LibraryIngestService {
       tags: i.tags,
     });
     await this.refuseStoredDocument(upload);
+    // The bytes were never here to sniff, so the check happens after the
+    // fact on Cloudinary's own verdict - it decoded the file to store it.
+    await this.refuseStoredNonMedia(upload);
     return this.save(i, upload, nameFromUrl(i.url));
   }
 
@@ -176,6 +206,7 @@ export class LibraryIngestService {
       mimeType: mimeFromDataUri(i.data),
       head: base64Head(i.data),
     });
+    this.assertMedia(base64Head(i.data), mimeFromDataUri(i.data));
     await this.assertFolder(i);
     await this.quota.assertCanStore(
       i.workspaceId,
@@ -200,6 +231,52 @@ export class LibraryIngestService {
   ): void {
     if (resourceType === 'raw' || looksLikeDocument(hints)) {
       throw new DocumentNeedsR2Exception();
+    }
+  }
+
+  /**
+   * Refuses an upload Cloudinary stored whose format is not allowed media,
+   * deleting the stored copy first.
+   *
+   * For `ingestRemoteUrl`, where the server hands over a URL and never holds
+   * the bytes. Same shape as `refuseStoredDocument`, and for the same reason:
+   * the only evidence available is what Cloudinary found when it decoded the
+   * file.
+   */
+  private async refuseStoredNonMedia(upload: UploadResult): Promise<void> {
+    if (!storedFormatDisallowed(upload)) return;
+    if (!upload.existing) {
+      try {
+        await this.cloudinary.delete(upload.publicId, upload.resourceType);
+      } catch (error) {
+        this.logger.warn(
+          `Could not delete refused upload ${upload.publicId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    throw new UnsupportedMediaTypeException(
+      `A ${upload.format ?? upload.resourceType} file cannot be stored in the Library.`,
+    );
+  }
+
+  /**
+   * Refuses bytes that are not allowed media, and logs a declared type that
+   * disagrees with them.
+   *
+   * The disagreement is logged rather than refused: browsers send
+   * `application/octet-stream` for a perfectly good JPEG often enough that
+   * refusing on a mismatch would break real uploads. The bytes have already
+   * decided; the mismatch is worth seeing because a deliberate one is what an
+   * upload attack looks like.
+   */
+  private assertMedia(head: Buffer, declaredMime: string | undefined): void {
+    const found = assertAllowedMedia(head);
+    if (mimeDisagrees(declaredMime, found)) {
+      this.logger.warn(
+        `Upload declared ${declaredMime} but its bytes are ${found.mime}; storing as ${found.mime}`,
+      );
     }
   }
 
