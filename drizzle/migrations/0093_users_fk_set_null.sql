@@ -1,4 +1,4 @@
--- 0091 - Foreign keys to users stop blocking (or cascading) a user delete.
+-- 0093 - Foreign keys to users stop blocking (or cascading) a user delete.
 --
 -- WHY
 -- Deleting an account (Settings redesign, spec 5.10) must never be blocked
@@ -118,7 +118,7 @@ BEGIN
   LOOP
     rel := to_regclass(format('%I', target.table_name));
     IF rel IS NULL THEN
-      RAISE NOTICE '0091: table % does not exist, skipped',
+      RAISE NOTICE '0093: table % does not exist, skipped',
         target.table_name;
       CONTINUE;
     END IF;
@@ -129,7 +129,7 @@ BEGIN
        AND a.attname = target.column_name
        AND NOT a.attisdropped;
     IF col IS NULL THEN
-      RAISE EXCEPTION '0091: column %.% does not exist',
+      RAISE EXCEPTION '0093: column %.% does not exist',
         target.table_name, target.column_name;
     END IF;
 
@@ -167,6 +167,6 @@ BEGIN
      AND c.confdeltype = 'a';
   IF leftover IS NOT NULL THEN
     RAISE EXCEPTION
-      '0091: foreign keys to users still ON DELETE NO ACTION: %', leftover;
+      '0093: foreign keys to users still ON DELETE NO ACTION: %', leftover;
   END IF;
 END $$;

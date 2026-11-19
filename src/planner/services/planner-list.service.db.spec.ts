@@ -15,7 +15,7 @@ import { PlannerListQueryDto, type ListTab } from '../dto/planner-list.dto';
 import { encodeListCursor } from '../lib/list-cursor';
 import { PlannerListService } from './planner-list.service';
 
-const MIGRATIONS = ['0041_post_ready.sql', '0090_workspace_labels.sql'];
+const MIGRATIONS = ['0041_post_ready.sql', '0092_workspace_labels.sql'];
 const HOUR = 3600_000;
 
 async function workspace(client: PoolClient, tag: string) {

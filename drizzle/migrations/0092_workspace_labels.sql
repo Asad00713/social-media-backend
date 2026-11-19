@@ -1,4 +1,4 @@
--- 0090 - Label catalogue and the post-to-label join table, with a backfill.
+-- 0092 - Label catalogue and the post-to-label join table, with a backfill.
 --
 -- WHY
 -- Labels lived only as free strings in posts.metadata.labels, so renaming or

@@ -11,7 +11,7 @@ import {
 import { relations } from 'drizzle-orm';
 import { users } from './users.schema';
 
-// Who needs approval before a post is published (0089). 'members' covers
+// Who needs approval before a post is published (0091). 'members' covers
 // people holding the MEMBER role; 'none' is how every workspace behaved
 // before the setting existed.
 export const APPROVAL_POLICIES = ['none', 'members', 'everyone'] as const;
@@ -25,7 +25,7 @@ export const workspace = pgTable(
     slug: text('slug').notNull().unique(),
     description: text('description'),
     logo: text('logo'),
-    // RESTRICT (0091): deleting an owner's account never takes the workspace
+    // RESTRICT (0093): deleting an owner's account never takes the workspace
     // with it; the account-delete flow transfers or deletes it first.
     ownerId: uuid('owner_id')
       .notNull()
@@ -57,7 +57,7 @@ export const workspace = pgTable(
     // ring on Home. Editable by members who can publish.
     weeklyPostGoal: integer('weekly_post_goal').notNull().default(5),
 
-    // --- Publishing defaults and join link (0089) ---
+    // --- Publishing defaults and join link (0091) ---
     approvalPolicy: text('approval_policy')
       .$type<ApprovalPolicy>()
       .notNull()
@@ -90,7 +90,7 @@ export const workspace = pgTable(
   },
   (t) => ({
     // A uniqueIndex, not .unique(): .unique() would name the constraint
-    // workspace_invite_link_code_unique, while 0089 creates this index.
+    // workspace_invite_link_code_unique, while 0091 creates this index.
     inviteLinkCodeUq: uniqueIndex('workspace_invite_link_code_uq').on(
       t.inviteLinkCode,
     ),

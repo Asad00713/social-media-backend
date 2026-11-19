@@ -17,7 +17,7 @@ import {
 /**
  * A label name the way the catalogue stores it: inner whitespace collapsed
  * to one space, then trimmed (the same rule as the composer's
- * `normaliseLabels` and the 0090 backfill). Non-strings pass through so
+ * `normaliseLabels` and the 0092 backfill). Non-strings pass through so
  * `@IsString` rejects them.
  */
 const normaliseName = ({ value }: { value: unknown }): unknown =>

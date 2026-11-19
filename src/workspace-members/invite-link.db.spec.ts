@@ -15,13 +15,13 @@ import type { AppLinks } from '../email/links/app-links';
 import { WorkspaceMembersService } from './workspace-members.service';
 import { InviteLinkService, INVITE_CODE_REGEX } from './invite-link.service';
 
-// 0080: REMOVED status. 0088/0089: columns the full-row reads select, the
-// invite link columns and their unique index. 0091: invited_by is NULLable.
+// 0080: REMOVED status. 0090/0091: columns the full-row reads select, the
+// invite link columns and their unique index. 0093: invited_by is NULLable.
 const MIGRATIONS = [
   '0080_member_soft_removal.sql',
-  '0088_user_account_settings.sql',
-  '0089_workspace_settings.sql',
-  '0091_users_fk_set_null.sql',
+  '0090_user_account_settings.sql',
+  '0091_workspace_settings.sql',
+  '0093_users_fk_set_null.sql',
 ];
 
 const DAY_MS = 24 * 60 * 60 * 1000;

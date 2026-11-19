@@ -43,7 +43,7 @@ function isLabelGone(err: unknown): boolean {
 /**
  * Which labels a post carries (`post_labels`), by name for the composer and
  * by id for the Planner. Never reads or writes `posts.metadata`: the labels
- * that used to live there were copied by migration 0090 and are no longer
+ * that used to live there were copied by migration 0092 and are no longer
  * read.
  */
 @Injectable()

@@ -15,8 +15,8 @@ import { AccountDeletionService } from './account-deletion.service';
 // 0058: post_comments, seeded to prove they stay. 0060/0067/0068/0072:
 // insight_hidden_steps, channel_connect_links, notification_preferences and
 // known_devices, which the delete clears. 0070/0071/0073: the users columns
-// the anonymising update writes and the schema selects. 0080: REMOVED memberships. 0088: users.deleted_at and preferences.
-// 0089/0090: workspace columns the schema selects. 0091: invited_by and
+// the anonymising update writes and the schema selects. 0080: REMOVED memberships. 0090: users.deleted_at and preferences.
+// 0091/0092: workspace columns the schema selects. 0093: invited_by and
 // changed_by_user_id SET NULL, workspace.owner_id RESTRICT.
 const MIGRATIONS = [
   '0058_post_comments.sql',
@@ -28,10 +28,10 @@ const MIGRATIONS = [
   '0072_known_devices.sql',
   '0073_users_email_changed_at.sql',
   '0080_member_soft_removal.sql',
-  '0088_user_account_settings.sql',
-  '0089_workspace_settings.sql',
-  '0090_workspace_labels.sql',
-  '0091_users_fk_set_null.sql',
+  '0090_user_account_settings.sql',
+  '0091_workspace_settings.sql',
+  '0092_workspace_labels.sql',
+  '0093_users_fk_set_null.sql',
 ];
 
 const rand = () => Math.random().toString(36).slice(2, 10);

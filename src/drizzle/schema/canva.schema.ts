@@ -16,7 +16,7 @@ export const canvaConnections = pgTable('canva_connections', {
     .notNull()
     .references(() => workspace.id, { onDelete: 'cascade' })
     .unique(),
-  // CASCADE (0091): the grant is the person's own Canva OAuth token, so it
+  // CASCADE (0093): the grant is the person's own Canva OAuth token, so it
   // goes with their account. NOT NULL rules out SET NULL.
   userId: uuid('user_id')
     .notNull()

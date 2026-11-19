@@ -8,14 +8,14 @@ import {
 import type { AppLinks } from '../email/links/app-links';
 import { WorkspaceMembersService } from './workspace-members.service';
 
-// 0080: REMOVED status, removed_at, removed_by. 0089: workspace columns the
-// full-row workspace read selects. 0091: invited_by becomes NULLable, so a
+// 0080: REMOVED status, removed_at, removed_by. 0091: workspace columns the
+// full-row workspace read selects. 0093: invited_by becomes NULLable, so a
 // seeded membership needs no inviter.
 const MIGRATIONS = [
   '0080_member_soft_removal.sql',
-  '0088_user_account_settings.sql',
-  '0089_workspace_settings.sql',
-  '0091_users_fk_set_null.sql',
+  '0090_user_account_settings.sql',
+  '0091_workspace_settings.sql',
+  '0093_users_fk_set_null.sql',
 ];
 
 const rand = () => Math.random().toString(36).slice(2, 10);

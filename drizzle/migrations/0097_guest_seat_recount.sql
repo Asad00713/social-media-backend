@@ -1,4 +1,4 @@
--- 0095 - workspace_usage.members_count now means seats: accepted non-guest members.
+-- 0097 - workspace_usage.members_count now means seats: accepted non-guest members.
 --
 -- WHY
 -- Guests use no seat (Settings redesign, spec 5.7: "Uses a seat: Guest = Free").
@@ -16,7 +16,9 @@
 -- runs each file once; the DB harness applies it twice).
 --
 -- NUMBER
--- 0095 is provisional; it is renumbered at merge so it follows Part B's files.
+-- Was 0095 on the branch; renumbered at the merge with main (which took
+-- 0088 and 0089). It follows the numbers the spec reserves for Part B (0094,
+-- 0095) and Part C (0096), and runs after Part A's 0090-0093.
 --
 -- Residual: while a deploy overlaps, the old container can still count one
 -- guest who accepts after this has run (+1 at most, never an over-grant). A

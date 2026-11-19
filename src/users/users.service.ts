@@ -317,7 +317,7 @@ export class UsersService {
                 password = ${hashedPassword},
                 password_reset_token = NULL,
                 password_reset_token_expires_at = NULL,
-                -- When the password last changed, shown in Settings (migration 0088).
+                -- When the password last changed, shown in Settings (migration 0090).
                 password_changed_at = ${now},
                 -- Ends every session in the same write (migration 0070).
                 sessions_revoked_at = ${now},

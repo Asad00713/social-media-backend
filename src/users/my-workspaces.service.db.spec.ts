@@ -6,13 +6,13 @@ import {
 } from '../planner/testing/rollback-db';
 import { MyWorkspacesService } from './my-workspaces.service';
 
-// 0080: REMOVED invitations. 0089: workspace columns the schema selects.
-// 0091: invited_by becomes NULLable (an invitation outlives its inviter).
+// 0080: REMOVED invitations. 0091: workspace columns the schema selects.
+// 0093: invited_by becomes NULLable (an invitation outlives its inviter).
 const MIGRATIONS = [
   '0080_member_soft_removal.sql',
-  '0088_user_account_settings.sql',
-  '0089_workspace_settings.sql',
-  '0091_users_fk_set_null.sql',
+  '0090_user_account_settings.sql',
+  '0091_workspace_settings.sql',
+  '0093_users_fk_set_null.sql',
 ];
 
 const rand = () => Math.random().toString(36).slice(2, 10);

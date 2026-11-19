@@ -34,7 +34,7 @@ export const workspaceInvitation = pgTable('workspace_invitations', {
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }), // null if user doesn't exist yet
   role: memberRoleEnum('role').notNull().default('MEMBER'),
   status: invitationStatusEnum('status').notNull().default('PENDING'),
-  // NULL once the inviter's account is deleted (0091, SET NULL); the
+  // NULL once the inviter's account is deleted (0093, SET NULL); the
   // invitation itself is kept.
   invitedBy: uuid('invited_by').references(() => users.id, {
     onDelete: 'set null',
@@ -48,7 +48,7 @@ export const workspaceInvitation = pgTable('workspace_invitations', {
   removedBy: uuid('removed_by').references(() => users.id, {
     onDelete: 'set null',
   }),
-  // Optional personal note from the inviter, shown in the invitation email (0089).
+  // Optional personal note from the inviter, shown in the invitation email (0091).
   message: text('message'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),

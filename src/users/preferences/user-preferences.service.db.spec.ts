@@ -7,8 +7,8 @@ import {
 import { DEFAULT_PREFERENCES } from './user-preferences';
 import { UserPreferencesService } from './user-preferences.service';
 
-// 0088 adds users.preferences.
-const MIGRATIONS = ['0088_user_account_settings.sql'];
+// 0090 adds users.preferences.
+const MIGRATIONS = ['0090_user_account_settings.sql'];
 
 const rand = () => Math.random().toString(36).slice(2, 10);
 

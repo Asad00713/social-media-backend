@@ -7,8 +7,8 @@ import {
 } from '../planner/testing/rollback-db';
 import { RecipientsService } from './recipients.service';
 
-// 0088 adds users.preferences, which userTimezone() reads.
-const MIGRATIONS = ['0088_user_account_settings.sql'];
+// 0090 adds users.preferences, which userTimezone() reads.
+const MIGRATIONS = ['0090_user_account_settings.sql'];
 const UNKNOWN_ID = '00000000-0000-4000-8000-000000000000';
 
 function run<T>(

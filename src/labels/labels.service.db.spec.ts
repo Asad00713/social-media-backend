@@ -5,7 +5,7 @@ import { seedWorkspace } from '../inbox/testing/inbox-db';
 import { describeDb, withRollbackDb } from '../planner/testing/rollback-db';
 import { LabelsService } from './labels.service';
 
-const MIGRATIONS = ['0090_workspace_labels.sql'];
+const MIGRATIONS = ['0092_workspace_labels.sql'];
 
 async function seedPost(
   client: PoolClient,

@@ -7,9 +7,9 @@ import { describeDb, withRollbackDb } from '../planner/testing/rollback-db';
 import { CloudflareR2Service } from '../media/cloudflare-r2.service';
 import { WorkspaceService } from './workspace.service';
 
-// 0089 adds the workspace columns this service selects and writes. The
+// 0091 adds the workspace columns this service selects and writes. The
 // harness applies each file twice, so it must stay idempotent.
-const MIGRATIONS = ['0089_workspace_settings.sql'];
+const MIGRATIONS = ['0091_workspace_settings.sql'];
 
 // A real R2 service with a fixed public base: the own-URL rule runs for real
 // and nothing ever leaves the process (no key means no client call is made).

@@ -303,7 +303,7 @@ describe('UserInactivityService', () => {
   });
 
   describe('365-day purge', () => {
-    it('skips workspace owners (0091 makes owner_id RESTRICT) and deletes the rest', async () => {
+    it('skips workspace owners (0093 makes owner_id RESTRICT) and deletes the rest', async () => {
       const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
       jest.spyOn(Logger.prototype, 'log').mockImplementation();
       const owner = { id: 'u-owner', email: 'owner@acme.test', name: 'O' };

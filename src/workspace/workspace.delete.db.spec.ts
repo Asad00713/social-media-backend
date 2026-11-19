@@ -8,14 +8,14 @@ import {
 import { describeDb, withRollbackDb } from '../planner/testing/rollback-db';
 import { WorkspaceService } from './workspace.service';
 
-// 0089 adds the workspace columns `findFirst` reads; 0080 the membership
+// 0091 adds the workspace columns `findFirst` reads; 0080 the membership
 // columns seedMember writes; 0081 the channel disconnect columns the seed
 // sets on the disconnected channel. The harness applies each file twice, so both
 // must stay idempotent.
 const MIGRATIONS = [
   '0080_member_soft_removal.sql',
   '0081_channel_soft_disconnect.sql',
-  '0089_workspace_settings.sql',
+  '0091_workspace_settings.sql',
 ];
 
 interface Billing {

@@ -103,7 +103,7 @@ export class MyWorkspacesService {
         ...workspaceColumns(owner.name, owner.email),
         role: workspaceInvitation.role,
         // A null-safe pair: both null when `invited_by` is NULL (the inviter's
-        // account was deleted, 0091) or never recorded.
+        // account was deleted, 0093) or never recorded.
         inviterName: inviter.name,
         inviterEmail: inviter.email,
       })

@@ -24,15 +24,15 @@ import { WorkspaceRoleService } from '../../../workspace-members/workspace-role.
 import type { ApprovalPolicy } from '../../../drizzle/schema/workspace.schema';
 
 // Copied from planner-posts.service.db.spec.ts: the local DB sits at 0055 and
-// the schema now names columns up to 0090.
+// the schema now names columns up to 0092.
 const MIGRATIONS = [
   '0041_post_ready.sql',
   '0070_users_sessions_revoked_at.sql',
   '0071_users_pending_email.sql',
   '0073_users_email_changed_at.sql',
-  '0088_user_account_settings.sql',
-  '0089_workspace_settings.sql',
-  '0090_workspace_labels.sql',
+  '0090_user_account_settings.sql',
+  '0091_workspace_settings.sql',
+  '0092_workspace_labels.sql',
 ];
 
 function harness(db: DbType) {

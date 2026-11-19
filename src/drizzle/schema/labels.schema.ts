@@ -15,7 +15,7 @@ import { workspace } from './workspace.schema';
 
 /**
  * The label palette, in the order colours are handed out. Mirrored by a
- * CHECK in 0090.
+ * CHECK in 0092.
  */
 export const LABEL_COLORS = [
   'blue',
@@ -29,7 +29,7 @@ export const LABEL_COLORS = [
 ] as const;
 export type LabelColor = (typeof LABEL_COLORS)[number];
 
-/** Longest label name and description, in characters (varchar lengths in 0090). */
+/** Longest label name and description, in characters (varchar lengths in 0092). */
 export const LABEL_NAME_MAX = 40;
 export const LABEL_DESCRIPTION_MAX = 120;
 
@@ -37,7 +37,7 @@ export const LABEL_DESCRIPTION_MAX = 120;
  * A workspace's label catalogue. Deleting is soft (`deleted_at`) so the
  * 10-second undo can restore a label; the name is unique per workspace,
  * case-insensitively, among live labels only.
- * Migration: drizzle/migrations/0090_workspace_labels.sql (hand-written; the
+ * Migration: drizzle/migrations/0092_workspace_labels.sql (hand-written; the
  * colour CHECK lives there).
  */
 export const workspaceLabels = pgTable(

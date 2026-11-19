@@ -81,7 +81,7 @@ Blocked while the user owns any workspace; the dialog lists them, each with "Ope
 | General, time-zone popover | Truncated labels | "Use for new channels" / "Also move existing" |
 
 ### 3.5 Engineering rules
-- Migrations start at **0088**. The boot migrator applies by filename and tracks name plus checksum. Any `ALTER` on `users` or `workspace` starts with `SET LOCAL lock_timeout = '5s'` and is listed in `migrate/inbox-lock-timeout.spec.ts`.
+- Migrations start at **0090** (main took 0088 and 0089 first; renumbered at the merge with main). The boot migrator applies by filename and tracks name plus checksum. Any `ALTER` on `users` or `workspace` starts with `SET LOCAL lock_timeout = '5s'` and is listed in `migrate/inbox-lock-timeout.spec.ts`.
 - BullMQ job ids never contain `:`.
 - Every new `toast.error` passes `{ error }`.
 - The save rule from the flow map (§6).
@@ -257,7 +257,7 @@ Part A ships the Security route with the **Sign-in** section. Part B adds "Two-s
 
 **BE changes:**
 - `PublicUser` gains `hasGoogle: boolean` (from `googleSub`), `passwordChangedAt: string | null`. (Part B adds `twoFactorEnabled`.)
-- Migration 0088 adds `users.password_changed_at timestamptz NULL`, stamped by change-password, set-password and reset-password. Existing rows stay NULL; the FE then omits "password changed …".
+- Migration 0090 adds `users.password_changed_at timestamptz NULL`, stamped by change-password, set-password and reset-password. Existing rows stay NULL; the FE then omits "password changed …".
 - `POST /users/me/google/disconnect {currentPassword}` (Jwt, Throttle 5/h per user) → `PublicUser`. `409 NO_PASSWORD` when `!hasPassword`; `401 WRONG_PASSWORD`. Sets `googleSub = null`. Sends a security email through the email system ("sign-in method changed"; **Builder call:** reuse an existing A-group template if one fits, otherwise add one to the security class).
 - `ChangePasswordDto` gains `revokeOtherSessions?: boolean` (default `true`). When `false`, `sessionsRevokedAt` is not stamped. (Part B replaces the stamp with session-row revocation.)
 
@@ -307,7 +307,7 @@ All rows save instantly (§6). Preferences are **per user**, across workspaces (
   DTO: class-validator enums for each field; `timezone` validated against `Intl.supportedValuesOf('timeZone')`; `hiddenModules` deduped, max 4.
 - Defaults: `system`, `en`, `null`, `12h`, `monday`, `D_MMM_YYYY`, `home`, `[]`, and `composerDefaultWhen` = whatever the composer does today when Schedule is pressed with no time (**Builder call:** read `when-menu.tsx`; existing users must see no change).
 
-**Schema (0088):** `users.preferences jsonb NOT NULL DEFAULT '{}'`. Stored sparse; the service merges defaults on read. The migration also copies each user's most recently updated `planner_preferences.prefs->>'weekStart'` into `preferences.weekStart` when present, so a Planner week-start choice is not lost.
+**Schema (0090):** `users.preferences jsonb NOT NULL DEFAULT '{}'`. Stored sparse; the service merges defaults on read. The migration also copies each user's most recently updated `planner_preferences.prefs->>'weekStart'` into `preferences.weekStart` when present, so a Planner week-start choice is not lost.
 
 **Where each preference takes effect (all in Part A):**
 - `theme`: `ThemeProvider` reads the server value; localStorage keeps a copy for first paint only.
@@ -337,7 +337,7 @@ The matrix is the one built in the email-notifications effort and keeps its API 
 - `GET /users/me/notifications/pause` → `{ pausedUntil: string | null }` (null when unset or past).
 - `PUT /users/me/notifications/pause {until: string | null}` → same. `until` must be in the future and at most 30 days ahead.
 
-**Schema (0088):** `users.notifications_paused_until timestamptz NULL`.
+**Schema (0090):** `users.notifications_paused_until timestamptz NULL`.
 
 **Behaviour:** `NotificationPreferencesService.shouldSend` returns `false` while `paused_until > now()` for every cell that is not locked, except event `post_failed`. Locked "Always" cells and security events always deliver. Pause is per user, all workspaces. Slack routes are workspace routes, not personal, and are **not** paused (**My call:** muting a team channel because one person paused would surprise the team).
 
@@ -378,7 +378,7 @@ The matrix is the one built in the email-notifications effort and keeps its API 
 - `approvalPolicy?: 'none' | 'members' | 'everyone'`, `shortenLinksDefault?: boolean`, `utmDefault?: boolean`.
 - `description` stays accepted but has no UI.
 
-**Schema (0089):** `workspace` gains `approval_policy text NOT NULL DEFAULT 'none' CHECK (approval_policy IN ('none','members','everyone'))`, `shorten_links_default boolean NOT NULL DEFAULT false`, `utm_default boolean NOT NULL DEFAULT false`. **My call:** defaults match today's behaviour (approval is opt-in per draft; the composer switches start off), so nothing changes for existing workspaces until someone chooses.
+**Schema (0091):** `workspace` gains `approval_policy text NOT NULL DEFAULT 'none' CHECK (approval_policy IN ('none','members','everyone'))`, `shorten_links_default boolean NOT NULL DEFAULT false`, `utm_default boolean NOT NULL DEFAULT false`. **My call:** defaults match today's behaviour (approval is opt-in per draft; the composer switches start off), so nothing changes for existing workspaces until someone chooses.
 
 **Behaviour:**
 - **Time zone, "Also move existing":** in one transaction, set every channel in the workspace to the new zone; then, for each SCHEDULED post on those channels, keep the wall-clock time in the new zone and reschedule through the existing reschedule path (cancel job + re-enqueue, as the launched-slot time edit does). Returns `{movedChannels, rescheduledPosts}`; the FE toasts "Moved {n} channels. {m} scheduled posts keep their local time." **Builder call:** above ~500 posts, move the reschedule into a BullMQ job (`tz-move-{workspaceId}`) and toast that it is running.
@@ -427,7 +427,7 @@ Redesign on the existing `/workspace-members` API, plus the invite link, persona
 | Join | **new** `POST /invitations/join/:code` (Jwt) → `{workspaceId}` | joins as MEMBER (ACCEPTED invitation row with `invited_by = owner`); `409 SEAT_LIMIT_EXCEEDED`, `409 ALREADY_MEMBER`, `404` |
 | Seats | existing `GET /billing/workspaces/:ws/usage` | unchanged |
 
-**Schema (0089):** `workspace` gains `invite_link_code varchar(32) UNIQUE NULL`, `invite_link_enabled boolean NOT NULL DEFAULT false`. `workspace_invitations` gains `message text NULL`. Code format: workspace initials, `-`, then 10 Crockford base32 chars from `crypto.randomBytes` (for example `rw-7f2kq9m4xa`). **My call:** the design's 4-char code is guessable for a link that grants a seat. The join routes go in `open-routes.spec.ts`.
+**Schema (0091):** `workspace` gains `invite_link_code varchar(32) UNIQUE NULL`, `invite_link_enabled boolean NOT NULL DEFAULT false`. `workspace_invitations` gains `message text NULL`. Code format: workspace initials, `-`, then 10 Crockford base32 chars from `crypto.randomBytes` (for example `rw-7f2kq9m4xa`). **My call:** the design's 4-char code is guessable for a link that grants a seat. The join routes go in `open-routes.spec.ts`.
 
 **Role label:** `roleLabel` maps GUEST to "Guest" (not "Viewer") everywhere, to match the design. **My call:** one name per role across the app.
 
@@ -504,7 +504,7 @@ interface BillingOverview {
 
 **Model — My call: a join table, not metadata strings.** be-gaps recommended keeping strings in `posts.metadata.labels` plus a catalogue. A join table is chosen instead because rename becomes a row update (no O(posts) rewrite racing composer saves), merge is one `UPDATE … ON CONFLICT DO NOTHING`, counts and "last used" are a `GROUP BY`, and the 10-second undo is a soft delete. The composer API keeps sending and receiving label **names**, so the composer contract does not change; the server translates.
 
-**Schema (0090):**
+**Schema (0092):**
 ```sql
 CREATE TABLE workspace_labels (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -580,9 +580,9 @@ Backfill in the same migration: one catalogue row per distinct (workspace, lower
 
 Login, Google callback, refresh and `JwtStrategy` reject `deleted_at IS NOT NULL` (as they do for suspension). The old email is free to register again; a Google sign-in creates a fresh account.
 
-**Schema (0088 + 0091):**
-- 0088: `users.deleted_at timestamptz NULL`.
-- 0091 `users_fk_set_null`: change the NO ACTION FKs to `ON DELETE SET NULL` — `usage_events.triggered_by_user_id`, `subscription_changes.changed_by_user_id`, `workspace_invitations.invited_by`, the Canva and drips `reviewed_by`/`performed_by` columns, and any other found by the plan's FK audit. The row is no longer deleted, but an admin purge must not 500 either. Also change `workspace.owner_id` from `ON DELETE CASCADE` to `ON DELETE RESTRICT`, so no path can silently delete owned workspaces again.
+**Schema (0090 + 0093):**
+- 0090: `users.deleted_at timestamptz NULL`.
+- 0093 `users_fk_set_null`: change the NO ACTION FKs to `ON DELETE SET NULL` — `usage_events.triggered_by_user_id`, `subscription_changes.changed_by_user_id`, `workspace_invitations.invited_by`, the Canva and drips `reviewed_by`/`performed_by` columns, and any other found by the plan's FK audit. The row is no longer deleted, but an admin purge must not 500 either. Also change `workspace.owner_id` from `ON DELETE CASCADE` to `ON DELETE RESTRICT`, so no path can silently delete owned workspaces again.
 
 **Dialog (F04):** "Delete account" / "This deletes your login, profile and personal settings. It can't be undone." / one blocker row per owned workspace: avatar, name, "You're the owner. Delete it first." (**copy change**, no transfer), outline "Open General" (navigates to that workspace's General) / "Type your email to confirm" (placeholder = the email) / footer note "{workspace names} keep your posts." (only when the user is a member elsewhere) / Cancel, destructive "Delete account" enabled only with no blockers and an exact email match. On success: clear the in-memory token, toast "Your account is deleted", go to the sign-in page.
 
@@ -620,7 +620,7 @@ Somewhat less detail than Part A; endpoints and schema are fixed.
 
 ### 7.1 Sessions (screen 2, "Where you're signed in")
 
-**Schema (0092 `user_sessions`):**
+**Schema (0094 `user_sessions`):**
 ```sql
 CREATE TABLE user_sessions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -656,7 +656,7 @@ CREATE INDEX user_sessions_user_live_idx ON user_sessions (user_id) WHERE revoke
 
 ### 7.2 Two-step sign-in (screens 2b, 2c)
 
-**Schema (0093 `two_factor`):**
+**Schema (0095 `two_factor`):**
 - `users`: `totp_secret_enc text NULL`, `totp_pending_secret_enc text NULL`, `totp_enabled_at timestamptz NULL`, `totp_last_step bigint NULL`, `mfa_failures int NOT NULL DEFAULT 0`, `mfa_locked_until timestamptz NULL`.
 - `user_backup_codes (id uuid pk, user_id fk cascade, code_hash char(64) NOT NULL, used_at timestamptz NULL, created_at timestamptz NOT NULL DEFAULT now())`, index `(user_id) WHERE used_at IS NULL`.
 - `login_challenges (id uuid pk, user_id fk cascade, purpose text NOT NULL CHECK (purpose = 'mfa'), attempts int NOT NULL DEFAULT 0, device_hash char(64), expires_at timestamptz NOT NULL, consumed_at timestamptz NULL, created_at timestamptz NOT NULL DEFAULT now())`.
@@ -712,7 +712,7 @@ CREATE INDEX user_sessions_user_live_idx ON user_sessions (user_id) WHERE revoke
 
 **Data constraint (binding):** never send Threads-API-sourced data to an LLM. Relearn reads only the workspace's own authored post text: `posts` rows created in Schedura for this workspace (content + per-platform content), status published, newest first, up to 120. Nothing fetched from a platform API (channel-page synced posts, inbox, analytics, snapshots) is read. A unit test asserts the relearn query touches only `posts`.
 
-**Schema (0094 `brand_voice`):** `workspace_brand_profiles` gains:
+**Schema (0096 `brand_voice`):** `workspace_brand_profiles` gains:
 - `tone text[] NOT NULL DEFAULT '{}'` (max 4 of Warm, Clear, Playful, Bold, Calm, Formal, Witty, Expert, Friendly; CHECK on values),
 - `description text` (one sentence, ≤240),
 - `words_use text[] NOT NULL DEFAULT '{}'`, `words_avoid text[] NOT NULL DEFAULT '{}'` (≤20 each, ≤40 chars),
@@ -750,7 +750,7 @@ Summary from `GET /brand-kit/workspaces/:id`: colour dots (up to 4), "Logo, colo
 
 ### 8.3 How Maestro works (workspace Maestro settings)
 
-**Schema (0094):** `workspace.maestro_settings jsonb NOT NULL DEFAULT '{}'`, read with defaults `{askBeforeSend: true, webSearch: true, quality: 'balanced', labelAiPosts: false, whoCanUse: 'everyone_except_guests'}`.
+**Schema (0096):** `workspace.maestro_settings jsonb NOT NULL DEFAULT '{}'`, read with defaults `{askBeforeSend: true, webSearch: true, quality: 'balanced', labelAiPosts: false, whoCanUse: 'everyone_except_guests'}`.
 
 **Endpoints:** `GET /workspaces/:ws/maestro-settings` (`settings:view`) and `PATCH /workspaces/:ws/maestro-settings` (`brand:manage`) with a partial body → full object.
 
@@ -771,13 +771,14 @@ Summary from `GET /brand-kit/workspaces/:id`: colour dots (up to 4), "Logo, colo
 
 | File | Part | Contents |
 |---|---|---|
-| `0088_user_account_settings.sql` | A | `users`: `preferences jsonb`, `password_changed_at`, `notifications_paused_until`, `deleted_at`; planner week-start copy |
-| `0089_workspace_settings.sql` | A | `workspace`: `approval_policy`, `shorten_links_default`, `utm_default`, `invite_link_code`, `invite_link_enabled`; `workspace_invitations.message` |
-| `0090_workspace_labels.sql` | A | `workspace_labels`, `post_labels`, backfill |
-| `0091_users_fk_set_null.sql` | A | NO ACTION → SET NULL on user FKs; `workspace.owner_id` → RESTRICT |
-| `0092_user_sessions.sql` | B | `user_sessions` |
-| `0093_two_factor.sql` | B | `users` TOTP columns, `user_backup_codes`, `login_challenges`, `known_devices.mfa_trusted_until` |
-| `0094_brand_voice_maestro_settings.sql` | C | brand profile columns, `workspace.maestro_settings` |
+| `0090_user_account_settings.sql` | A | `users`: `preferences jsonb`, `password_changed_at`, `notifications_paused_until`, `deleted_at`; planner week-start copy |
+| `0091_workspace_settings.sql` | A | `workspace`: `approval_policy`, `shorten_links_default`, `utm_default`, `invite_link_code`, `invite_link_enabled`; `workspace_invitations.message` |
+| `0092_workspace_labels.sql` | A | `workspace_labels`, `post_labels`, backfill |
+| `0093_users_fk_set_null.sql` | A | NO ACTION → SET NULL on user FKs; `workspace.owner_id` → RESTRICT |
+| `0094_user_sessions.sql` | B | `user_sessions` |
+| `0095_two_factor.sql` | B | `users` TOTP columns, `user_backup_codes`, `login_challenges`, `known_devices.mfa_trusted_until` |
+| `0096_brand_voice_maestro_settings.sql` | C | brand profile columns, `workspace.maestro_settings` |
+| `0097_guest_seat_recount.sql` | A | recount `workspace_usage.members_count` as accepted non-guest members (guests use no seat); numbered after Part B/C's reserved files |
 
 Rules: hand-written SQL with a Drizzle schema change in the same commit; `SET LOCAL lock_timeout` on `users`/`workspace`/`posts` ALTERs and an entry in `inbox-lock-timeout.spec.ts`; idempotent where practical (`IF NOT EXISTS`). If another branch lands a migration first, renumber at rebase (filenames order the run).
 

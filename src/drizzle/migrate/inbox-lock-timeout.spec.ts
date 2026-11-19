@@ -38,12 +38,12 @@ import { readMigrations } from './runner';
  * 0083 creates platform_incidents with a foreign key to users (SHARE ROW
  * EXCLUSIVE). 0086 builds an index on posts (SHARE) and 0087 one on
  * error_logs (SHARE), each with a tighter bound of its own, checked below.
- * 0088 adds four columns to users (ACCESS EXCLUSIVE, catalog-only).
- * 0089 adds five columns to workspace and one to workspace_invitations
+ * 0090 adds four columns to users (ACCESS EXCLUSIVE, catalog-only).
+ * 0091 adds five columns to workspace and one to workspace_invitations
  * (ACCESS EXCLUSIVE, catalog-only), then a unique index on workspace (SHARE).
- * 0090 creates workspace_labels and post_labels with foreign keys to
+ * 0092 creates workspace_labels and post_labels with foreign keys to
  * workspace, users, posts and workspace_labels (SHARE ROW EXCLUSIVE on each).
- * 0091 drops and re-adds the foreign keys to users on six tables plus
+ * 0093 drops and re-adds the foreign keys to users on six tables plus
  * workspace.owner_id (ACCESS EXCLUSIVE on each table and on users).
  */
 const FILES = [
@@ -66,10 +66,10 @@ const FILES = [
   '0080_member_soft_removal.sql',
   '0082_error_logs_request_id.sql',
   '0083_platform_status.sql',
-  '0088_user_account_settings.sql',
-  '0089_workspace_settings.sql',
-  '0090_workspace_labels.sql',
-  '0091_users_fk_set_null.sql',
+  '0090_user_account_settings.sql',
+  '0091_workspace_settings.sql',
+  '0092_workspace_labels.sql',
+  '0093_users_fk_set_null.sql',
 ];
 
 const firstStatement = (sql: string): string =>
