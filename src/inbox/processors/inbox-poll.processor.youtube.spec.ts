@@ -20,6 +20,9 @@ describe('InboxPollProcessor.selectYoutubeTargets', () => {
       {} as any,
       {} as any,
       budget as any,
+      // Added last by the non-commentable-media fix (#257); this suite only
+      // exercises the YouTube branch, which never reaches it.
+      {} as any,
     );
   }
 
