@@ -2075,13 +2075,34 @@ export class InstagramService {
     accessToken: string,
     conversationId: string,
     _since?: Date,
+    knownThreadId?: string,
   ): Promise<FetchedDm[]> {
     const [, otherPartyId] = conversationId.split(':');
     if (!otherPartyId) {
       throw new Error(`Invalid IG conversation id: ${conversationId}`);
     }
 
-    // 1) Resolve thread_id from the other party's IGSID.
+    // `_since` is unused on purpose, and the underscore is load-bearing:
+    // Meta exposes no server-side time filter here. `Page Conversations`
+    // states time-based pagination is not available, and for Instagram
+    // the messages edge serves only "the 20 most recent messages in the
+    // conversation" whatever `limit` is asked for. The saving therefore
+    // has to come from not calling at all, which the poller now does by
+    // skipping conversations with nothing newer than the cursor.
+
+    // 1) Resolve thread_id from the other party's IGSID -- unless the
+    //    caller already has it. The conversation list returns it as
+    //    `metadata.thread_id`, and a thread id never changes, so taking
+    //    it from there removes one API call per conversation per cycle.
+    if (knownThreadId) {
+      return this.fetchDmThreadMessages(
+        igUserId,
+        accessToken,
+        conversationId,
+        knownThreadId,
+      );
+    }
+
     const lookupUrl = new URL(
       `${this.instagramApiUrl}/${igUserId}/conversations`,
     );
@@ -2100,6 +2121,32 @@ export class InstagramService {
     const threadId = lookupData.data?.[0]?.id;
     if (!threadId) return [];
 
+    return this.fetchDmThreadMessages(
+      igUserId,
+      accessToken,
+      conversationId,
+      threadId,
+    );
+  }
+
+  /**
+   * Fetch the messages of an already-resolved IG thread.
+   *
+   * Split out of `fetchDmThread` so the poller can supply a thread id it
+   * already holds (the conversation list returns it as
+   * `metadata.thread_id`) instead of paying a lookup call per
+   * conversation per cycle.
+   */
+  private async fetchDmThreadMessages(
+    igUserId: string,
+    accessToken: string,
+    conversationId: string,
+    threadId: string,
+  ): Promise<FetchedDm[]> {
+    // Fallback author id when a message omits `from` (same value the
+    // caller parsed; re-derived here so this method stands alone).
+    const [, otherPartyId] = conversationId.split(':');
+
     // 2) Fetch messages in that thread. IG's attachments shape mirrors FB:
     //    attachments{id,mime_type,image_data,video_data,file_url}.
     // Phase 2.3 — also request `from{profile_pic}` so each incoming message
@@ -2109,7 +2156,10 @@ export class InstagramService {
       'fields',
       'id,message,from{id,username,profile_pic},to,created_time,attachments{id,mime_type,name,image_data,video_data,file_url}',
     );
-    msgUrl.searchParams.set('limit', '100');
+    // Meta serves only "the 20 most recent messages in the conversation"
+    // for Instagram Messaging, so asking for 100 never returned 100 -- it
+    // just made the request look bigger than it was.
+    msgUrl.searchParams.set('limit', '20');
     msgUrl.searchParams.set('access_token', accessToken);
 
     const msgRes = await fetch(msgUrl.toString());

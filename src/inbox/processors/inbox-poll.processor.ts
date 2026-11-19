@@ -16,6 +16,7 @@ import { InstagramService } from '../../channels/services/instagram.service';
 import { InboxDispatcher } from '../services/inbox-dispatcher.service';
 import { InboxService } from '../inbox.service';
 import type { ResolvedChannel } from '../adapters/inbox-adapter.interface';
+import { selectDmConversationsToFetch } from '../lib/dm-poll-window';
 import { NonCommentableMediaError } from '../lib/non-commentable-media.error';
 import { NonCommentableMediaService } from '../services/non-commentable-media.service';
 import { YoutubeInboxBudgetService } from '../services/youtube-inbox-budget.service';
@@ -397,6 +398,7 @@ export class InboxPollProcessor extends WorkerHost {
     // dedups via the (channel_id, platform_item_id) unique constraint.
     // ──────────────────────────────────────────────────────────────────────
     let dmIngested = 0;
+    let dmSwept = false;
     if (
       this.dispatcher.supportsDm(platform) &&
       (platform === 'bluesky' ||
@@ -410,12 +412,39 @@ export class InboxPollProcessor extends WorkerHost {
           `Inbox DM poll: ${platform} channel ${channelId} returned ${conversations.length} conversations (since=${since?.toISOString() ?? 'never'})`,
         );
 
-        for (const convo of conversations) {
+        // Fetching every conversation every cycle is what produced ~4,500
+        // `Application request limit reached` rows on one channel: a quiet
+        // conversation cost two Instagram calls every 30 seconds forever.
+        // Meta offers no server-side time filter here, so the only saving is
+        // not making the call. Quiet conversations are still swept hourly, so
+        // a message cannot be lost if the platform fails to advance its
+        // last-message time.
+        const decision = selectDmConversationsToFetch(
+          conversations,
+          since ?? null,
+          channelRow.lastDmSweepAt ?? null,
+        );
+        if (decision.skipped > 0) {
+          this.logger.debug(
+            `Inbox DM poll: ${platform} channel ${channelId} skipped ${decision.skipped} unchanged conversation(s)`,
+          );
+        }
+        dmSwept = decision.skipped === 0;
+
+        for (const convo of decision.fetch) {
           try {
+            // IG returns the thread id on the conversation list, and a thread
+            // id never changes -- handing it over skips a lookup call per
+            // conversation per cycle. Adapters that ignore it stay correct.
+            const knownThreadId =
+              typeof convo.metadata?.thread_id === 'string'
+                ? convo.metadata.thread_id
+                : undefined;
             const messages = await dmAdapter.fetchConversationMessages(
               channel,
               convo.conversationId,
               since,
+              knownThreadId,
             );
             for (const msg of messages) {
               // Author enrichment fallback: Bluesky's getMessages only returns
@@ -478,7 +507,15 @@ export class InboxPollProcessor extends WorkerHost {
     // Mark channel as polled even if no new items — prevents thrashing on next cron.
     await db
       .update(socialMediaChannels)
-      .set({ lastInboxPollAt: new Date(), updatedAt: new Date() })
+      .set({
+        lastInboxPollAt: new Date(),
+        updatedAt: new Date(),
+        // Only advance the sweep clock when this cycle actually fetched
+        // every conversation. Advancing it on a partial pass would push
+        // the next full sweep an hour further out each time, so a quiet
+        // conversation could go unswept indefinitely.
+        ...(dmSwept ? { lastDmSweepAt: new Date() } : {}),
+      })
       .where(eq(socialMediaChannels.id, channelId));
 
     this.logger.log(
