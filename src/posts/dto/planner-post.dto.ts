@@ -39,11 +39,21 @@ export interface PlannerPostTargetDto {
   heldAt?: string;
   /**
    * Why it is held, present with heldAt: 'channel_paused' (resuming sends
-   * it), 'channel_disconnected' (the undo or a reconnect does), or
+   * it), 'channel_disconnected' (the undo or a reconnect does),
    * 'rate_limited' (nothing to press — it retries itself when the platform's
-   * window reopens, and is failed if its time passes meanwhile).
+   * window reopens, and is failed if its time passes meanwhile), or
+   * 'transient_error' (the platform failed in a way worth retrying — a 503, a
+   * timeout — and it retries itself on a fixed delay, under the same grace).
+   *
+   * Collapsing an unknown reason to 'channel_paused' would tell someone to
+   * resume a channel they never paused, so each self-releasing reason has to
+   * be named here AND in `present-post.ts`.
    */
-  heldReason?: 'channel_paused' | 'channel_disconnected' | 'rate_limited';
+  heldReason?:
+    | 'channel_paused'
+    | 'channel_disconnected'
+    | 'rate_limited'
+    | 'transient_error';
   /** Non-null only when status === 'failed'. */
   failure: PostFailure | null;
 }

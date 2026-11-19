@@ -75,7 +75,8 @@ function presentTarget(
     heldReason:
       status === 'scheduled' && typeof target.heldAt === 'string'
         ? target.heldReason === 'channel_disconnected' ||
-          target.heldReason === 'rate_limited'
+          target.heldReason === 'rate_limited' ||
+          target.heldReason === 'transient_error'
           ? target.heldReason
           : 'channel_paused'
         : undefined,

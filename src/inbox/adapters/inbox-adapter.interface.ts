@@ -251,6 +251,12 @@ export interface PlatformDmAdapter {
     channel: ResolvedChannel,
     conversationId: string,
     since?: Date,
+    /**
+     * A platform thread id the caller already holds, from the conversation
+     * list's `metadata`. Adapters that would otherwise spend a lookup call
+     * resolving it may use this; ignoring it must stay correct.
+     */
+    knownThreadId?: string,
   ): Promise<FetchedDm[]>;
 
   /**

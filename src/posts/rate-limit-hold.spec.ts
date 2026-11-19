@@ -75,7 +75,12 @@ describe('a rate-limited target is held, not failed', () => {
 
 describe('the hold releases itself', () => {
   it('enqueues a job at the retry time, so the reconciler stays out of it', () => {
-    expect(service).toMatch(/enqueueHeldPost\([\s\S]{0,160}delayMs: rateLimitRetryMs/);
+    // The delay is passed, whatever the local is called. A second
+    // self-releasing reason (a transient platform failure) now shares this one
+    // job, so the variable is the soonest of the two rather than the
+    // rate limit's own - asserting its NAME would fail on that refactor while
+    // the invariant held.
+    expect(service).toMatch(/enqueueHeldPost\([\s\S]{0,200}delayMs:/);
   });
 
   /**
@@ -84,7 +89,7 @@ describe('the hold releases itself', () => {
    * left in exactly the shape the reconciler repairs.
    */
   it('does not throw when the queue is unavailable', () => {
-    const tail = service.slice(service.indexOf('delayMs: rateLimitRetryMs'));
+    const tail = service.slice(service.indexOf('delayMs:'));
     expect(tail.slice(0, 700)).toMatch(/catch/);
   });
 
@@ -96,7 +101,9 @@ describe('the hold releases itself', () => {
 
 describe('the six-hour grace has one definition', () => {
   it('lives in the hold library', () => {
-    expect(held).toMatch(/export const PUBLISH_LATE_GRACE_MS = 6 \* 60 \* 60 \* 1000/);
+    expect(held).toMatch(
+      /export const PUBLISH_LATE_GRACE_MS = 6 \* 60 \* 60 \* 1000/,
+    );
   });
 
   /**
@@ -155,7 +162,13 @@ describe('the app-wide limit is not a customer quota', () => {
 describe('the grace is enforced before the publish, not after', () => {
   it('checks lateness before releaseTarget strips the hold', () => {
     const graceAt = service.indexOf('isMissedRelease(post.scheduledAt');
-    const releaseAt = service.indexOf('const target = releaseTarget(storedTarget)');
+    // `reattemptTarget` (not `releaseTarget`) since the attempt also has to
+    // clear the previous failure's status and code; the ordering property
+    // this test guards is unchanged - the grace is judged BEFORE the hold
+    // markers are stripped.
+    const releaseAt = service.indexOf(
+      'const target = reattemptTarget(storedTarget)',
+    );
     const publishAt = service.indexOf('this.publishToChannel(post, target)');
     expect(graceAt).toBeGreaterThan(-1);
     expect(graceAt).toBeLessThan(releaseAt);
@@ -163,13 +176,22 @@ describe('the grace is enforced before the publish, not after', () => {
   });
 
   it('reads the stored target, whose hold markers still exist', () => {
-    const block = service.slice(service.indexOf('isMissedRelease(post.scheduledAt') - 200);
-    expect(block.slice(0, 260)).toMatch(/storedTarget\.heldReason === HELD_REASON_RATE_LIMITED/);
+    const block = service.slice(
+      service.indexOf('isMissedRelease(post.scheduledAt') - 200,
+    );
+    // Judged on the STORED target's hold, before the publish. Expressed via
+    // `isSelfReleasing` now that a transient platform failure is held the same
+    // way; the property under test is unchanged.
+    expect(block.slice(0, 260)).toMatch(/isSelfReleasing\(storedTarget\)/);
   });
 
   it('reuses the shared missed-release helper and message', () => {
-    expect(service).toMatch(/isMissedRelease\(\s*post\.scheduledAt,\s*PUBLISH_LATE_GRACE_MS/);
-    const block = service.slice(service.indexOf('isMissedRelease(post.scheduledAt'));
+    expect(service).toMatch(
+      /isMissedRelease\(\s*post\.scheduledAt,\s*PUBLISH_LATE_GRACE_MS/,
+    );
+    const block = service.slice(
+      service.indexOf('isMissedRelease(post.scheduledAt'),
+    );
     expect(block.slice(0, 500)).toMatch(/MISSED_HELD_MESSAGE/);
   });
 });
@@ -201,7 +223,10 @@ describe('a rate-limit hold is not a user-caused hold', () => {
    * fires into a paused target and re-holds it — the post never publishes.
    */
   it('a channel reconnect leaves a rate-limit hold alone', () => {
-    expect(pauseService).toMatch(/heldReason !== HELD_REASON_RATE_LIMITED/);
+    // One predicate for every self-releasing reason, rather than a comparison
+    // per reason: the release paths were written against `rate_limited` alone
+    // and all had to be found again when a second appeared.
+    expect(pauseService).toMatch(/!isSelfReleasing\(t\)/);
   });
 });
 
@@ -213,12 +238,28 @@ describe('what the customer is told', () => {
    */
   it('reports rate_limited rather than calling it a pause', () => {
     expect(presenter).toMatch(/target\.heldReason === 'rate_limited'/);
+    // Each self-releasing reason has to be named here: an unlisted one
+    // collapses to 'channel_paused' and tells the author to resume a channel
+    // they never paused.
+    expect(presenter).toMatch(/target\.heldReason === 'transient_error'/);
   });
 
-  it('the planner DTO carries the third reason', () => {
-    expect(read('posts/dto/planner-post.dto.ts')).toMatch(
-      /'channel_paused' \| 'channel_disconnected' \| 'rate_limited'/,
-    );
+  it('the planner DTO carries every hold reason', () => {
+    // Asserted per member, not as one line: the union went multi-line when a
+    // fourth reason (`transient_error`) was added, and a single-line pattern
+    // failed while the DTO was perfectly correct.
+    const dto = read('posts/dto/planner-post.dto.ts');
+    for (const reason of [
+      'channel_paused',
+      'channel_disconnected',
+      'rate_limited',
+      'transient_error',
+    ]) {
+      expect({ reason, inDto: dto.includes(`'${reason}'`) }).toEqual({
+        reason,
+        inDto: true,
+      });
+    }
   });
 
   /**
