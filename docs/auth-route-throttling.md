@@ -124,14 +124,59 @@ config name with **no separator** (`THROTTLER:LIMITdefault`).
 
 Mutation-tested:
 
-| Mutation                                               | Tests that fail |
-| ------------------------------------------------------ | --------------- |
-| remove the `login` throttle                            | 3               |
-| swap `ClientIpThrottlerGuard` → plain `ThrottlerGuard` | 2               |
-| loosen `login` from 10 to 1000                         | 1               |
-| **add a new unbounded public route**                   | **1**           |
+| Mutation                                                 | Tests that fail |
+| -------------------------------------------------------- | --------------- |
+| remove the `login` throttle                              | 3               |
+| swap `ClientIpThrottlerGuard` → plain `ThrottlerGuard`   | 2               |
+| loosen `login` from 10 to 1000                           | 1               |
+| **add a new unbounded public route**                     | **1**           |
+| remove the human 429 body (back to `ThrottlerException`) | 10              |
+| drop the 1-second floor on the wait                      | 2               |
 
-The last is the one the net exists for.
+The unbounded-route one is what the net exists for.
+
+## The 429 had to be worth showing
+
+`@nestjs/throttler` throws with the literal message
+`"ThrottlerException: Too Many Requests"`, and `lib/api.ts` on the frontend puts
+a failed request's `message` straight into a toast. So a limited sign-in would
+have told the person, verbatim:
+
+> ThrottlerException: Too Many Requests
+
+That is the same failure the `admin/challenge` comment already records in
+another form — a 429 the UI could only describe as "could not reach the server".
+Shipping the limits without this would have reintroduced it.
+
+`ClientIpThrottlerGuard` therefore overrides `throwThrottlingException` (not
+just `getErrorMessage`, which would fix the sentence and still leave a body with
+no machine-readable tag) and answers:
+
+```json
+{
+  "statusCode": 429,
+  "error": "Too Many Requests",
+  "code": "RATE_LIMITED",
+  "message": "Too many attempts. Try again in 3 minutes.",
+  "retryAfterSeconds": 180
+}
+```
+
+`retryAfterSeconds` is deliberately that name: the frontend's
+`resendCooldownFrom` already reads exactly this field off a 429 to drive its
+countdown, so the existing code picks it up with no change. The value is
+`timeToBlockExpire`, the same number the guard puts in `Retry-After`, floored at
+1 — a sub-second remainder would otherwise read "try again in 0s" and send the
+person straight into another 429.
+
+### A test that was green and testing nothing
+
+The first version of the guard spec caught the exception with a synchronous
+`try/catch`. The base `throwThrottlingException` is `async`, so its throw is a
+**rejected promise** a sync catch cannot see — which meant the tests only ever
+exercised the override (which throws synchronously), and deleting the override
+crashed the Jest worker with an unhandled rejection instead of failing a test.
+Awaiting the call fixed it: that mutation now fails **10** tests.
 
 ## Deliberately not done
 
