@@ -1,4 +1,5 @@
 import {
+  ForbiddenException,
   BadGatewayException,
   BadRequestException,
   ConflictException,
@@ -132,13 +133,29 @@ export class AccountDeletionService {
     input: DeleteAccountInput,
   ): Promise<void> {
     const [user] = await this.db
-      .select({ email: users.email, deletedAt: users.deletedAt })
+      .select({
+        email: users.email,
+        deletedAt: users.deletedAt,
+        role: users.role,
+      })
       .from(users)
       .where(eq(users.id, userId))
       .limit(1);
     if (!user) throw new NotFoundException('User not found');
     // Already deleted (an admin retry): nothing left to do.
     if (user.deletedAt) return;
+
+    // DELETE /users/:id never takes out a platform super admin: one admin
+    // must not be able to remove another (or the last one) from the admin
+    // tool. Their own DELETE /users/me, with the typed email, is unchanged.
+    if (input.actor === 'super_admin' && user.role === 'SUPER_ADMIN') {
+      throw new ForbiddenException({
+        statusCode: 403,
+        error: 'Forbidden',
+        code: 'SUPER_ADMIN_NOT_DELETABLE',
+        message: 'A super admin account cannot be deleted from the admin tool.',
+      });
+    }
 
     if (
       input.actor === 'self' &&

@@ -1,4 +1,5 @@
 import {
+  ForbiddenException,
   BadGatewayException,
   BadRequestException,
   ConflictException,
@@ -16,7 +17,7 @@ import { AccountDeletionService } from './account-deletion.service';
  * writes is proven against Postgres in account-deletion.db.spec.ts.
  */
 function setup(opts: {
-  user?: { email: string; deletedAt: Date | null } | null;
+  user?: { email: string; deletedAt: Date | null; role?: string } | null;
   owned?: { id: string; name: string }[];
   cancel?: () => Promise<unknown>;
   leftWorkspaces?: string[] | null;
@@ -162,6 +163,34 @@ describe('AccountDeletionService.deleteAccount', () => {
       changedByUserId: 'admin-1',
       goneIsCancelled: true,
     });
+  });
+
+  it('a super admin target is 403 SUPER_ADMIN_NOT_DELETABLE from the admin tool, before billing or any write', async () => {
+    const { service, db, subscriptions } = setup({
+      user: { email: 'boss@example.com', deletedAt: null, role: 'SUPER_ADMIN' },
+    });
+    const result = service.deleteAccount('u1', {
+      actor: 'super_admin',
+      actorId: 'admin-1',
+    });
+    await expect(result).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(result).rejects.toMatchObject({
+      response: { code: 'SUPER_ADMIN_NOT_DELETABLE' },
+    });
+    expect(subscriptions.cancelForAccount).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('a super admin may still delete their own account with the typed email', async () => {
+    const { service, db } = setup({
+      user: { email: 'boss@example.com', deletedAt: null, role: 'SUPER_ADMIN' },
+    });
+    await service.deleteAccount('u1', {
+      confirmEmail: 'boss@example.com',
+      actor: 'self',
+      actorId: 'u1',
+    });
+    expect(db.transaction).toHaveBeenCalledTimes(1);
   });
 
   it('an unknown user is 404', async () => {
