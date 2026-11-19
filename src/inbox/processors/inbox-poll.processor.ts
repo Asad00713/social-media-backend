@@ -16,6 +16,8 @@ import { InstagramService } from '../../channels/services/instagram.service';
 import { InboxDispatcher } from '../services/inbox-dispatcher.service';
 import { InboxService } from '../inbox.service';
 import type { ResolvedChannel } from '../adapters/inbox-adapter.interface';
+import { NonCommentableMediaError } from '../lib/non-commentable-media.error';
+import { NonCommentableMediaService } from '../services/non-commentable-media.service';
 import { YoutubeInboxBudgetService } from '../services/youtube-inbox-budget.service';
 import { livePosts } from '../../posts/soft-delete/soft-delete';
 
@@ -74,6 +76,9 @@ export class InboxPollProcessor extends WorkerHost {
     private readonly facebookService: FacebookService,
     private readonly instagramService: InstagramService,
     private readonly youtubeBudget: YoutubeInboxBudgetService,
+    // LAST on purpose: existing tests construct this positionally, so a new
+    // parameter inserted earlier silently shifts every one of them.
+    private readonly nonCommentable: NonCommentableMediaService,
   ) {
     super();
   }
@@ -176,15 +181,20 @@ export class InboxPollProcessor extends WorkerHost {
         mediaItems: posts.mediaItems,
       })
       .from(posts)
-      .where(and(and(
-          eq(posts.workspaceId, channelRow.workspaceId),
-          eq(posts.status, 'published'),
-          gte(posts.publishedAt, windowStart),
-          // jsonb-contains: ensure this channel is one of the targets
-          sql`${posts.targets} @> ${JSON.stringify([
-            { channelId: String(channelId) },
-          ])}::jsonb`,
-        ), livePosts()))
+      .where(
+        and(
+          and(
+            eq(posts.workspaceId, channelRow.workspaceId),
+            eq(posts.status, 'published'),
+            gte(posts.publishedAt, windowStart),
+            // jsonb-contains: ensure this channel is one of the targets
+            sql`${posts.targets} @> ${JSON.stringify([
+              { channelId: String(channelId) },
+            ])}::jsonb`,
+          ),
+          livePosts(),
+        ),
+      )
       .orderBy(desc(posts.publishedAt))
       .limit(MAX_POSTS_PER_RUN);
 
@@ -203,11 +213,15 @@ export class InboxPollProcessor extends WorkerHost {
             (x: PostTarget) => String(x.channelId) === String(channelId),
           );
           return t?.platformPostId
-            ? { platformPostId: t.platformPostId, publishedAt: post.publishedAt }
+            ? {
+                platformPostId: t.platformPostId,
+                publishedAt: post.publishedAt,
+              }
             : null;
         })
-        .filter((c): c is { platformPostId: string; publishedAt: Date | null } =>
-          Boolean(c),
+        .filter(
+          (c): c is { platformPostId: string; publishedAt: Date | null } =>
+            Boolean(c),
         );
       try {
         youtubeAllowed = await this.selectYoutubeTargets(channelId, candidates);
@@ -227,12 +241,29 @@ export class InboxPollProcessor extends WorkerHost {
       }
     }
 
+    // Media the platform has already told us has no comments edge — a Story,
+    // a deleted post. Permanent, so asking again is pure waste: one Story was
+    // polled 20,169 times in seven days before this existed.
+    const skipIds = await this.nonCommentable.knownFor(
+      channelId,
+      recent
+        .map(
+          (post) =>
+            (post.targets ?? []).find(
+              (t: PostTarget) => String(t.channelId) === String(channelId),
+            )?.platformPostId,
+        )
+        .filter((id): id is string => Boolean(id)),
+    );
+
     for (const post of recent) {
       const target = (post.targets ?? []).find(
         (t: PostTarget) => String(t.channelId) === String(channelId),
       );
       if (!target?.platformPostId) continue;
-      if (youtubeAllowed && !youtubeAllowed.has(target.platformPostId)) continue;
+      if (youtubeAllowed && !youtubeAllowed.has(target.platformPostId))
+        continue;
+      if (skipIds.has(target.platformPostId)) continue;
 
       try {
         const items = await adapter.fetchComments(
@@ -299,6 +330,22 @@ export class InboxPollProcessor extends WorkerHost {
           );
         }
       } catch (err) {
+        if (err instanceof NonCommentableMediaError) {
+          // Not a failure: the platform says this media has no comments edge
+          // and never will. Recorded so the next cycle skips it, and logged
+          // at `log` once rather than `error` every 30 seconds — an
+          // un-throttled error() here is what produced 20,169 rows in
+          // `error_logs` in a week.
+          await this.nonCommentable.remember(
+            channelId,
+            err.platformPostId,
+            err.reason,
+          );
+          this.logger.log(
+            `Inbox poll: ${platform} media ${err.platformPostId} has no comments edge (${err.reason}) — recorded, will not be polled again`,
+          );
+          continue;
+        }
         this.logger.error(
           `Inbox poll: fetch failed for post ${post.id} (${target.platformPostId}) on channel ${channelId}: ${(err as Error).message}`,
         );
@@ -547,7 +594,10 @@ export class InboxPollProcessor extends WorkerHost {
       .where(eq(socialMediaChannels.id, channel.id));
 
     // Keep the in-memory copy consistent so the same poll run resolves.
-    channel.metadata = { ...(channel.metadata ?? {}), igWebhookId: info.userId };
+    channel.metadata = {
+      ...(channel.metadata ?? {}),
+      igWebhookId: info.userId,
+    };
 
     this.logger.log(
       `Inbox poll: backfilled igWebhookId=${info.userId} for channel ${channel.id} (platformAccountId=${channel.platformAccountId})`,

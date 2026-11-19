@@ -1,3 +1,7 @@
+import {
+  NonCommentableMediaError,
+  nonCommentableReason,
+} from '../../inbox/lib/non-commentable-media.error';
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import type {
   FetchedDm,
@@ -1681,16 +1685,13 @@ export class InstagramService {
         // Same graceful handling as the FB poller — Stories / Reels / deleted
         // media may not expose a /comments edge. Catch (#100) / "nonexisting
         // field" errors here so a single bad media doesn't crash the poll.
-        if (
-          res.status === 400 &&
-          (/code"\s*:\s*100/.test(errText) ||
-            /nonexisting field/i.test(errText) ||
-            /aliases you requested do not exist/i.test(errText))
-        ) {
-          this.logger.warn(
-            `Instagram fetchMediaComments: media ${mediaId} has no comments edge (story / deleted / non-commentable) — skipping`,
-          );
-          return out;
+        // Thrown, not swallowed: "no comments" and "no comments edge" look
+        // identical to the caller, and only one of them is worth asking about
+        // again. One Story was polled 20,169 times in seven days because this
+        // returned an empty array. The inbox adapter records it and stops.
+        const nonCommentable = nonCommentableReason(res.status, errText);
+        if (nonCommentable) {
+          throw new NonCommentableMediaError(mediaId, nonCommentable);
         }
         this.logger.error(`Instagram fetchMediaComments failed: ${errText}`);
         throw new Error(`Instagram fetchMediaComments failed: ${res.status}`);

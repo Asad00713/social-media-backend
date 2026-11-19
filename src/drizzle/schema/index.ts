@@ -35,6 +35,7 @@ export * from './workspace-brand-profile.schema';
 export * from './calendar-notes.schema';
 export * from './planner-preferences.schema';
 export * from './inbox-conversations.schema';
+export * from './inbox-non-commentable.schema';
 export * from './inbox-notes.schema';
 export * from './inbox-saved-replies.schema';
 export * from './inbox-user-settings.schema';
