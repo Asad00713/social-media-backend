@@ -6,6 +6,11 @@ import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
 import express from 'express';
+import type { Request, Response, NextFunction } from 'express';
+import {
+  processRole,
+  servesHttp,
+} from './common/process-role/process-role';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppLoggerService } from './logs/app-logger.service';
 import { LogWriterService } from './logs/log-writer.service';
@@ -199,8 +204,36 @@ async function bootstrap() {
   app.useLogger(appLogger);
   app.useGlobalFilters(app.get(AllExceptionsFilter));
 
+  // A `worker` process still LISTENS -- Railway's healthcheck has to reach
+  // it, and a container that never binds a port is treated as a failed
+  // deploy and restarted forever. What it must not do is serve ordinary
+  // API traffic: that is the whole point of the split, since a request
+  // answered here would again be queued behind a publish on this event
+  // loop.
+  //
+  // Registered as middleware rather than by dropping controllers so the
+  // health routes keep working unchanged, and so a misrouted request
+  // fails loudly with 404 instead of being served quietly.
+  const role = processRole();
+  if (!servesHttp(role)) {
+    app.use((req: Request, res: Response, next: NextFunction) => {
+      if (req.path === '/health' || req.path.startsWith('/health/')) {
+        return next();
+      }
+      res.status(404).json({
+        statusCode: 404,
+        error: 'Not Found',
+        message: 'This process serves background jobs only.',
+      });
+    });
+  }
+
   const port = process.env.PORT ?? 8000;
   await app.listen(port, '0.0.0.0');
-  console.log(`Application is running on port ${port}`);
+  console.log(
+    `Application is running on port ${port} (role=${role}, http=${
+      servesHttp(role) ? 'all routes' : 'health only'
+    })`,
+  );
 }
 bootstrap();
