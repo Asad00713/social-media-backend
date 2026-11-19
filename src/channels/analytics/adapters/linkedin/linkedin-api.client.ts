@@ -1,3 +1,7 @@
+import {
+  LINKEDIN_REST_VERSION,
+  LINKEDIN_VERSION_HEADER,
+} from '../../../lib/linkedin-version';
 import type {
   LinkedInUserInfo,
   LinkedInPostsResponse,
@@ -70,7 +74,12 @@ export class LinkedInApiClient {
       Authorization: `Bearer ${accessToken}`,
     };
     if (useRestApi) {
-      headers['LinkedIn-Version'] = '202402';
+      // Shared with the publishing path on purpose. This adapter sat on a
+      // hard-coded '202402' for about two and a half years while publishing
+      // moved on, and LinkedIn answered every analytics call with 426
+      // "Requested version 20240201 is not active" — so analytics returned
+      // nothing while publishing worked. See channels/lib/linkedin-version.ts.
+      headers[LINKEDIN_VERSION_HEADER] = LINKEDIN_REST_VERSION;
       headers['X-Restli-Protocol-Version'] = '2.0.0';
     }
     const res = await this.fetchImpl(url, { headers });
