@@ -131,13 +131,20 @@ export class RepeatPostsService {
         ),
       } satisfies DraftApproval;
     }
+    // Held when the source carries an approval that no longer covers it
+    // (pending, rejected, or stale after an edit) - whether the author asked
+    // for it themselves or the policy did. A copy of such a post must not
+    // publish as if approved; only a grant that still covers the source is
+    // carried (re-pinned above). With NO approval at all, only the policy
+    // holds it.
     const held =
       !sourceApproved &&
-      ((await this.approvalPolicy?.coversAuthor(
-        post.workspaceId,
-        post.createdById,
-      )) ??
-        false);
+      (sourceApproval !== null ||
+        ((await this.approvalPolicy?.coversAuthor(
+          post.workspaceId,
+          post.createdById,
+        )) ??
+          false));
     if (held) {
       // The policy demands a request on a covered author's post.
       if (!readApproval(nextMetadata)) {

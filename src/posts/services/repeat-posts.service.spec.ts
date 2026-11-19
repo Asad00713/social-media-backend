@@ -458,5 +458,51 @@ describe('RepeatPostsService.ensureNext with "Use your variations"', () => {
       expect(inserts[0].status).toBe('scheduled');
       expect(queue.add).toHaveBeenCalledTimes(1);
     });
+
+    it('a stale VOLUNTARY grant on an uncovered author: the next post is a held draft, not scheduled', async () => {
+      // The author asked for approval themselves (no policy), it was granted,
+      // then the content was edited: the grant no longer covers the source.
+      // The copy must not publish as if it had been approved.
+      const original = post();
+      const fired = post({
+        metadata: {
+          ...original.metadata,
+          firstComment: 'edited',
+          approval: grantFor(original),
+        },
+      });
+      const { svc, inserts, queue } = make({ covers: false });
+      await expect(svc.ensureNext(fired, NOW)).resolves.toBe(NEXT_ID);
+      expect(inserts).toHaveLength(1);
+      expect(inserts[0]).toMatchObject({ status: 'draft', jobId: null });
+      expect(readApproval(inserts[0].metadata)).toMatchObject({
+        approvedAt: null,
+      });
+      expect(queue.add).not.toHaveBeenCalled();
+    });
+
+    it('a still-pending voluntary request on an uncovered author: the next post is a held draft', async () => {
+      const fired = post({
+        metadata: {
+          ...post().metadata,
+          approval: newApprovalRequest('u1', new Date('2026-10-01T00:00:00Z')),
+        },
+      });
+      const { svc, inserts, queue } = make({ covers: false });
+      await svc.ensureNext(fired, NOW);
+      expect(inserts[0]).toMatchObject({ status: 'draft', jobId: null });
+      expect(queue.add).not.toHaveBeenCalled();
+    });
+
+    it('a valid voluntary grant on an uncovered author still re-pins and schedules', async () => {
+      const original = post();
+      const fired = post({
+        metadata: { ...original.metadata, approval: grantFor(original) },
+      });
+      const { svc, inserts, queue } = make({ covers: false });
+      await svc.ensureNext(fired, NOW);
+      expect(inserts[0].status).toBe('scheduled');
+      expect(queue.add).toHaveBeenCalledTimes(1);
+    });
   });
 });
