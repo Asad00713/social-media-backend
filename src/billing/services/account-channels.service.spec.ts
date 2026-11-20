@@ -221,3 +221,138 @@ describe('AccountChannelsService.getUsage', () => {
     expect(usage.available).toBe(Number.MAX_SAFE_INTEGER);
   });
 });
+
+describe('AccountChannelsService - paid-only platforms (X)', () => {
+  const FREE_SUB = { id: 1, planCode: 'FREE', status: 'active' };
+  const PRO_SUB = { id: 1, planCode: 'PRO', status: 'active' };
+
+  async function codeOf(p: Promise<unknown>): Promise<unknown> {
+    try {
+      await p;
+    } catch (e) {
+      expect(e).toBeInstanceOf(ForbiddenException);
+      return ((e as ForbiddenException).getResponse() as { code?: string })
+        .code;
+    }
+    return 'ALLOWED';
+  }
+
+  describe('assertPlatformAllowed (the final write)', () => {
+    it('refuses X on a FREE account', async () => {
+      const { service } = makeService({
+        findByUserId: jest.fn().mockResolvedValue(FREE_SUB),
+      });
+      await expect(
+        codeOf(service.assertPlatformAllowed('user-1', 'twitter')),
+      ).resolves.toBe('PLAN_UPGRADE_REQUIRED');
+    });
+
+    it('refuses X with no subscription at all', async () => {
+      const { service } = makeService({
+        findByUserId: jest.fn().mockResolvedValue(null),
+      });
+      await expect(
+        codeOf(service.assertPlatformAllowed('user-1', 'twitter')),
+      ).resolves.toBe('PLAN_UPGRADE_REQUIRED');
+    });
+
+    it('refuses X on a paid plan that is not active (past_due)', async () => {
+      const { service } = makeService({
+        findByUserId: jest
+          .fn()
+          .mockResolvedValue({ ...PRO_SUB, status: 'past_due' }),
+      });
+      await expect(
+        codeOf(service.assertPlatformAllowed('user-1', 'twitter')),
+      ).resolves.toBe('PLAN_UPGRADE_REQUIRED');
+    });
+
+    it('allows X on an active paid plan', async () => {
+      const { service } = makeService({
+        findByUserId: jest.fn().mockResolvedValue(PRO_SUB),
+      });
+      await expect(
+        codeOf(service.assertPlatformAllowed('user-1', 'twitter')),
+      ).resolves.toBe('ALLOWED');
+    });
+
+    it('allows every other platform on FREE without reading the plan', async () => {
+      const { service, lookup } = makeService({
+        findByUserId: jest.fn().mockResolvedValue(FREE_SUB),
+      });
+      await expect(
+        codeOf(service.assertPlatformAllowed('user-1', 'linkedin')),
+      ).resolves.toBe('ALLOWED');
+      expect(lookup.findByUserId).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('assertCanStartConnect (the OAuth start)', () => {
+    it('refuses a new X connect on a FREE workspace', async () => {
+      const { service } = makeService({
+        findByUserId: jest.fn().mockResolvedValue(FREE_SUB),
+      });
+      jest.spyOn(service, 'hasChannelOn').mockResolvedValue(false);
+      await expect(
+        codeOf(service.assertCanStartConnect('ws-1', 'twitter')),
+      ).resolves.toBe('PLAN_UPGRADE_REQUIRED');
+    });
+
+    // The frontend's reconnect goes through the same initiate route, and the
+    // callback (createChannel) still refuses a NEW account if one is added.
+    it('lets a FREE workspace that already holds an X channel start (reconnect)', async () => {
+      const { service, lookup } = makeService({
+        findByUserId: jest.fn().mockResolvedValue(FREE_SUB),
+      });
+      const has = jest.spyOn(service, 'hasChannelOn').mockResolvedValue(true);
+      await expect(
+        codeOf(service.assertCanStartConnect('ws-1', 'twitter')),
+      ).resolves.toBe('ALLOWED');
+      expect(has).toHaveBeenCalledWith('ws-1', 'twitter');
+      expect(lookup.findByUserId).not.toHaveBeenCalled();
+    });
+
+    it('allows a new X connect on a paid workspace', async () => {
+      const { service } = makeService({
+        findByUserId: jest.fn().mockResolvedValue(PRO_SUB),
+      });
+      jest.spyOn(service, 'hasChannelOn').mockResolvedValue(false);
+      await expect(
+        codeOf(service.assertCanStartConnect('ws-1', 'twitter')),
+      ).resolves.toBe('ALLOWED');
+    });
+
+    it('leaves other platforms alone on FREE', async () => {
+      const { service } = makeService({
+        findByUserId: jest.fn().mockResolvedValue(FREE_SUB),
+      });
+      const has = jest.spyOn(service, 'hasChannelOn');
+      await expect(
+        codeOf(service.assertCanStartConnect('ws-1', 'linkedin')),
+      ).resolves.toBe('ALLOWED');
+      expect(has).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('platformAccessForUser (what the frontend badges from)', () => {
+    it('FREE: X is paid-only and the plan is not paid', async () => {
+      const { service } = makeService({
+        findByUserId: jest.fn().mockResolvedValue(FREE_SUB),
+      });
+      await expect(service.platformAccessForUser('user-1')).resolves.toEqual({
+        isPaidPlan: false,
+        paidOnlyPlatforms: ['twitter'],
+      });
+    });
+
+    it('PRO: the plan is paid', async () => {
+      const { service } = makeService({
+        findByUserId: jest.fn().mockResolvedValue(PRO_SUB),
+      });
+      await expect(service.platformAccessForUser('user-1')).resolves.toEqual({
+        isPaidPlan: true,
+        paidOnlyPlatforms: ['twitter'],
+      });
+    });
+  });
+});

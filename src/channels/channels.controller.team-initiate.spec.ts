@@ -30,7 +30,11 @@ const USER = '22222222-2222-4222-8222-222222222222';
 const LINK = '33333333-3333-4333-8333-333333333333';
 
 function build() {
-  const oauth = new OAuthService();
+  // The paid-only start gate (oauth.service.paid-only.spec.ts) is not under
+  // test here: these platforms are not paid-only.
+  const oauth = new OAuthService({
+    assertCanStartConnect: () => Promise.resolve(),
+  } as never);
   jest
     .spyOn(
       oauth as unknown as { getPlatformCredentials: () => Promise<unknown> },

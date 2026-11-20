@@ -15,7 +15,11 @@ import {
   NewUsageEvent,
 } from '../../drizzle/schema';
 import { SubscriptionLookupService } from './subscription-lookup.service';
-import { AccountChannelsService } from './account-channels.service';
+import {
+  AccountChannelsService,
+  type PlatformAccess,
+} from './account-channels.service';
+import { PAID_ONLY_PLATFORMS } from '../paid-only-platforms';
 import { resolveMaxWorkspaces } from './limit-resolver.util';
 import { channelLimitReached } from './channel-limit.error';
 
@@ -129,6 +133,25 @@ export class UsageService {
       extraAiTokensPurchased: u.extraAiTokensPurchased,
       aiTokensResetDate: u.aiTokensResetDate,
     };
+  }
+
+  /**
+   * What `GET /billing/workspaces/:id/usage` answers: the usage numbers plus
+   * which platforms need a paid plan to connect (`paidOnlyPlatforms`) and
+   * whether this workspace's account is on one (`isPaidPlan`), so the connect
+   * UI can badge X on a free plan instead of finding out from the 403.
+   * Kept off getWorkspaceUsage itself: the seat and channel guards call that
+   * and need no extra subscription read.
+   */
+  async getWorkspaceUsageView(
+    workspaceId: string,
+  ): Promise<UsageLimits & PlatformAccess> {
+    const usage = await this.getWorkspaceUsage(workspaceId);
+    const ownerId = await this.lookup.getOwnerId(workspaceId);
+    const access: PlatformAccess = ownerId
+      ? await this.accountChannels.platformAccessForUser(ownerId)
+      : { isPaidPlan: false, paidOnlyPlatforms: [...PAID_ONLY_PLATFORMS] };
+    return { ...usage, ...access };
   }
 
   /**

@@ -332,6 +332,16 @@ export class ChannelService {
       ? await this.accountChannels.ownerOf(workspaceId)
       : null;
 
+    // A NEW channel of a paid-only platform (X) needs a paid plan: 403
+    // PLAN_UPGRADE_REQUIRED before anything is written. Every connect path
+    // ends here, so this is the gate a bypassed OAuth start cannot skip. The
+    // reconnect / revival branch above has already returned: a channel the
+    // workspace holds keeps working on any plan. (Paid-only platforms are all
+    // billable, so `ownerId` is set for them.)
+    if (ownerId) {
+      await this.accountChannels.assertPlatformAllowed(ownerId, dto.platform);
+    }
+
     // Get platform config for defaults
     const platformConfig = PLATFORM_CONFIG[dto.platform];
 
