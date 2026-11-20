@@ -87,11 +87,19 @@ jest.mock('../../drizzle/db', () => ({ db: mockDb }));
 import { ChannelService } from './channel.service';
 import { AccountChannelsService } from '../../billing/services/account-channels.service';
 
-function make(subscription: Record<string, unknown> | null) {
-  // The REAL gate, reading the owner's plan through a stubbed lookup; only the
-  // advisory-lock ceiling (covered by its own specs) is taken out.
+function make(
+  subscription: Record<string, unknown> | null,
+  // The plan of the user doing the connecting ('u1'). Defaults to the owner's,
+  // so a spec only passes it when the two must differ.
+  actorSubscription: Record<string, unknown> | null = subscription,
+) {
+  // The REAL gate, reading the OWNER's plan through a stubbed lookup (the
+  // acting user has a subscription of their own, which must be ignored); only
+  // the advisory-lock ceiling (covered by its own specs) is taken out.
   const accountChannels = new AccountChannelsService({
-    findByUserId: jest.fn(async () => subscription),
+    findByUserId: jest.fn(async (id: string) =>
+      id === 'owner-1' ? subscription : actorSubscription,
+    ),
     getOwnerId: jest.fn(async () => 'owner-1'),
   } as never);
   jest
@@ -162,6 +170,22 @@ describe('ChannelService.createChannel - X is paid-only', () => {
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ForbiddenException);
     expect(inserted).toHaveLength(0);
+  });
+
+  // The plan that counts is the WORKSPACE OWNER's, not the acting user's: an
+  // agency owner's clients and teammates connect on the owner's plan.
+  it("checks the OWNER's plan: a free owner is refused though the acting user is paid", async () => {
+    const err = await make(FREE, PRO)
+      .createChannel('ws', 'u1', xDto)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ForbiddenException);
+    expect(inserted).toHaveLength(0);
+  });
+
+  it("checks the OWNER's plan: a paid owner is allowed though the acting user is free", async () => {
+    await make(PRO, FREE).createChannel('ws', 'u1', xDto);
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0]).toMatchObject({ platform: 'twitter' });
   });
 
   it('adds a new X channel on a paid workspace', async () => {

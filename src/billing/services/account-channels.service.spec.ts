@@ -322,6 +322,37 @@ describe('AccountChannelsService - paid-only platforms (X)', () => {
       ).resolves.toBe('ALLOWED');
     });
 
+    // The plan that counts is the workspace OWNER's ('owner-1' here), never
+    // the acting user's: ownerOf resolves it and only that id is looked up.
+    describe("reads the OWNER's plan, not the acting user's", () => {
+      const byUser = (owner: unknown, actor: unknown) => (id: string) =>
+        Promise.resolve(id === 'owner-1' ? owner : actor);
+
+      it('refuses when the owner is FREE although another user is paid', async () => {
+        const { service, lookup } = makeService({
+          getOwnerId: jest.fn().mockResolvedValue('owner-1'),
+          findByUserId: jest.fn(byUser(FREE_SUB, PRO_SUB)),
+        });
+        jest.spyOn(service, 'hasChannelOn').mockResolvedValue(false);
+        await expect(
+          codeOf(service.assertCanStartConnect('ws-1', 'twitter')),
+        ).resolves.toBe('PLAN_UPGRADE_REQUIRED');
+        expect(lookup.findByUserId).toHaveBeenCalledWith('owner-1');
+      });
+
+      it('allows when the owner is paid although another user is FREE', async () => {
+        const { service, lookup } = makeService({
+          getOwnerId: jest.fn().mockResolvedValue('owner-1'),
+          findByUserId: jest.fn(byUser(PRO_SUB, FREE_SUB)),
+        });
+        jest.spyOn(service, 'hasChannelOn').mockResolvedValue(false);
+        await expect(
+          codeOf(service.assertCanStartConnect('ws-1', 'twitter')),
+        ).resolves.toBe('ALLOWED');
+        expect(lookup.findByUserId).toHaveBeenCalledWith('owner-1');
+      });
+    });
+
     it('leaves other platforms alone on FREE', async () => {
       const { service } = makeService({
         findByUserId: jest.fn().mockResolvedValue(FREE_SUB),

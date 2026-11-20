@@ -208,6 +208,30 @@ export class AccountChannelsService {
     await this.assertPlatformAllowed(await this.ownerOf(workspaceId), platform);
   }
 
+  /**
+   * Refuse to CREATE a connect link that offers a paid-only platform (X) when
+   * the workspace owner is not on a paid plan: the same 403
+   * PLAN_UPGRADE_REQUIRED, so the sender hears it when making the link, not
+   * the client at the end of it. No `hasChannelOn` exemption here: a link
+   * invites NEW accounts, which is exactly what the plan gates. Links already
+   * created are not touched; the start gate refuses them when visited.
+   */
+  async assertCanOfferNetworks(
+    workspaceId: string,
+    networks: readonly string[],
+  ): Promise<void> {
+    const gated = networks.filter(isPaidOnlyPlatform);
+    if (gated.length === 0) return;
+    const planCode = await this.planCodeForUser(
+      await this.ownerOf(workspaceId),
+    );
+    for (const platform of gated) {
+      if (!isPlatformAllowedOnPlan(platform, planCode)) {
+        throw planUpgradeRequired(platform as SupportedPlatform);
+      }
+    }
+  }
+
   /** Does this workspace hold any channel row of this platform? */
   async hasChannelOn(
     workspaceId: string,

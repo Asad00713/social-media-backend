@@ -244,15 +244,23 @@ describe('UsageService.getWorkspaceUsageView', () => {
     const platformAccessForUser = jest.fn(() =>
       Promise.resolve({ isPaidPlan, paidOnlyPlatforms: ['twitter'] }),
     );
+    const getOwnerId = jest.fn(() => Promise.resolve(owner));
     const service = new UsageService(
-      {
-        getOwnerId: jest.fn(() => Promise.resolve(owner)),
-      } as unknown as SubscriptionLookupService,
+      { getOwnerId } as unknown as SubscriptionLookupService,
       { platformAccessForUser } as never,
     );
-    jest.spyOn(service, 'getWorkspaceUsage').mockResolvedValue(BASE as never);
-    return { service, platformAccessForUser };
+    const getWorkspaceUsage = jest
+      .spyOn(service, 'getWorkspaceUsage')
+      .mockResolvedValue(BASE as never);
+    return { service, platformAccessForUser, getOwnerId, getWorkspaceUsage };
   }
+
+  it('resolves the owner once and hands it to the usage read', async () => {
+    const { service, getOwnerId, getWorkspaceUsage } = make('owner-1', true);
+    await service.getWorkspaceUsageView('ws-1');
+    expect(getOwnerId).toHaveBeenCalledTimes(1);
+    expect(getWorkspaceUsage).toHaveBeenCalledWith('ws-1', 'owner-1');
+  });
 
   it('adds the paid-only platforms and isPaidPlan=false on FREE', async () => {
     const { service, platformAccessForUser } = make('owner-1', false);

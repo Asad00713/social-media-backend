@@ -90,8 +90,12 @@ export class UsageService {
     private readonly accountChannels: AccountChannelsService,
   ) {}
 
-  // Get usage limits for a workspace
-  async getWorkspaceUsage(workspaceId: string): Promise<UsageLimits> {
+  // Get usage limits for a workspace. `ownerId` is passed by a caller that
+  // already resolved it (`undefined` = look it up here; `null` = no owner).
+  async getWorkspaceUsage(
+    workspaceId: string,
+    ownerId?: string | null,
+  ): Promise<UsageLimits> {
     const usage = await db
       .select()
       .from(workspaceUsage)
@@ -112,9 +116,12 @@ export class UsageService {
     // connect path enforces. Reading this workspace's own row here would show a
     // customer a limit that is not the one being applied to them.
     // Members stay per-workspace.
-    const ownerId = await this.lookup.getOwnerId(workspaceId);
-    const channels = ownerId
-      ? await this.accountChannels.getUsage(ownerId)
+    const owner =
+      ownerId === undefined
+        ? await this.lookup.getOwnerId(workspaceId)
+        : ownerId;
+    const channels = owner
+      ? await this.accountChannels.getUsage(owner)
       : { used: u.channelsCount, limit: u.channelsLimit, available: 0 };
 
     return {
@@ -146,8 +153,8 @@ export class UsageService {
   async getWorkspaceUsageView(
     workspaceId: string,
   ): Promise<UsageLimits & PlatformAccess> {
-    const usage = await this.getWorkspaceUsage(workspaceId);
     const ownerId = await this.lookup.getOwnerId(workspaceId);
+    const usage = await this.getWorkspaceUsage(workspaceId, ownerId);
     const access: PlatformAccess = ownerId
       ? await this.accountChannels.platformAccessForUser(ownerId)
       : { isPaidPlan: false, paidOnlyPlatforms: [...PAID_ONLY_PLATFORMS] };
