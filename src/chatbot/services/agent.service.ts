@@ -60,7 +60,17 @@ export type AgentSSEEvent =
   | { event: 'media'; data: { items: MediaItem[] } }
   | { event: 'post_preview'; data: { previews: PostPreviewData[] } }
   | { event: 'error'; data: { message: string } }
-  | { event: 'done'; data: Record<string, never> };
+  // `done` carries the real token spend of the whole run, so the caller can
+  // charge what the loop actually cost. The loop already accumulates it
+  // across every iteration and every provider; before this it had nowhere to
+  // go, which is why chatbot.service.ts fell back to estimating from the
+  // reply's character count — a figure that ignores the system prompt, the
+  // history, the tool results and all but the last iteration.
+  //
+  // Optional because the providers report usage best-effort: a stream that
+  // ends without a usage chunk leaves it undefined rather than zero, so the
+  // caller can tell "nothing reported" from "nothing spent".
+  | { event: 'done'; data: { totalTokens?: number; modelUsed?: string } };
 
 export interface AgentResult {
   content: string;
@@ -449,7 +459,17 @@ export class AgentService {
       yield { event: 'followups', data: { suggestions: followups } };
     }
 
-    yield { event: 'done', data: {} };
+    // Report the run's real spend so the caller charges the loop, not the
+    // length of its last reply. `totalTokens` is the sum over every iteration
+    // of what the provider reported; it stays 0 if no provider reported any,
+    // which is reported as undefined rather than a false zero.
+    yield {
+      event: 'done',
+      data: {
+        ...(totalTokens > 0 && { totalTokens }),
+        modelUsed: model,
+      },
+    };
   }
 
   /**

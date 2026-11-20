@@ -86,6 +86,9 @@ function make(status: string) {
     postService as never,
     {} as never,
     {} as never,
+    // Added last by the drip metering fix: these suites exercise the
+    // held / review branches, which return before any AI spend.
+    {} as never,
   );
   return { processor, postService };
 }

@@ -19,19 +19,27 @@ import {
 import { and, eq, sql } from 'drizzle-orm';
 import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
-// Token costs per operation
+// Token costs per operation.
+//
+// These are CREDITS, not Anthropic tokens: a fixed price per operation, which
+// is why the numbers are small and round. The real API usage is recorded on
+// `ai_usage_log` (apiInputTokens/apiOutputTokens) but never drives the
+// deduction. That keeps a user's balance predictable, and it puts the burden
+// on this table to stay in line with what each operation actually costs us.
+//
+// What every credit is worth, measured 2026-11-20: a text operation runs on
+// Haiku 5.5 ($0.10/$0.50 per MTok) and costs us about $0.000054 per credit.
+// Keep new operations near that figure, or they are priced wrong.
 export const AI_OPERATION_COSTS: Record<string, number> = {
   // Tier 1 - Basic (2 tokens)
   generate_hashtags: 2,
   generate_bio: 2,
-  generate_alt_text: 2, // one image description from a vision model
   // Tier 2 - Standard (5 tokens)
   generate_post: 5,
   generate_caption: 5,
   improve_post: 5,
   repurpose_content: 5,
   translate_content: 5,
-  speech_to_text: 5, // Voice input transcription
   suggest_reply: 5, // one inbox reply draft
   first_week_draft: 5, // one drafted post of the Home "first week"
   finish_draft: 5, // composer Maestro: continue a half-written caption
@@ -50,6 +58,47 @@ export const AI_OPERATION_COSTS: Record<string, number> = {
   generate_thread: 10,
   // Tier 5 - Premium (15 tokens per platform)
   generate_drip_content: 15,
+  // Tier 6 - Vision (200 tokens)
+  //
+  // Alt text is the one operation that sends an IMAGE to a vision model, and
+  // it is two orders of magnitude more expensive than any text operation:
+  //
+  //   - the model is Sonnet 5.5, not Haiku 5.5 — 20x the per-token price
+  //     (alt-text.service.ts picks Claude whenever ANTHROPIC_API_KEY is set,
+  //     so this is the production path, not a fallback)
+  //   - the image itself is ~800–1,400 input tokens. Claude charges
+  //     (width x height) / 750, and Cloudinary caps the long edge at 1024
+  //     (`vision.ts`), so a square photo alone is ~1,400 tokens before the
+  //     prompt
+  //   - `max_tokens` is 2048 to leave room for the model's thinking, which
+  //     bills as output
+  //
+  // Measured worst case: ~$0.0121 per description. At the old price of 2
+  // credits that was ~$0.00011 charged — undercharging by about 112x, so a
+  // Basic workspace spending its whole allowance on alt text cost us $33
+  // against $5 of revenue. Bulk media upload reaches that honestly.
+  //
+  // 200 credits puts it back in line with every other operation. If this ever
+  // needs to be cheaper for users, move it to Haiku 5.5 (~12 credits) and
+  // accept weaker descriptions — but alt text is an accessibility feature
+  // read by people who cannot see the image, so quality is the point.
+  generate_alt_text: 200,
+  // Tier 7 - Audio (200 tokens)
+  //
+  // Transcription is billed by the MINUTE by the provider, not by the token,
+  // which is why it does not belong in the text tiers either. ElevenLabs
+  // Scribe is $0.20 per hour of audio, and `elevenlabs-stt.service.ts` caps a
+  // clip at 180 seconds, so the worst case is 3 minutes = $0.010 per call —
+  // 37x what 5 credits were worth. A Basic workspace spending its allowance
+  // on voice input cost us $20 against $5 of revenue.
+  //
+  // Priced at the cap rather than per second: the service already refuses
+  // anything over 3 minutes, so this is a real ceiling, and a flat price is
+  // what makes a credit balance predictable. It does mean a 20-second note
+  // costs the same as a 3-minute one; if that proves unpopular, charge
+  // per 30 seconds of `durationSeconds` (which the service already receives)
+  // instead of adding a second flat tier.
+  speech_to_text: 200,
 };
 
 export interface TokenCheckResult {

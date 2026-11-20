@@ -209,12 +209,19 @@ export class ChatbotService {
             this.logger.error(`Failed to save assistant message: ${error}`);
           }
 
-          // Record token usage (non-blocking)
-          const estimatedTokens = Math.ceil(
-            (assistantContent.length + message.length) / 4,
-          );
+          // Record token usage (non-blocking).
+          //
+          // Prefer the run's REAL token spend, which the agent loop now
+          // reports on `done`. The chars/4 figure below stays only as a
+          // fallback for a provider that reported no usage at all; it
+          // undercounts by roughly 20-100x because it ignores the system
+          // prompt, the history, the tool results and all but the last of up
+          // to MAX_ITERATIONS calls.
+          const chargedTokens =
+            event.data.totalTokens ??
+            Math.ceil((assistantContent.length + message.length) / 4);
           this.tokenTracking
-            .recordUsage(workspaceId, userId, estimatedTokens, 'chat', {
+            .recordUsage(workspaceId, userId, chargedTokens, 'chat', {
               inputSummary: message.substring(0, 200),
               outputLength: assistantContent.length,
             })
@@ -494,6 +501,23 @@ export class ChatbotService {
       throw new NotFoundException('Conversation not found');
     }
 
+    // Same budget gate as processMessage. Without it, regenerate was a free
+    // and unlimited path to the whole agent loop (up to MAX_ITERATIONS model
+    // calls plus a follow-ups call), pressable indefinitely past an exhausted
+    // balance. Checked BEFORE deleting the last assistant message, so a
+    // refusal leaves the conversation exactly as it was.
+    const budget = await this.tokenTracking.checkBudget(workspaceId);
+    if (budget.exceeded) {
+      yield {
+        event: 'error',
+        data: {
+          message: `You've used all ${budget.limit.toLocaleString()} AI tokens for this month. Upgrade your plan or purchase additional tokens to continue.`,
+        },
+      };
+      yield { event: 'done', data: {} };
+      return;
+    }
+
     // Delete last assistant message and get the triggering user message
     const lastUserMsg =
       await this.conversationService.deleteLastAssistantMessage(conversationId);
@@ -582,6 +606,27 @@ export class ChatbotService {
           } catch (error) {
             this.logger.error(`Failed to save regenerated message: ${error}`);
           }
+
+          // Charge for the regeneration, the same way processMessage charges
+          // for a first response. A regenerate costs us a full agent loop, so
+          // leaving it unbilled let one conversation spend without limit.
+          //
+          // Real token spend from the loop, with the chars/4 estimate only as
+          // a fallback when no provider reported usage — same rule as
+          // processMessage, so the two paths charge alike.
+          const regeneratedTokens =
+            event.data.totalTokens ??
+            Math.ceil(
+              (assistantContent.length + lastUserMsg.content.length) / 4,
+            );
+          this.tokenTracking
+            .recordUsage(workspaceId, userId, regeneratedTokens, 'chat', {
+              inputSummary: lastUserMsg.content.substring(0, 200),
+              outputLength: assistantContent.length,
+            })
+            .catch((err) =>
+              this.logger.warn(`Token recording failed (regenerate): ${err}`),
+            );
         }
 
         yield event;
