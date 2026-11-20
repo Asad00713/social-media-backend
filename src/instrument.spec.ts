@@ -9,6 +9,7 @@ type Hooks = {
   beforeSendTransaction: (event: Record<string, any>) => Record<string, any>;
   beforeSendSpan: (span: Record<string, any>) => Record<string, any>;
   enabled: boolean;
+  release: string;
   sendDefaultPii: boolean;
 };
 
@@ -40,6 +41,31 @@ describe('Sentry initialisation', () => {
     expect(load({ SENTRY_DSN: 'https://k@o.ingest.sentry.io/1' }).enabled).toBe(
       true,
     );
+  });
+
+  describe('release', () => {
+    it('is schedura-backend@<version>+<short sha> on a Railway deploy', () => {
+      const { release } = load({
+        SENTRY_RELEASE: undefined,
+        RAILWAY_GIT_COMMIT_SHA: '2b47f00aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      });
+      expect(release).toMatch(/^schedura-backend@\d+\.\d+\.\d+\+2b47f00$/);
+    });
+
+    it('uses +dev with no deploy stamp', () => {
+      const { release } = load({
+        SENTRY_RELEASE: undefined,
+        RAILWAY_GIT_COMMIT_SHA: undefined,
+        GIT_COMMIT: undefined,
+      });
+      expect(release).toMatch(/^schedura-backend@\d+\.\d+\.\d+\+dev$/);
+    });
+
+    it('keeps a SENTRY_RELEASE override', () => {
+      expect(load({ SENTRY_RELEASE: 'ci-release-7' }).release).toBe(
+        'ci-release-7',
+      );
+    });
   });
 
   it('never lets Sentry attach PII of its own', () => {

@@ -1,5 +1,6 @@
 import { ServiceUnavailableException } from '@nestjs/common';
 import { HealthController } from './health.controller';
+import { APP_COMMIT, APP_VERSION } from '../common/app-version';
 
 function makeDeps(opts: {
   dbOk?: boolean;
@@ -47,6 +48,31 @@ describe('HealthController', () => {
       const result = new HealthController(pool as never, redis as never).live();
 
       expect(result).toEqual({ status: 'ok' });
+      expect(pool.query).not.toHaveBeenCalled();
+      expect(redis.ping).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /health/version', () => {
+    it('reports the version and short commit, and nothing else', () => {
+      const { pool, redis } = makeDeps({ dbOk: false, redisOk: false });
+
+      const result = new HealthController(
+        pool as never,
+        redis as never,
+      ).version();
+
+      // Exact shape: adding a field here (env, host, region) is a decision,
+      // not an accident - the route is unauthenticated.
+      expect(result).toEqual({ version: APP_VERSION, commit: APP_COMMIT });
+      expect(Object.keys(result).sort()).toEqual(['commit', 'version']);
+      expect(result.version).toMatch(/^\d+\.\d+\.\d+/);
+      expect(result.commit).toMatch(/^([0-9a-f]{7}|dev)$/);
+    });
+
+    it('checks no dependency', () => {
+      const { pool, redis } = makeDeps();
+      new HealthController(pool as never, redis as never).version();
       expect(pool.query).not.toHaveBeenCalled();
       expect(redis.ping).not.toHaveBeenCalled();
     });
