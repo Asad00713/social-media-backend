@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { WorkspaceController } from './workspace.controller';
 import { WorkspaceService } from './workspace.service';
+import { WorkspacePurgeService } from './workspace-purge.service';
 import { PassportModule } from '@nestjs/passport';
 import { JwtModule } from '@nestjs/jwt';
 import { AuthModule } from 'src/auth/auth.module';
@@ -35,6 +36,10 @@ import { WorkspaceTimezoneMoveProcessor } from './workspace-timezone-move.proces
     WorkspaceService,
     WorkspaceTimezoneMoveService,
     WorkspaceTimezoneMoveProcessor,
+    // Was declared with @Cron but never provided anywhere, so Nest never
+    // instantiated it and its cron never registered. Soft-deleted
+    // workspaces were therefore never hard-deleted.
+    WorkspacePurgeService,
   ],
   exports: [WorkspaceService],
 })
