@@ -125,6 +125,16 @@ export class CronLockBootstrap implements OnApplicationBootstrap {
     this.logger.log(
       `Cron single-run lock active on ${wrapped} of ${jobs.size} job(s)`,
     );
+
+    // The count alone cannot answer "which ones?". Production logs 27
+    // while `grep -c '@Cron(' src/` finds 28, and with only a number there
+    // is no way to tell from a running system which declaration is missing
+    // -- or whether a future one silently stops registering. Unnamed crons
+    // appear here as the UUID Nest assigns them, which is itself the clue
+    // that they were declared without a `name`.
+    this.logger.debug(
+      `Cron jobs registered: ${[...jobs.keys()].sort().join(', ')}`,
+    );
     if (skipped.length > 0) {
       // Loud, because an unwrapped job is one that will double-fire once a
       // second process exists.
