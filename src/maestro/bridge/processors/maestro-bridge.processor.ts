@@ -17,6 +17,10 @@ import {
   type PendingChoice,
 } from '../services/bridge-link.service';
 import type { MaestroChannelLink } from '../../../drizzle/schema/maestro-links.schema';
+import {
+  MAESTRO_BRIDGE_COMING_SOON_TEXT,
+  MaestroLaunch,
+} from '../../maestro-launch';
 
 /** Idle gap after which the next bridge message starts a fresh session/thread. */
 const SESSION_GAP_MS = 12 * 60 * 60 * 1000;
@@ -66,6 +70,8 @@ export class MaestroBridgeProcessor extends WorkerHost {
     private readonly workspaces: WorkspaceService,
     private readonly events: AnalyticsEventEmitter,
     private readonly config: ConfigService,
+    // Last on purpose: positional fakes in older specs keep their slots.
+    private readonly launch: MaestroLaunch,
   ) {
     super();
   }
@@ -78,11 +84,84 @@ export class MaestroBridgeProcessor extends WorkerHost {
     }>,
   ): Promise<void> {
     const channel = job.data.channel ?? 'telegram';
+    if (!this.launch.isEnabled()) {
+      await this.answerComingSoon(channel, job.data);
+      return;
+    }
     if (channel === 'whatsapp') {
       await this.handleWhatsApp(job.data.payload ?? {});
       return;
     }
     await this.handleTelegram(job.data.update ?? {});
+  }
+
+  // ==========================================================================
+  // Launch gate (MAESTRO_ENABLED is not 'true')
+  // ==========================================================================
+
+  /**
+   * While Maestro is OFF the bridge answers every inbound message with ONE
+   * fixed line and does nothing else: no agent turn, no conversation, no link
+   * (a `/start <token>` is answered the same way, so nobody is half-linked to
+   * an assistant that cannot answer), no DB read at all.
+   *
+   * "Once per message" rides on the existing enqueue dedup: both webhook doors
+   * key the job on Telegram's `update_id` / WhatsApp's message id, so a
+   * replayed delivery never becomes a second job. This method then never
+   * throws -- a send that fails is logged, not rethrown -- so the job's
+   * `attempts: 2` cannot turn one message into two replies either.
+   */
+  private async answerComingSoon(
+    channel: 'telegram' | 'whatsapp',
+    data: {
+      update?: Record<string, unknown>;
+      payload?: Record<string, unknown>;
+    },
+  ): Promise<void> {
+    const text = MAESTRO_BRIDGE_COMING_SOON_TEXT;
+    const sendSafely = async (send: () => Promise<void>) => {
+      try {
+        await send();
+      } catch (err) {
+        this.logger.warn(
+          `bridge coming-soon reply failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    };
+
+    if (channel === 'whatsapp') {
+      const pnid = this.config.get<string>('MAESTRO_WHATSAPP_PHONE_NUMBER_ID');
+      if (!pnid) return; // bridge not configured
+      // Same filter as the live path: only text sent to OUR number.
+      const messages = parseWhatsAppMessages(data.payload ?? {}).filter(
+        (m) =>
+          m.isText && m.phoneNumberId === pnid && m.fromWaId && m.text.trim(),
+      );
+      for (const m of messages) {
+        await sendSafely(() => this.whatsappReplier(m.fromWaId).sendText(text));
+      }
+      return;
+    }
+
+    const update = data.update ?? {};
+    const callback = update.callback_query as TelegramCallbackQuery | undefined;
+    if (callback) {
+      // Stop the client's spinner on a stale button from before the switch.
+      await this.tg()
+        .answerCallbackQuery(callback.id)
+        .catch(() => undefined);
+      const chatId = callback.message?.chat?.id;
+      if (!chatId || !callback.from?.id) return;
+      await sendSafely(() => this.telegramReplier(chatId).sendText(text));
+      return;
+    }
+    const msg = (update.message ?? null) as TelegramMessage | null;
+    if (!msg?.chat?.id || !msg.from?.id) return;
+    if (!String(msg.text ?? '').trim()) return;
+    const chatId = msg.chat.id;
+    await sendSafely(() => this.telegramReplier(chatId).sendText(text));
   }
 
   // ==========================================================================

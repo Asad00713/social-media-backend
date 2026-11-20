@@ -25,6 +25,7 @@ import { MentionSearchService } from './services/mention-search.service';
 // campaign posts with normal posts the way the Planner screen does.
 import { DripModule } from '../drips/drip.module';
 import { MaestroController } from './maestro.controller';
+import { MaestroLaunch, MaestroLaunchGuard } from './maestro-launch';
 import { MaestroService } from './services/maestro.service';
 import { MaestroKeyService } from './services/maestro-key.service';
 import { ClaudeAgentSdkRuntime } from './runtime/claude-agent-sdk.runtime';
@@ -84,6 +85,10 @@ import { MaestroBridgeProcessor } from './bridge/processors/maestro-bridge.proce
   ],
   controllers: [MaestroController],
   providers: [
+    // The launch switch (MAESTRO_ENABLED) -- read by the controller guard and
+    // the bridge processor. See maestro-launch.ts.
+    MaestroLaunch,
+    MaestroLaunchGuard,
     MaestroService,
     MentionSearchService,
     MaestroKeyService,
