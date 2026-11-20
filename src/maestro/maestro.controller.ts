@@ -17,6 +17,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { WorkspaceAccessService } from '../workspace-members/workspace-access.service';
 import { MaestroService } from './services/maestro.service';
+import { MaestroLaunchGuard } from './maestro-launch';
 import {
   MentionSearchService,
   MENTION_TYPES,
@@ -34,8 +35,18 @@ import {
   SetMaestroToneDto,
 } from './dto/send-message.dto';
 
+/**
+ * `MaestroLaunchGuard` closes EVERY route here while `MAESTRO_ENABLED` is not
+ * 'true' (403 MAESTRO_COMING_SOON) -- reads and settings included. Gating the
+ * whole controller is the simple, consistent choice: the frontend hides
+ * Maestro anyway, several "settings" routes are not read-only (saving a key
+ * calls Anthropic to validate it, link-token mints a bridge link, creating a
+ * conversation writes a row), and a per-route list is the one somebody
+ * forgets to extend. It runs after `JwtAuthGuard`, so an anonymous caller
+ * still gets 401, not a hint that Maestro exists.
+ */
 @Controller('maestro')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, MaestroLaunchGuard)
 export class MaestroController {
   private readonly logger = new Logger(MaestroController.name);
 
