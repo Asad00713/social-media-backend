@@ -9,6 +9,7 @@ import type { Pool } from 'pg';
 import type Redis from 'ioredis';
 import { DRIZZLE_POOL } from '../drizzle/drizzle.module';
 import { REDIS_CLIENT } from '../channels/analytics/redis-client.provider';
+import { APP_COMMIT, APP_VERSION } from '../common/app-version';
 
 /** How long a dependency gets to answer before readiness calls it down. */
 const PROBE_TIMEOUT_MS = 3_000;
@@ -45,6 +46,16 @@ export class HealthController {
   @Get('live')
   live(): { status: 'ok' } {
     return { status: 'ok' };
+  }
+
+  /**
+   * Which build is this? Version from package.json, short git SHA from the
+   * deploy platform. Nothing else — no environment, host, region or
+   * dependency versions, which would help an attacker more than support.
+   */
+  @Get('version')
+  version(): { version: string; commit: string } {
+    return { version: APP_VERSION, commit: APP_COMMIT };
   }
 
   /**

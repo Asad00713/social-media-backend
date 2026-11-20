@@ -18,6 +18,7 @@ import { AllExceptionsFilter } from './logs/all-exceptions.filter';
 import { REQUEST_ID_HEADER, requestIdMiddleware } from './logs/request-context';
 import { SAMPLE_ASSET_ROUTE } from './media-library/samples/sample-content';
 import { sampleAssetsMiddleware } from './media-library/samples/sample-assets';
+import { APP_VERSION_HEADER, appVersionMiddleware } from './common/app-version';
 import { bodyShapeMiddleware } from './common/validation/body-shape.middleware';
 
 /**
@@ -47,6 +48,10 @@ async function bootstrap() {
   // request that fails in a parser answers with an X-Request-Id header. The
   // AsyncLocalStorage scope opens later, in LogsModule. See request-context.ts.
   app.use(requestIdMiddleware);
+
+  // X-App-Version on every response: which build answered. Cheap, and it
+  // turns "is the fix deployed yet?" into a header lookup.
+  app.use(appVersionMiddleware);
 
   // Without this, SIGTERM kills the process mid-job on every deploy: a post
   // being published is left stranded in `publishing` forever, because the
@@ -88,7 +93,11 @@ async function bootstrap() {
     credentials: true,
     // The frontend reads the PDF file name from Content-Disposition, and an
     // error's id from X-Request-Id ("Copy error ID" on an error toast).
-    exposedHeaders: ['Content-Disposition', REQUEST_ID_HEADER],
+    exposedHeaders: [
+      'Content-Disposition',
+      REQUEST_ID_HEADER,
+      APP_VERSION_HEADER,
+    ],
   });
 
   // Slack Events API: capture raw body BEFORE the global JSON parser so that

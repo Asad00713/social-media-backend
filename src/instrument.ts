@@ -1,6 +1,7 @@
 import * as Sentry from '@sentry/nestjs';
 import { redactTokenUrls } from './logs/redact-token-urls';
 import { redactSensitivePath } from './logs/redact-path';
+import { sentryRelease } from './common/app-version';
 
 /**
  * Sentry initialisation.
@@ -85,6 +86,10 @@ Sentry.init({
   enabled: !!process.env.SENTRY_DSN,
 
   environment: process.env.NODE_ENV ?? 'development',
+
+  // schedura-backend@<version>+<short sha>, so an error names the build that
+  // threw it. SENTRY_RELEASE still overrides. See common/app-version.ts.
+  release: sentryRelease(),
 
   // 10% of requests carry a performance trace — enough to spot a slow
   // endpoint, far short of the free tier's span quota. Read from env so it
