@@ -7,7 +7,7 @@ release: [docs/releasing.md](docs/releasing.md).
 
 ## [Unreleased]
 
-## [1.0.0] - Launch
+## [1.0.0] - 2026-11-20
 
 First production release.
 
@@ -35,5 +35,5 @@ First production release.
 - Each cron now runs on one process per tick; web and worker roles can be split
   with `ROLE`.
 
-[Unreleased]: https://github.com/Asad00713/socialmedia-workspace/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/Asad00713/socialmedia-workspace/releases/tag/v1.0.0
+[Unreleased]: https://github.com/Asad00713/social-media-backend/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Asad00713/social-media-backend/releases/tag/v1.0.0
