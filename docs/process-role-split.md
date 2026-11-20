@@ -1,6 +1,6 @@
 # Splitting web from worker
 
-One process currently serves HTTP, runs all 28 crons and processes all 24
+One process currently serves HTTP, runs 28 cron declarations and processes all 24
 BullMQ queues. A heavy publish blocks the same event loop that answers the
 dashboard, and the two cannot be scaled apart.
 
@@ -79,16 +79,22 @@ The code is deployed and inert until these steps are taken.
 In **both** services' logs:
 
 ```
-Cron single-run lock active on 28 of 28 job(s)
+Cron single-run lock active on 27 of 27 job(s)
 ```
 
 Then, per role:
 
 | Service | Expected |
 | ------- | -------- |
-| web     | `Role 'web': paused 24 of 24 BullMQ worker(s)` and `Role 'web': stopped 28 of 28 cron job(s)` |
+| web     | `Role 'web': paused 25 of 25 BullMQ worker(s)` and `Role 'web': stopped N of N cron job(s)` |
 | worker  | `Role 'worker': BullMQ workers active` and `Role 'worker': cron jobs active` |
 
+The counts are what the registries actually hold, which is not the same as
+the number of decorators in the source: production logs **27 of 27** crons
+while `grep -c '@Cron('` over `src/` finds **28**, because one lives in a
+module that is not always registered. What matters is that both numbers in a
+line match each other and neither is **0** -- a zero means the gate ran before
+the registry was populated.
 A count of **0** anywhere means the gate ran before the registry was populated,
 so the role is not being enforced — the service is behaving as `all`.
 
