@@ -8,6 +8,7 @@ this repo can find the right page without opening all of them.
 | Doc | Read it when |
 | --- | --- |
 | [`process-role-split.md`](process-role-split.md) | Splitting web from worker. **Has the Railway runbook and the exact log lines to verify.** |
+| [`staging-environment.md`](staging-environment.md) | The `Development` branch → staging setup. ⚠️ **Staging shares the production database**, so it must run `ROLE=web` (no crons, no workers). Migrations still reach production. |
 | [`railway-iac-migration.md`](railway-iac-migration.md) | Railway deploy settings. ⚠️ **Draining must be 30s** — it has reverted to 0 twice. The IaC migration itself is NOT owed (verified 2026-11-19). |
 | [`graceful-shutdown-and-health.md`](graceful-shutdown-and-health.md) | Shutdown ordering, health endpoints. |
 | [`cron-single-run.md`](cron-single-run.md) | Why every cron claims its tick in Redis. Required before any second process exists. |
