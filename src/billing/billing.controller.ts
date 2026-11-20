@@ -163,7 +163,7 @@ export class BillingController {
   @RequireCapability('team:view')
   @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async getWorkspaceUsage(@Param('workspaceId') workspaceId: string) {
-    return await this.usageService.getWorkspaceUsage(workspaceId);
+    return await this.usageService.getWorkspaceUsageView(workspaceId);
   }
 
   @Get('users/workspace-limits')

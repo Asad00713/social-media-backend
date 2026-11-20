@@ -3,6 +3,8 @@ import {
   Logger,
   BadRequestException,
   UnauthorizedException,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { eq, and, gt, sql } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
@@ -19,6 +21,7 @@ import {
   generateCodeChallenge,
 } from '../../common/utils/encryption.util';
 import { InitiateOAuthDto, OAuthUrlResponseDto } from '../dto/channel.dto';
+import { AccountChannelsService } from '../../billing/services/account-channels.service';
 
 /**
  * Returns the scope subset to request based on the user's intent.
@@ -282,6 +285,11 @@ export class OAuthService {
   // OAuth state expiration time (15 minutes)
   private readonly STATE_EXPIRATION_MINUTES = 15;
 
+  constructor(
+    @Inject(forwardRef(() => AccountChannelsService))
+    private readonly accountChannels: AccountChannelsService,
+  ) {}
+
   /**
    * Initiate OAuth flow - generate authorization URL
    */
@@ -296,6 +304,12 @@ export class OAuthService {
     if (!oauthConfig) {
       throw new BadRequestException(`Unsupported platform: ${platform}`);
     }
+
+    // Every OAuth start (team initiate, reconnect, a connect link's public
+    // start) comes through here: a free workspace starting a NEW connect of a
+    // paid-only platform (X) is refused before any state is stored. The
+    // callback's write refuses it again (ChannelService.createChannel).
+    await this.accountChannels.assertCanStartConnect(workspaceId, platform);
 
     // Get platform credentials
     const credentials = await this.getPlatformCredentials(platform);

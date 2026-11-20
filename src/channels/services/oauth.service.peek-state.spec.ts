@@ -42,7 +42,7 @@ describe('OAuthService.peekState', () => {
         additionalData: { connectLinkId: 'l1' },
       },
     ];
-    const peeked = await new OAuthService().peekState('tok-123');
+    const peeked = await new OAuthService({} as never).peekState('tok-123');
     // who the state was started for comes back too: the callback checks the
     // link belongs to that workspace and sender before it answers /c/<token>
     expect(peeked).toEqual({
@@ -71,7 +71,7 @@ describe('OAuthService.peekState', () => {
     /** The expires_at cutoff bound into the query's predicate. */
     async function cutoffOfPeek(): Promise<Date> {
       rows = [{ additionalData: null }];
-      await new OAuthService().peekState('tok');
+      await new OAuthService({} as never).peekState('tok');
       const { params } = new PgDialect().sqlToQuery(
         where.mock.calls[0][0] as SQL,
       );
@@ -101,12 +101,14 @@ describe('OAuthService.peekState', () => {
 
   it('an unknown or expired state -> null', async () => {
     rows = [];
-    await expect(new OAuthService().peekState('gone')).resolves.toBeNull();
+    await expect(
+      new OAuthService({} as never).peekState('gone'),
+    ).resolves.toBeNull();
   });
 
   it('never marks the state used', async () => {
     rows = [{ additionalData: null }];
-    const service = new OAuthService();
+    const service = new OAuthService({} as never);
     await service.peekState('tok');
     const { db } = jest.requireMock<{ db: { update: jest.Mock } }>(
       '../../drizzle/db',

@@ -1,4 +1,10 @@
-import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  forwardRef,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { and, desc, eq, gt, inArray, isNull, lte, or } from 'drizzle-orm';
 import { liveChannel } from '../lib/live-channel';
 import { decrypt } from '../../common/utils/encryption.util';
@@ -11,6 +17,7 @@ import {
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 import { users } from '../../drizzle/schema/users.schema';
 import { workspace } from '../../drizzle/schema/workspace.schema';
+import { AccountChannelsService } from '../../billing/services/account-channels.service';
 import { EmailOutboxService } from '../../email/queue/email-outbox.service';
 import {
   channelConnectLink,
@@ -48,6 +55,8 @@ export class ConnectLinksService {
   constructor(
     @Inject(DRIZZLE) private readonly db: DbType,
     private readonly outbox: EmailOutboxService,
+    @Inject(forwardRef(() => AccountChannelsService))
+    private readonly accountChannels: AccountChannelsService,
   ) {}
 
   async create(
@@ -62,6 +71,9 @@ export class ConnectLinksService {
         'A connect link cannot offer one of those networks.',
       );
     }
+    // X is paid-only: a link may not offer it on a workspace whose owner is
+    // not on a paid plan (403 PLAN_UPGRADE_REQUIRED, before anything is sent).
+    await this.accountChannels.assertCanOfferNetworks(workspaceId, networks);
     const email = dto.email?.trim() || null;
     if (dto.send && !email) {
       throw connectLinkError(

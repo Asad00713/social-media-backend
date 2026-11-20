@@ -10,6 +10,23 @@ import {
 import { SubscriptionLookupService } from './subscription-lookup.service';
 import { UNLIMITED } from './limit-resolver.util';
 import { channelLimitReached } from './channel-limit.error';
+import type { SupportedPlatform } from '../../drizzle/schema/channels.schema';
+import {
+  PAID_ONLY_PLATFORMS,
+  entitledPlanCode,
+  isPaidOnlyPlatform,
+  isPaidPlan,
+  isPlatformAllowedOnPlan,
+  planUpgradeRequired,
+} from '../paid-only-platforms';
+
+/** What the frontend needs to badge paid-only platforms on the connect UI. */
+export interface PlatformAccess {
+  /** The account's entitled plan is not FREE (see entitledPlanCode). */
+  isPaidPlan: boolean;
+  /** Platforms a NEW channel of which needs a paid plan. */
+  paidOnlyPlatforms: SupportedPlatform[];
+}
 
 /**
  * Channels are pooled at the ACCOUNT level, not per workspace.
@@ -66,10 +83,7 @@ export class AccountChannelsService {
   async limitForUser(userId: string): Promise<number> {
     const subscription = await this.lookup.findByUserId(userId);
 
-    const planCode =
-      subscription && subscription.status === 'active'
-        ? subscription.planCode
-        : 'FREE';
+    const planCode = entitledPlanCode(subscription);
 
     const plan = await this.lookup.getPlanLimits(planCode);
     if (plan.channelsPerWorkspace === UNLIMITED) return UNLIMITED;
@@ -144,6 +158,96 @@ export class AccountChannelsService {
   async releaseFreedSlots(userId: string): Promise<number[]> {
     const limit = await this.limitForUser(userId);
     return this.lookup.releaseAccountChannelLocks(userId, limit);
+  }
+
+  /** The plan this account is entitled to right now (entitledPlanCode). */
+  async planCodeForUser(userId: string): Promise<string> {
+    return entitledPlanCode(await this.lookup.findByUserId(userId));
+  }
+
+  async platformAccessForUser(userId: string): Promise<PlatformAccess> {
+    return {
+      isPaidPlan: isPaidPlan(await this.planCodeForUser(userId)),
+      paidOnlyPlatforms: [...PAID_ONLY_PLATFORMS],
+    };
+  }
+
+  /**
+   * Refuse a NEW channel of a paid-only platform (X) on a free account: 403
+   * PLAN_UPGRADE_REQUIRED. Called by ChannelService.createChannel just before
+   * it inserts a new row - the one write every connect path ends in (OAuth
+   * callback, connect links, the per-platform connect routes, complete-oauth)
+   * - so a start that was bypassed still cannot add the channel. Reconnecting
+   * a channel the workspace already holds never comes here.
+   */
+  async assertPlatformAllowed(
+    userId: string,
+    platform: SupportedPlatform,
+  ): Promise<void> {
+    if (!isPaidOnlyPlatform(platform)) return;
+    const planCode = await this.planCodeForUser(userId);
+    if (!isPlatformAllowedOnPlan(platform, planCode)) {
+      throw planUpgradeRequired(platform);
+    }
+  }
+
+  /**
+   * The same gate at the OAuth start, so a free workspace is told before it
+   * goes through X's consent screen. A workspace that already holds a channel
+   * of the platform (any state, disconnected included) may start: the
+   * frontend reconnects through the same initiate route, and the start does
+   * not know yet which account will come back - if it is a new one, the
+   * final write (assertPlatformAllowed) refuses it.
+   */
+  async assertCanStartConnect(
+    workspaceId: string,
+    platform: SupportedPlatform,
+  ): Promise<void> {
+    if (!isPaidOnlyPlatform(platform)) return;
+    if (await this.hasChannelOn(workspaceId, platform)) return;
+    await this.assertPlatformAllowed(await this.ownerOf(workspaceId), platform);
+  }
+
+  /**
+   * Refuse to CREATE a connect link that offers a paid-only platform (X) when
+   * the workspace owner is not on a paid plan: the same 403
+   * PLAN_UPGRADE_REQUIRED, so the sender hears it when making the link, not
+   * the client at the end of it. No `hasChannelOn` exemption here: a link
+   * invites NEW accounts, which is exactly what the plan gates. Links already
+   * created are not touched; the start gate refuses them when visited.
+   */
+  async assertCanOfferNetworks(
+    workspaceId: string,
+    networks: readonly string[],
+  ): Promise<void> {
+    const gated = networks.filter(isPaidOnlyPlatform);
+    if (gated.length === 0) return;
+    const planCode = await this.planCodeForUser(
+      await this.ownerOf(workspaceId),
+    );
+    for (const platform of gated) {
+      if (!isPlatformAllowedOnPlan(platform, planCode)) {
+        throw planUpgradeRequired(platform as SupportedPlatform);
+      }
+    }
+  }
+
+  /** Does this workspace hold any channel row of this platform? */
+  async hasChannelOn(
+    workspaceId: string,
+    platform: SupportedPlatform,
+  ): Promise<boolean> {
+    const [row] = await db
+      .select({ id: socialMediaChannels.id })
+      .from(socialMediaChannels)
+      .where(
+        and(
+          eq(socialMediaChannels.workspaceId, workspaceId),
+          eq(socialMediaChannels.platform, platform),
+        ),
+      )
+      .limit(1);
+    return !!row;
   }
 
   /** Resolve a workspace to its owning account. */

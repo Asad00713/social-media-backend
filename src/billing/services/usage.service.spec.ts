@@ -226,3 +226,66 @@ describe('UsageService.getWorkspaceLimits', () => {
     expect(result.workspacesAvailable).toBe(-2);
   });
 });
+
+/**
+ * `GET /billing/workspaces/:id/usage` is where the frontend reads the plan's
+ * capabilities (channel/member limits); it also says which platforms need a
+ * paid plan and whether this workspace's plan is paid, so the connect UI can
+ * badge X on a free plan.
+ */
+describe('UsageService.getWorkspaceUsageView', () => {
+  const BASE = {
+    channelsLimit: 3,
+    channelsCount: 1,
+    channelsAvailable: 2,
+  };
+
+  function make(owner: string | null, isPaidPlan: boolean) {
+    const platformAccessForUser = jest.fn(() =>
+      Promise.resolve({ isPaidPlan, paidOnlyPlatforms: ['twitter'] }),
+    );
+    const getOwnerId = jest.fn(() => Promise.resolve(owner));
+    const service = new UsageService(
+      { getOwnerId } as unknown as SubscriptionLookupService,
+      { platformAccessForUser } as never,
+    );
+    const getWorkspaceUsage = jest
+      .spyOn(service, 'getWorkspaceUsage')
+      .mockResolvedValue(BASE as never);
+    return { service, platformAccessForUser, getOwnerId, getWorkspaceUsage };
+  }
+
+  it('resolves the owner once and hands it to the usage read', async () => {
+    const { service, getOwnerId, getWorkspaceUsage } = make('owner-1', true);
+    await service.getWorkspaceUsageView('ws-1');
+    expect(getOwnerId).toHaveBeenCalledTimes(1);
+    expect(getWorkspaceUsage).toHaveBeenCalledWith('ws-1', 'owner-1');
+  });
+
+  it('adds the paid-only platforms and isPaidPlan=false on FREE', async () => {
+    const { service, platformAccessForUser } = make('owner-1', false);
+    await expect(service.getWorkspaceUsageView('ws-1')).resolves.toEqual({
+      ...BASE,
+      isPaidPlan: false,
+      paidOnlyPlatforms: ['twitter'],
+    });
+    expect(platformAccessForUser).toHaveBeenCalledWith('owner-1');
+  });
+
+  it('reports isPaidPlan=true on a paid plan', async () => {
+    const { service } = make('owner-1', true);
+    await expect(service.getWorkspaceUsageView('ws-1')).resolves.toMatchObject({
+      isPaidPlan: true,
+      paidOnlyPlatforms: ['twitter'],
+    });
+  });
+
+  it('a workspace with no owner reads as not paid', async () => {
+    const { service, platformAccessForUser } = make(null, true);
+    await expect(service.getWorkspaceUsageView('ws-1')).resolves.toMatchObject({
+      isPaidPlan: false,
+      paidOnlyPlatforms: ['twitter'],
+    });
+    expect(platformAccessForUser).not.toHaveBeenCalled();
+  });
+});

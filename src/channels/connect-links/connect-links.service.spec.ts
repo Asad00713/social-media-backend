@@ -1,4 +1,9 @@
-import { HttpException, Logger, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  HttpException,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { decrypt, hash } from '../../common/utils/encryption.util';
 import { channelConnectLinks } from '../../drizzle/schema/channel-connect-links.schema';
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
@@ -7,13 +12,17 @@ import { workspace } from '../../drizzle/schema/workspace.schema';
 import type { DbType } from '../../drizzle/db';
 import type { EmailOutboxService } from '../../email/queue/email-outbox.service';
 import { formatLinkExpiry } from '../../email/templates/team/channel-connect-link';
+import { AccountChannelsService } from '../../billing/services/account-channels.service';
 import { ConnectLinksService } from './connect-links.service';
 import { CONNECT_LINK_TTL_MS, createLinkToken } from './lib/connect-link-rules';
 
 const WS = '11111111-1111-4111-8111-111111111111';
 const USER = '22222222-2222-4222-8222-222222222222';
 const LINK = '33333333-3333-4333-8333-333333333333';
+const OWNER = '44444444-4444-4444-8444-444444444444';
 const BASE = new Date('2026-11-13T10:00:00Z');
+const PRO_SUB = { id: 1, planCode: 'PRO', status: 'active' };
+const FREE_SUB = { id: 1, planCode: 'FREE', status: 'active' };
 
 type Row = Record<string, unknown>;
 
@@ -90,7 +99,13 @@ const sender = {
 };
 
 function setup(
-  opts: { links?: Row[]; channels?: Row[]; updateRows?: Row[] } = {},
+  opts: {
+    links?: Row[];
+    channels?: Row[];
+    updateRows?: Row[];
+    /** The WORKSPACE OWNER's subscription (default: paid). */
+    ownerSubscription?: Row | null;
+  } = {},
 ) {
   const tables = new Map<unknown, Row[]>([
     [channelConnectLinks, opts.links ?? []],
@@ -104,11 +119,26 @@ function setup(
       .fn<Promise<{ success: boolean }>, [unknown]>()
       .mockResolvedValue({ success: true }),
   };
+  // The REAL plan gate over a stubbed lookup: only the owner's plan is read.
+  const lookup = {
+    findByUserId: jest.fn((id: string) =>
+      Promise.resolve(
+        id === OWNER
+          ? opts.ownerSubscription === undefined
+            ? PRO_SUB
+            : opts.ownerSubscription
+          : // the acting user's own plan must never decide
+            { id: 2, planCode: 'PRO', status: 'active' },
+      ),
+    ),
+    getOwnerId: jest.fn().mockResolvedValue(OWNER),
+  };
   const service = new ConnectLinksService(
     db,
     email as unknown as EmailOutboxService,
+    new AccountChannelsService(lookup as never),
   );
-  return { service, email, inserted, updates, db };
+  return { service, email, inserted, updates, db, lookup };
 }
 
 async function codeOf(p: Promise<unknown>): Promise<string | undefined> {
@@ -169,6 +199,74 @@ describe('ConnectLinksService', () => {
       );
       expect(code).toBe('NETWORK_NOT_OFFERED');
       expect(inserted).toHaveLength(0);
+    });
+
+    // X is paid-only: a link must not offer it on a free workspace. Existing
+    // links keep working (the start gate refuses at visit time) - only the
+    // creation of one offering X is checked.
+    describe('X is paid-only', () => {
+      it('a link offering twitter on a FREE workspace -> 403 PLAN_UPGRADE_REQUIRED, nothing stored or sent', async () => {
+        const { service, inserted, email } = setup({
+          ownerSubscription: FREE_SUB,
+        });
+        const err = await service
+          .create(WS, USER, {
+            email: 'client@example.com',
+            networks: ['instagram', 'twitter'],
+            send: true,
+          })
+          .catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(ForbiddenException);
+        expect((err as ForbiddenException).getResponse()).toMatchObject({
+          statusCode: 403,
+          code: 'PLAN_UPGRADE_REQUIRED',
+          feature: 'x',
+          message: 'X is available on paid plans.',
+        });
+        expect(inserted).toHaveLength(0);
+        expect(email.sendNow).not.toHaveBeenCalled();
+      });
+
+      it('also refused with no subscription at all', async () => {
+        const { service, inserted } = setup({ ownerSubscription: null });
+        const code = await codeOf(
+          service.create(WS, USER, { networks: ['twitter'], send: false }),
+        );
+        expect(code).toBe('PLAN_UPGRADE_REQUIRED');
+        expect(inserted).toHaveLength(0);
+      });
+
+      it("reads the OWNER's plan: a paid owner may offer twitter (acting user's plan is irrelevant)", async () => {
+        const { service, inserted, lookup } = setup({
+          ownerSubscription: PRO_SUB,
+        });
+        await service.create(WS, USER, { networks: ['twitter'], send: false });
+        expect(inserted).toHaveLength(1);
+        expect(inserted[0].networks).toEqual(['twitter']);
+        expect(lookup.findByUserId).toHaveBeenCalledWith(OWNER);
+        expect(lookup.findByUserId).not.toHaveBeenCalledWith(USER);
+      });
+
+      it('a link without twitter is unaffected on a FREE workspace', async () => {
+        const { service, inserted, lookup } = setup({
+          ownerSubscription: FREE_SUB,
+        });
+        await service.create(WS, USER, {
+          networks: ['instagram', 'facebook'],
+          send: false,
+        });
+        expect(inserted).toHaveLength(1);
+        expect(lookup.findByUserId).not.toHaveBeenCalled();
+      });
+
+      it('an existing twitter link on a FREE workspace can still be read', async () => {
+        const { service } = setup({
+          ownerSubscription: FREE_SUB,
+          links: [linkRow({ networks: ['twitter'] })],
+        });
+        const { url } = await service.get(WS, LINK);
+        expect(url).toBeTruthy();
+      });
     });
 
     it('stores the hash and the encrypted token, never the raw one, and returns a url ending in it', async () => {
