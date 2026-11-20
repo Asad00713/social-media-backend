@@ -209,12 +209,19 @@ export class ChatbotService {
             this.logger.error(`Failed to save assistant message: ${error}`);
           }
 
-          // Record token usage (non-blocking)
-          const estimatedTokens = Math.ceil(
-            (assistantContent.length + message.length) / 4,
-          );
+          // Record token usage (non-blocking).
+          //
+          // Prefer the run's REAL token spend, which the agent loop now
+          // reports on `done`. The chars/4 figure below stays only as a
+          // fallback for a provider that reported no usage at all; it
+          // undercounts by roughly 20-100x because it ignores the system
+          // prompt, the history, the tool results and all but the last of up
+          // to MAX_ITERATIONS calls.
+          const chargedTokens =
+            event.data.totalTokens ??
+            Math.ceil((assistantContent.length + message.length) / 4);
           this.tokenTracking
-            .recordUsage(workspaceId, userId, estimatedTokens, 'chat', {
+            .recordUsage(workspaceId, userId, chargedTokens, 'chat', {
               inputSummary: message.substring(0, 200),
               outputLength: assistantContent.length,
             })
@@ -604,14 +611,14 @@ export class ChatbotService {
           // for a first response. A regenerate costs us a full agent loop, so
           // leaving it unbilled let one conversation spend without limit.
           //
-          // The estimate is the same chars/4 figure processMessage uses. It
-          // undercounts badly (it ignores the system prompt, the history, the
-          // tool results and every loop iteration), but matching the existing
-          // path keeps the two consistent; fixing the estimate is a separate
-          // change that should cover both.
-          const regeneratedTokens = Math.ceil(
-            (assistantContent.length + lastUserMsg.content.length) / 4,
-          );
+          // Real token spend from the loop, with the chars/4 estimate only as
+          // a fallback when no provider reported usage — same rule as
+          // processMessage, so the two paths charge alike.
+          const regeneratedTokens =
+            event.data.totalTokens ??
+            Math.ceil(
+              (assistantContent.length + lastUserMsg.content.length) / 4,
+            );
           this.tokenTracking
             .recordUsage(workspaceId, userId, regeneratedTokens, 'chat', {
               inputSummary: lastUserMsg.content.substring(0, 200),

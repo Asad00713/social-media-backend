@@ -26,6 +26,7 @@ import {
   DripContentGeneratorService,
   GeneratedDripContent,
 } from '../../ai/services/drip-content-generator.service';
+import { AiTokenService } from '../../ai/services/ai-token.service';
 import { PostService } from '../../posts/services/post.service';
 import { AppLinks } from '../../email/links/app-links';
 import { formatWhen, usableZone } from '../../email/links/format-when';
@@ -54,6 +55,8 @@ export class DripProcessor extends WorkerHost {
     private readonly postService: PostService,
     private readonly notify: NotifyService,
     private readonly links: AppLinks,
+    // New parameters go LAST: existing specs construct this positionally.
+    private readonly aiTokens: AiTokenService,
   ) {
     super();
   }
@@ -176,6 +179,58 @@ export class DripProcessor extends WorkerHost {
     if (targetPlatforms.length === 0) {
       throw new Error('No valid target platforms found');
     }
+
+    // Charge the workspace before generating.
+    //
+    // This path was unmetered: `generate_drip_content` existed in
+    // AI_OPERATION_COSTS but nothing referenced it, and the generator holds
+    // its own Groq client, so a campaign produced content for free. It is
+    // also the one AI path with no user waiting on it — a scheduled job — so
+    // nothing capped it but the campaign's own schedule.
+    //
+    // Charged PER PLATFORM, because that is what it costs: the generator
+    // makes one Tavily search plus one model call per target platform
+    // (`drip-content-generator.service.ts` loops `targetPlatforms`). A flat
+    // charge would price an 8-platform campaign the same as a 1-platform one.
+    //
+    // Deducted up front rather than through `executeWithTokens`: the job
+    // retries 3x on a transient provider failure, and wrapping the generator
+    // would charge again on each attempt. Charging once, before the attempt,
+    // means a retry re-uses what the workspace already paid for.
+    const platformCount = targetPlatforms.length;
+    const dripCost =
+      this.aiTokens.getOperationCost('generate_drip_content') * platformCount;
+    const budget = await this.aiTokens.checkTokens(
+      campaign.workspaceId,
+      'generate_drip_content',
+    );
+
+    if (budget.tokensAvailable < dripCost) {
+      // Out of credits is a permanent condition for this run, not a transient
+      // error: retrying cannot make credits appear. Mark it and stop without
+      // rethrowing, so BullMQ does not burn two more attempts.
+      await db
+        .update(dripPosts)
+        .set({
+          status: 'failed',
+          lastError: `Not enough AI credits: ${dripCost} needed for ${platformCount} platform(s), ${budget.tokensAvailable} available.`,
+          lastErrorAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(dripPosts.id, dripPostId));
+
+      this.logger.warn(
+        `Drip post ${dripPostId} skipped: workspace ${campaign.workspaceId} needs ${dripCost} credits, has ${budget.tokensAvailable}`,
+      );
+      return;
+    }
+
+    await this.aiTokens.deductTokens(
+      campaign.workspaceId,
+      campaign.createdById,
+      'generate_drip_content',
+      dripCost,
+    );
 
     // Generate content using AI
     let generatedContent: GeneratedDripContent;
