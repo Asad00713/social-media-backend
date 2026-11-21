@@ -1,6 +1,6 @@
 import { UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { AuthService } from '../auth.service';
+import { SessionIssuer } from '../session/session-issuer';
 import { JwtRefreshStrategy } from './jwt-refresh.strategy';
 import { JwtStrategy } from './jwt.strategy';
 
@@ -143,34 +143,49 @@ describe('the email the strategies hand on comes from the row, not the claim', (
   it('after an email change, refresh mints tokens carrying the new email', async () => {
     const strategy = new JwtRefreshStrategy(config as never, users as never);
     const jwt = new JwtService({});
-    // Only the token minting and the last-seen write run on this path.
+    // The issuer reads the address from the row itself; only the row read,
+    // the session touch and the last-seen write run on this path.
+    const db = {
+      query: {
+        users: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 'u1',
+            email: 'new@example.test',
+            role: 'USER',
+            isActive: true,
+            totpEnabledAt: null,
+          }),
+        },
+      },
+    };
     const none = null as never;
-    const auth = new AuthService(
-      none,
-      none,
+    const issuer = new SessionIssuer(
+      db as never,
       jwt,
       config as never,
-      none,
-      none,
+      { touch: jest.fn().mockResolvedValue(true) } as never,
       none,
       { record: jest.fn().mockResolvedValue(undefined) } as never,
       none,
-      none,
-      none,
     );
+    const res = { cookie: jest.fn() };
 
     // What /auth/refresh does with the strategy's result.
     const caller = await strategy.validate(
       { cookies: { refreshToken: 'rt' } } as never,
-      STALE,
+      { ...STALE, sid: '11111111-1111-4111-8111-111111111111' },
     );
-    const access = await auth.refreshTokens(caller.userId, caller.email);
-    const refresh = await auth.generateRefreshToken(
+    const { accessToken } = await issuer.issue(
       caller.userId,
-      caller.email,
+      { cookies: {}, headers: {} } as never,
+      res as never,
+      { via: 'refresh', sid: caller.sid },
     );
+    const refresh = (res.cookie.mock.calls as unknown[][]).find(
+      (c) => c[0] === 'refreshToken',
+    )?.[1] as string;
 
-    for (const token of [access, refresh]) {
+    for (const token of [accessToken, refresh]) {
       expect(jwt.decode<{ email: string }>(token).email).toBe(
         'new@example.test',
       );

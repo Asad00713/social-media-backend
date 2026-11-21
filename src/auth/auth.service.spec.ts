@@ -20,7 +20,7 @@ function firstArg<T>(mock: jest.Mock): T {
 }
 
 /**
- * AuthService takes ten collaborators. Each test overrides only the ones it
+ * AuthService takes nine collaborators. Each test overrides only the ones it
  * exercises; the rest are inert stubs that fail loudly if reached.
  */
 export function makeAuthService(
@@ -47,8 +47,6 @@ export function makeAuthService(
   const service = new AuthService(
     db as never,
     usersService as never,
-    { sign: jest.fn().mockReturnValue('signed') } as never,
-    { get: jest.fn().mockReturnValue('secret') } as never,
     outbox as never,
     { emailVerified: jest.fn() } as never,
     { verifyChallengeToken: jest.fn() } as never,
@@ -89,6 +87,61 @@ describe('AuthService.validateUser', () => {
 
     await expect(service.validateUser('a@b.co', 'pw')).resolves.toBe(user);
     expect(bcrypt.compare).toHaveBeenCalledWith('pw', 'hash');
+  });
+});
+
+describe('AuthService.login (first factor only)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const row = {
+    id: 'u1',
+    email: 'a@b.co',
+    password: 'hash',
+    isActive: true,
+    role: 'USER',
+  };
+
+  it('returns the row and mints or records nothing (SessionIssuer does both)', async () => {
+    (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+    const { service } = makeAuthService({
+      usersService: { findByEmail: jest.fn().mockResolvedValue(row) },
+    });
+    await expect(
+      service.login({ email: 'a@b.co', password: 'pw' }),
+    ).resolves.toBe(row);
+    const activity = (
+      service as unknown as {
+        loginActivityService: { record: jest.Mock; recordSync: jest.Mock };
+      }
+    ).loginActivityService;
+    expect(activity.record).not.toHaveBeenCalled();
+    expect(activity.recordSync).not.toHaveBeenCalled();
+  });
+
+  it('a wrong password is 401 Invalid credentials', async () => {
+    (bcrypt.compare as jest.Mock).mockResolvedValue(false);
+    const { service } = makeAuthService({
+      usersService: { findByEmail: jest.fn().mockResolvedValue(row) },
+    });
+    await expect(
+      service.login({ email: 'a@b.co', password: 'nope' }),
+    ).rejects.toThrow('Invalid credentials');
+  });
+
+  it('a suspended account is ACCOUNT_SUSPENDED', async () => {
+    (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+    const { service } = makeAuthService({
+      usersService: {
+        findByEmail: jest.fn().mockResolvedValue({
+          ...row,
+          isActive: false,
+          suspendedReason: null,
+        }),
+      },
+    });
+    await expect(
+      service.login({ email: 'a@b.co', password: 'pw' }),
+    ).rejects.toMatchObject({ response: { code: 'ACCOUNT_SUSPENDED' } });
   });
 });
 
@@ -363,7 +416,10 @@ describe('AuthService A1 / A2 / A5 mail', () => {
       errorCode: 'validation_error',
     });
     const res = await failed.service.register(dto);
-    expect(res.accessToken).toBe('signed');
+    // The account exists even though the mail failed; minting is the
+    // controller's job (SessionIssuer), so register returns no token.
+    expect(res.user).toEqual(USER);
+    expect(res).not.toHaveProperty('accessToken');
     expect(res.message).toMatch(/could not send the verification code/);
     // Logs name the user by id and the error by code, never the address.
     const lines = logged.mock.calls.map((c) => String(c[0]));

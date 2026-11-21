@@ -8,12 +8,15 @@ import {
   assertNotDeleted,
   assertSessionLive,
   assertSessionTokenShape,
+  sidOf,
 } from './jwt.strategy';
 
 export interface JwtRefreshPayload {
   sub: string;
   email: string;
   iat?: number;
+  /** The session row; absent on pre-deploy tokens (refresh then makes one). */
+  sid?: string;
 }
 
 @Injectable()
@@ -69,6 +72,11 @@ export class JwtRefreshStrategy extends PassportStrategy(
 
     // The current address, not the claim: /auth/refresh re-mints both tokens
     // from this, so a stale claim would otherwise live on after an email change.
-    return { userId: payload.sub, email: user.email, refreshToken };
+    return {
+      userId: payload.sub,
+      email: user.email,
+      refreshToken,
+      sid: sidOf(payload),
+    };
   }
 }

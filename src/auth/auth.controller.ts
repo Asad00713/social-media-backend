@@ -42,19 +42,15 @@ import { CurrentUser } from './decorators/current-user.decorator';
 import { CreateUserDto } from 'src/users/dto/create-user.dto';
 import { SkipLaunchGate } from './decorators/skip-launch-gate.decorator';
 import { clearRefreshCookie } from './refresh-cookie';
-import {
-  deviceCookieOf,
-  readOrMintDeviceId,
-  setDeviceCookie,
-} from './devices/device-cookie';
-import { KnownDevicesService } from './devices/known-devices.service';
+import { SessionIssuer } from './session/session-issuer';
+import { toPublicUser } from '../users/users.service';
 
 @Controller('auth')
 export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly adminChallengeService: AdminChallengeService,
-    private readonly knownDevices: KnownDevicesService,
+    private readonly issuer: SessionIssuer,
   ) {}
 
   // ==================== Admin sign-in second factor ====================
@@ -131,38 +127,27 @@ export class AuthController {
     @Body() createUserDto: CreateUserDto,
     @Ip() ip: string,
     @Req() request: Request,
-    @Headers('user-agent') userAgent: string | undefined,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const { accessToken, user, message } = await this.authService.register(
+    const { user, message } = await this.authService.register(
       createUserDto,
       ip,
     );
 
-    const refreshToken = await this.authService.generateRefreshToken(
-      user.id,
-      user.email,
-    );
-
-    response.cookie('refreshToken', refreshToken, {
-      httpOnly: true,
-      secure: true, // Always true for cross-origin cookies
-      sameSite: 'none', // Required for cross-origin cookies
-      maxAge: 7 * 24 * 60 * 60 * 1000,
+    // The issuer writes the session, sets the refresh cookie and records the
+    // signup browser as the first known device, silently.
+    const issued = await this.issuer.issue(user.id, request, response, {
+      via: 'register',
     });
-    // Only once the session exists: the signup browser is the first known
-    // device, recorded without an email.
-    const device = readOrMintDeviceId(deviceCookieOf(request.cookies));
-    setDeviceCookie(response, device.id);
-    this.knownDevices.track(
-      user.id,
-      device.id,
-      { ip, userAgent: userAgent ?? null },
-      { silent: true },
-    );
+    if (issued.kind === 'mfa') {
+      return {
+        mfaRequired: true as const,
+        challengeToken: issued.challengeToken,
+      };
+    }
 
     return {
-      accessToken,
+      accessToken: issued.accessToken,
       user,
       message,
     };
@@ -174,36 +159,27 @@ export class AuthController {
   @Throttle(LOGIN_THROTTLE)
   async login(
     @Body() loginDto: LoginDto,
-    @Ip() ip: string,
     @Req() request: Request,
-    @Headers('user-agent') userAgent: string | undefined,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const { accessToken, user } = await this.authService.login(loginDto, ip);
+    // Every first-factor check; a failure here mints nothing and records no
+    // device.
+    const user = await this.authService.login(loginDto);
 
-    const refreshToken = await this.authService.generateRefreshToken(
-      user.id,
-      user.email,
-    );
-
-    response.cookie('refreshToken', refreshToken, {
-      httpOnly: true,
-      secure: true, // Always true for cross-origin cookies
-      sameSite: 'none', // Required for cross-origin cookies
-      maxAge: 7 * 24 * 60 * 60 * 1000,
+    const issued = await this.issuer.issue(user.id, request, response, {
+      via: 'password',
     });
-    // Only once the session exists: a failed sign-in or a failed token mint
-    // records no device and sends no A6.
-    const device = readOrMintDeviceId(deviceCookieOf(request.cookies));
-    setDeviceCookie(response, device.id);
-    this.knownDevices.track(user.id, device.id, {
-      ip,
-      userAgent: userAgent ?? null,
-    });
+    if (issued.kind === 'mfa') {
+      return {
+        mfaRequired: true as const,
+        challengeToken: issued.challengeToken,
+      };
+    }
 
     return {
-      accessToken,
-      user,
+      accessToken: issued.accessToken,
+      // Narrowed to the allow-list, so a column added later cannot leak here.
+      user: toPublicUser(user),
     };
   }
 
@@ -211,27 +187,19 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtRefreshGuard)
   async refreshTokens(
-    @CurrentUser() user: { userId: string; email: string },
-    @Ip() ip: string,
+    @CurrentUser() user: { userId: string; sid?: string | null },
+    @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const accessToken = await this.authService.refreshTokens(
+    // Same sid, no rotation: two tabs refreshing at once both succeed. A
+    // revoked or idle session is a 401 with no cookie. A pre-deploy token
+    // (no sid) gets a session row here.
+    const { accessToken } = await this.issuer.issue(
       user.userId,
-      user.email,
-      ip,
+      request,
+      response,
+      { via: 'refresh', sid: user.sid ?? null },
     );
-
-    const refreshToken = await this.authService.generateRefreshToken(
-      user.userId,
-      user.email,
-    );
-
-    response.cookie('refreshToken', refreshToken, {
-      httpOnly: true,
-      secure: true, // Always true for cross-origin cookies
-      sameSite: 'none', // Required for cross-origin cookies
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
 
     return {
       accessToken,

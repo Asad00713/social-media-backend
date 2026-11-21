@@ -1,134 +1,161 @@
 import { UnauthorizedException } from '@nestjs/common';
 import { AuthController } from './auth.controller';
 
-const VALID = 'v'.repeat(43);
-const UA = 'Mozilla/5.0 (Windows NT 10.0) Chrome/130.0.0.0 Safari/537.36';
-const USER = { id: 'u1', email: 'a@b.co' };
-const ID_RE = /^[A-Za-z0-9_-]{43}$/;
+const SID = '11111111-1111-4111-8111-111111111111';
+// A full user row as AuthService.login returns it: the controller must narrow
+// it to the public allow-list.
+const ROW = {
+  id: 'u1',
+  email: 'a@b.co',
+  name: 'A',
+  password: '$2b$10$hash',
+  totpSecretEnc: 'iv:tag:ct',
+};
+const PUBLIC_USER = { id: 'u1', email: 'a@b.co' };
 
-function build(over: { refreshError?: Error; loginError?: Error } = {}) {
+function build(
+  over: { loginError?: Error; issueError?: Error; mfa?: boolean } = {},
+) {
   const authService = {
     login: over.loginError
       ? jest.fn().mockRejectedValue(over.loginError)
-      : jest.fn().mockResolvedValue({ accessToken: 'access', user: USER }),
-    register: jest
-      .fn()
-      .mockResolvedValue({ accessToken: 'access', user: USER, message: 'ok' }),
-    generateRefreshToken: over.refreshError
-      ? jest.fn().mockRejectedValue(over.refreshError)
-      : jest.fn().mockResolvedValue('refresh'),
+      : jest.fn().mockResolvedValue(ROW),
+    register: jest.fn().mockResolvedValue({ user: PUBLIC_USER, message: 'ok' }),
   };
-  const knownDevices = { track: jest.fn() };
+  const issuer = {
+    issue: over.issueError
+      ? jest.fn().mockRejectedValue(over.issueError)
+      : jest
+          .fn()
+          .mockResolvedValue(
+            over.mfa
+              ? { kind: 'mfa', challengeToken: 'challenge' }
+              : { kind: 'session', accessToken: 'access', sid: SID },
+          ),
+  };
   const res = { cookie: jest.fn() };
   const controller = new AuthController(
     authService as never,
     {} as never,
-    knownDevices as never,
+    issuer as never,
   );
-  return { controller, authService, knownDevices, res };
+  return { controller, authService, issuer, res };
 }
 
-const req = (cookies: Record<string, unknown>) => ({ cookies }) as never;
+const req = { cookies: {}, headers: {} } as never;
 const credentials = { email: 'a@b.co', password: 'pw' };
 
-/** The value `sd_device` was set to, if it was set. */
-function deviceCookieSet(res: { cookie: jest.Mock }): unknown {
-  const call = (res.cookie.mock.calls as unknown[][]).find(
-    (c) => c[0] === 'sd_device',
-  );
-  return call?.[1];
-}
-
-describe('AuthController.login device tracking (A6)', () => {
-  it('keeps a valid device cookie, sets it again and tracks it after the session', async () => {
+describe('AuthController.login', () => {
+  it('checks the first factor, then mints through the issuer with via password', async () => {
     const b = build();
-    await b.controller.login(
-      credentials,
-      '1.2.3.4',
-      req({ sd_device: VALID }),
-      UA,
-      b.res as never,
-    );
-    expect(b.authService.login).toHaveBeenCalledWith(credentials, '1.2.3.4');
-    expect(deviceCookieSet(b.res)).toBe(VALID);
-    expect(b.knownDevices.track).toHaveBeenCalledWith('u1', VALID, {
-      ip: '1.2.3.4',
-      userAgent: UA,
+    const result = await b.controller.login(credentials, req, b.res as never);
+    expect(b.authService.login).toHaveBeenCalledWith(credentials);
+    expect(b.issuer.issue).toHaveBeenCalledWith('u1', req, b.res, {
+      via: 'password',
     });
-    // The refresh cookie is set first: the session exists before tracking.
-    expect((b.res.cookie.mock.calls as unknown[][])[0][0]).toBe('refreshToken');
+    expect(result).toMatchObject({
+      accessToken: 'access',
+      user: { id: 'u1', email: 'a@b.co' },
+    });
+    expect(Object.keys(result)).toEqual(['accessToken', 'user']);
   });
 
-  it.each([
-    ['a JSON-decoded array (j: cookie)', [VALID]],
-    ['a JSON-decoded object', {}],
-    ['a number', 7],
-  ])(
-    'a non-string cookie (%s) gets a fresh id, so A6 still runs',
-    async (_name, cookie) => {
-      const b = build();
-      await b.controller.login(
-        credentials,
-        '1.2.3.4',
-        req({ sd_device: cookie }),
-        UA,
-        b.res as never,
-      );
-      const set = deviceCookieSet(b.res);
-      expect(typeof set).toBe('string');
-      expect(set).toMatch(ID_RE);
-      expect(set).not.toBe(VALID);
-      expect(b.knownDevices.track).toHaveBeenCalledWith('u1', set, {
-        ip: '1.2.3.4',
-        userAgent: UA,
-      });
-    },
-  );
+  it('answers with the public user only (no password hash, no secret column)', async () => {
+    const b = build();
+    const result = await b.controller.login(credentials, req, b.res as never);
+    if (!('user' in result) || !result.user)
+      throw new Error('expected a session body');
+    const keys = Object.keys(result.user);
+    expect(keys).not.toContain('password');
+    expect(keys.some((k) => /totp|mfa/i.test(k))).toBe(false);
+  });
 
-  it('a failed sign-in records no device and sets no cookie', async () => {
+  it('a failed sign-in never reaches the issuer and sets no cookie', async () => {
     const b = build({ loginError: new UnauthorizedException() });
     await expect(
-      b.controller.login(credentials, 'ip', req({}), UA, b.res as never),
+      b.controller.login(credentials, req, b.res as never),
     ).rejects.toThrow(UnauthorizedException);
-    expect(b.knownDevices.track).not.toHaveBeenCalled();
+    expect(b.issuer.issue).not.toHaveBeenCalled();
     expect(b.res.cookie).not.toHaveBeenCalled();
   });
 
-  it('a failed refresh-token mint records no device and sends no A6', async () => {
-    const b = build({ refreshError: new Error('JWT_REFRESH_SECRET missing') });
+  it('a failed mint is the response (nothing swallowed)', async () => {
+    const b = build({ issueError: new Error('JWT_REFRESH_SECRET missing') });
     await expect(
-      b.controller.login(credentials, 'ip', req({}), UA, b.res as never),
+      b.controller.login(credentials, req, b.res as never),
     ).rejects.toThrow('JWT_REFRESH_SECRET missing');
-    expect(b.knownDevices.track).not.toHaveBeenCalled();
-    expect(deviceCookieSet(b.res)).toBeUndefined();
+  });
+
+  it('an mfa answer is passed on as {mfaRequired, challengeToken} with no token', async () => {
+    const b = build({ mfa: true });
+    const result = await b.controller.login(credentials, req, b.res as never);
+    expect(result).toEqual({ mfaRequired: true, challengeToken: 'challenge' });
   });
 });
 
-describe('AuthController.register device tracking', () => {
-  it('records the signup browser silently after the session', async () => {
+describe('AuthController.register', () => {
+  it('creates the account, then mints through the issuer with via register', async () => {
     const b = build();
-    await b.controller.register(
-      { email: 'a@b.co', password: 'Passw0rd!', name: 'A' } as never,
+    const dto = { email: 'a@b.co', password: 'Passw0rd!', name: 'A' } as never;
+    const result = await b.controller.register(
+      dto,
       '1.2.3.4',
-      req({}),
-      undefined,
+      req,
       b.res as never,
     );
-    const set = deviceCookieSet(b.res);
-    expect(set).toMatch(ID_RE);
-    expect(b.knownDevices.track).toHaveBeenCalledWith(
-      'u1',
-      set,
-      { ip: '1.2.3.4', userAgent: null },
-      { silent: true },
-    );
+    expect(b.authService.register).toHaveBeenCalledWith(dto, '1.2.3.4');
+    expect(b.issuer.issue).toHaveBeenCalledWith('u1', req, b.res, {
+      via: 'register',
+    });
+    expect(result).toEqual({
+      accessToken: 'access',
+      user: PUBLIC_USER,
+      message: 'ok',
+    });
   });
 
-  it('a failed refresh-token mint records no device', async () => {
-    const b = build({ refreshError: new Error('boom') });
+  it('a failed mint is the response', async () => {
+    const b = build({ issueError: new Error('boom') });
     await expect(
-      b.controller.register({} as never, 'ip', req({}), UA, b.res as never),
+      b.controller.register({} as never, 'ip', req, b.res as never),
     ).rejects.toThrow('boom');
-    expect(b.knownDevices.track).not.toHaveBeenCalled();
+  });
+});
+
+describe('AuthController.refreshTokens', () => {
+  it('reissues the caller session through the issuer (same sid)', async () => {
+    const b = build();
+    const result = await b.controller.refreshTokens(
+      { userId: 'u1', sid: SID },
+      req,
+      b.res as never,
+    );
+    expect(b.issuer.issue).toHaveBeenCalledWith('u1', req, b.res, {
+      via: 'refresh',
+      sid: SID,
+    });
+    expect(result).toEqual({ accessToken: 'access' });
+  });
+
+  it('a pre-deploy refresh token (no sid) asks the issuer for a new row', async () => {
+    const b = build();
+    await b.controller.refreshTokens({ userId: 'u1' }, req, b.res as never);
+    expect(b.issuer.issue).toHaveBeenCalledWith('u1', req, b.res, {
+      via: 'refresh',
+      sid: null,
+    });
+  });
+
+  it('a revoked session is a 401 from the issuer, passed straight through', async () => {
+    const ended = new UnauthorizedException({ code: 'SESSION_ENDED' });
+    const b = build({ issueError: ended });
+    await expect(
+      b.controller.refreshTokens(
+        { userId: 'u1', sid: SID },
+        req,
+        b.res as never,
+      ),
+    ).rejects.toBe(ended);
+    expect(b.res.cookie).not.toHaveBeenCalled();
   });
 });

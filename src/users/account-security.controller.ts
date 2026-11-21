@@ -6,16 +6,16 @@ import {
   HttpStatus,
   Ip,
   Post,
+  Req,
   Res,
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
-import type { Response } from 'express';
-import { AuthService } from '../auth/auth.service';
+import type { Request, Response } from 'express';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { setRefreshCookie } from '../auth/refresh-cookie';
+import { SessionIssuer } from '../auth/session/session-issuer';
 import { AccountSecurityService } from './account-security.service';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { DisconnectGoogleDto } from './dto/disconnect-google.dto';
@@ -30,6 +30,8 @@ import type { PublicUser } from './users.service';
 interface Caller {
   userId: string;
   email: string;
+  /** The session the access token belongs to; null for a pre-deploy token. */
+  sid?: string | null;
 }
 
 /**
@@ -60,7 +62,7 @@ function googleDisconnectTracker(req: Record<string, unknown>): string {
 
 /**
  * The signed-in person's own account security. Registered in AuthModule, not
- * UsersModule: it mints tokens through AuthService, and AuthModule already
+ * UsersModule: it mints tokens through SessionIssuer, and AuthModule already
  * imports UsersModule, so the other way round would be a module cycle.
  */
 @Controller('users/me')
@@ -68,13 +70,14 @@ function googleDisconnectTracker(req: Record<string, unknown>): string {
 export class AccountSecurityController {
   constructor(
     private readonly security: AccountSecurityService,
-    private readonly auth: AuthService,
+    private readonly issuer: SessionIssuer,
     private readonly emailChange: EmailChangeService,
   ) {}
 
   /**
    * Changes the password and signs out every other session. This device gets
-   * a fresh pair, minted after the revocation, so it stays signed in.
+   * a fresh pair for its own session, minted after the revocation, so it
+   * stays signed in.
    * 5 an hour per user, not per IP: a stolen access token can rotate IPs.
    */
   @Post('password')
@@ -88,19 +91,18 @@ export class AccountSecurityController {
     @Body() dto: ChangePasswordDto,
     @Ip() ip: string | undefined,
     @Headers('user-agent') userAgent: string | undefined,
+    @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
   ): Promise<{ accessToken: string }> {
     await this.security.changePassword(caller.userId, dto, {
       ip: ip ?? null,
       userAgent: userAgent ?? null,
     });
-    const accessToken = await this.auth.generateAccessToken(
+    const { accessToken } = await this.issuer.issue(
       caller.userId,
-      caller.email,
-    );
-    setRefreshCookie(
+      request,
       response,
-      await this.auth.generateRefreshToken(caller.userId, caller.email),
+      { via: 'password_change', sid: caller.sid ?? null },
     );
     return { accessToken };
   }

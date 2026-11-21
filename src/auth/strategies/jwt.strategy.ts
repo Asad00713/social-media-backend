@@ -10,6 +10,8 @@ export interface JwtPayload {
   email: string;
   /** Issued-at, whole seconds. Set on every token we sign. */
   iat?: number;
+  /** The session row (user_sessions.id); absent on pre-deploy tokens. */
+  sid?: string;
 }
 
 /**
@@ -69,10 +71,20 @@ export function assertNotDeleted(deletedAt: Date | null | undefined): void {
   });
 }
 
+/** The token's session id, or null when it carries none (pre-deploy). */
+export function sidOf(payload: { sid?: unknown }): string | null {
+  return typeof payload.sid === 'string' && payload.sid ? payload.sid : null;
+}
+
 export interface JwtUser {
   userId: string;
   email: string;
   role: UserRole;
+  /**
+   * The session this token belongs to, null for a pre-deploy token. Passed
+   * through so a reissue (password change) keeps the caller's session row.
+   */
+  sid?: string | null;
 }
 
 @Injectable()
@@ -124,6 +136,11 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
 
     // The address from the row, not the claim: the claim is frozen at sign-in
     // and goes stale after an email change.
-    return { userId: payload.sub, email: user.email, role: user.role };
+    return {
+      userId: payload.sub,
+      email: user.email,
+      role: user.role,
+      sid: sidOf(payload),
+    };
   }
 }

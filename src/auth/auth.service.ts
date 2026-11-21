@@ -9,10 +9,8 @@ import {
   HttpException,
   HttpStatus,
 } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
-import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
-import { UsersService, PublicUser, toPublicUser } from '../users/users.service';
+import { UsersService, PublicUser } from '../users/users.service';
 import {
   AccountSecurityService,
   type RequestContext,
@@ -74,17 +72,6 @@ const OTP_TTL_MS = 10 * 60 * 1000;
 // Resend rate-limit window: must wait at least this long between requests.
 const RESEND_COOLDOWN_MS = 60 * 1000;
 
-export interface TokenPayload {
-  sub: string;
-  email: string;
-}
-
-export interface AuthResponse {
-  accessToken: string;
-  user: PublicUser;
-  message?: string;
-}
-
 export interface MeResponse {
   user: PublicUser;
   workspaces: WorkspaceWithRole[];
@@ -99,8 +86,6 @@ export class AuthService {
   constructor(
     @Inject(DRIZZLE) private db: DbType,
     private usersService: UsersService,
-    private jwtService: JwtService,
-    private configService: ConfigService,
     private emailOutbox: EmailOutboxService,
     private notificationEmitter: NotificationEmitterService,
     // One-way dependency: the challenge service knows nothing about AuthService,
@@ -112,10 +97,14 @@ export class AuthService {
     private welcomeEmail: WelcomeEmailService,
   ) {}
 
+  /**
+   * Creates the account and sends A1. Mints nothing: the controller hands
+   * the new user to SessionIssuer, the only code that signs a session.
+   */
   async register(
     registerDto: CreateUserDto,
     ip?: string,
-  ): Promise<AuthResponse> {
+  ): Promise<{ user: PublicUser; message: string }> {
     // Signup always produces a plain user. Role is never derived from the
     // address someone typed into a public form — SUPER_ADMIN_EMAILS used to do
     // exactly that, which meant anyone who learned a listed address could grant
@@ -153,10 +142,7 @@ export class AuthService {
     // blocks the registration.
     await this.loginActivityService.recordSync(user.id, ip);
 
-    const accessToken = await this.generateAccessToken(user.id, user.email);
-
     return {
-      accessToken,
       user,
       message: emailDelivered
         ? 'Registration successful. Please check your email to verify your account.'
@@ -164,7 +150,12 @@ export class AuthService {
     };
   }
 
-  async login(loginDto: LoginDto, ip?: string): Promise<AuthResponse> {
+  /**
+   * Every first-factor check of a password sign-in. Mints nothing and
+   * records nothing: the controller passes the user to SessionIssuer, which
+   * signs the session and stamps last-seen.
+   */
+  async login(loginDto: LoginDto): Promise<User> {
     const user = await this.validateUser(loginDto.email, loginDto.password);
 
     if (!user) {
@@ -204,17 +195,7 @@ export class AuthService {
       );
     }
 
-    const accessToken = await this.generateAccessToken(user.id, user.email);
-
-    // Stamp last-seen and where from. Awaited only for the local write; the geo
-    // lookup inside runs detached, so a slow resolver can't hold up the login.
-    await this.loginActivityService.record(user.id, ip);
-
-    return {
-      accessToken,
-      // Narrowed to the allow-list, so a column added later cannot leak here.
-      user: toPublicUser(user),
-    };
+    return user;
   }
 
   async validateUser(email: string, password: string): Promise<User | null> {
@@ -233,45 +214,6 @@ export class AuthService {
     }
 
     return user;
-  }
-
-  async generateAccessToken(userId: string, email: string): Promise<string> {
-    const payload = { sub: userId, email };
-    const secret = this.configService.get<string>('JWT_ACCESS_SECRET');
-
-    if (!secret) {
-      throw new Error('JWT_ACCESS_SECRET is not defined');
-    }
-
-    return this.jwtService.sign(payload, {
-      secret,
-      expiresIn: '15m',
-    });
-  }
-
-  async generateRefreshToken(userId: string, email: string): Promise<string> {
-    const payload = { sub: userId, email };
-    const secret = this.configService.get<string>('JWT_REFRESH_SECRET');
-
-    if (!secret) {
-      throw new Error('JWT_REFRESH_SECRET is not defined');
-    }
-
-    return this.jwtService.sign(payload, {
-      secret,
-      expiresIn: '7d',
-    });
-  }
-
-  async refreshTokens(
-    userId: string,
-    email: string,
-    ip?: string,
-  ): Promise<string> {
-    const accessToken = await this.generateAccessToken(userId, email);
-    // A refresh means the session is still active — keep last-seen current.
-    await this.loginActivityService.record(userId, ip);
-    return accessToken;
   }
 
   async whoAmI(userId: string): Promise<MeResponse> {

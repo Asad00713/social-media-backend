@@ -21,6 +21,7 @@ import { WelcomeEmailService } from './welcome-email.service';
 import { EmailSecurityController } from '../email/public/email-security.controller';
 import { SecurityActionsService } from '../email/public/security-actions.service';
 import { SecurityCoreModule } from './security-core.module';
+import { SessionIssuer } from './session/session-issuer';
 
 @Module({
   imports: [
@@ -38,6 +39,8 @@ import { SecurityCoreModule } from './security-core.module';
     GoogleOAuthClient,
     GoogleAuthService,
     KnownDevicesService,
+    // The only session minter (see session-issuer.guard.spec.ts).
+    SessionIssuer,
     WelcomeEmailService,
     JwtStrategy,
     JwtRefreshStrategy,
@@ -53,7 +56,7 @@ import { SecurityCoreModule } from './security-core.module';
     SecurityActionsService,
   ],
   // AccountSecurityController (POST /users/me/password) mints tokens through
-  // AuthService, so it is registered here: UsersModule cannot import AuthModule
+  // SessionIssuer, so it is registered here: UsersModule cannot import AuthModule
   // back without a module cycle.
   controllers: [
     AuthController,
