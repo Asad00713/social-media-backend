@@ -189,7 +189,10 @@ export class AuthService {
     // emailed code on every sign-in would cost far more in abandoned logins
     // than it buys, and their accounts are not the ones worth this friction.
     if (user.role === 'SUPER_ADMIN') {
-      this.adminChallengeService.verifyChallengeToken(
+      // Consumed only now that the password is known to be right, so a typo
+      // does not burn the emailed code. TOTP, when on, is asked after this
+      // by the issuer (via 'admin'; B5).
+      await this.adminChallengeService.consumeChallengeToken(
         loginDto.challengeToken,
         user.id,
       );

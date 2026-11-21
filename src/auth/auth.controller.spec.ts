@@ -33,7 +33,7 @@ function build(
               : { kind: 'session', accessToken: 'access', sid: SID },
           ),
   };
-  const res = { cookie: jest.fn() };
+  const res = { cookie: jest.fn(), clearCookie: jest.fn() };
   const controller = new AuthController(
     authService as never,
     {} as never,
@@ -90,6 +90,37 @@ describe('AuthController.login', () => {
     const b = build({ mfa: true });
     const result = await b.controller.login(credentials, req, b.res as never);
     expect(result).toEqual({ mfaRequired: true, challengeToken: 'challenge' });
+  });
+});
+
+describe('AuthController.login for a super admin (Task 12)', () => {
+  it('mints through the issuer with via admin, so TOTP stacks on the emailed code', async () => {
+    const b = build();
+    b.authService.login.mockResolvedValue({ ...ROW, role: 'SUPER_ADMIN' });
+    await b.controller.login(credentials, req, b.res as never);
+    expect(b.issuer.issue).toHaveBeenCalledWith('u1', req, b.res, {
+      via: 'admin',
+    });
+  });
+
+  it('super-admin with TOTP on: correct password + emailed token -> 200 {mfaRequired:true, challengeToken}, no cookie', async () => {
+    const b = build({ mfa: true });
+    b.authService.login.mockResolvedValue({ ...ROW, role: 'SUPER_ADMIN' });
+    const result = await b.controller.login(
+      { ...credentials, challengeToken: 'emailed' } as never,
+      req,
+      b.res as never,
+    );
+    expect(result).toEqual({ mfaRequired: true, challengeToken: 'challenge' });
+    expect(b.res.cookie).not.toHaveBeenCalled();
+  });
+
+  it('super-admin: a wrong password never reaches the issuer (the emailed token is not consumed there)', async () => {
+    const b = build({ loginError: new UnauthorizedException() });
+    await expect(
+      b.controller.login(credentials, req, b.res as never),
+    ).rejects.toThrow(UnauthorizedException);
+    expect(b.issuer.issue).not.toHaveBeenCalled();
   });
 });
 

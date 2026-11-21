@@ -1,4 +1,5 @@
 import * as bcrypt from 'bcrypt';
+import { UnauthorizedException } from '@nestjs/common';
 import {
   BadRequestException,
   HttpException,
@@ -29,6 +30,7 @@ export function makeAuthService(
     usersService?: Record<string, jest.Mock>;
     outbox?: Record<string, jest.Mock>;
     welcome?: { send: jest.Mock };
+    adminChallenge?: { consumeChallengeToken: jest.Mock };
   } = {},
 ) {
   const db = overrides.db ?? { query: { users: { findFirst: jest.fn() } } };
@@ -49,7 +51,9 @@ export function makeAuthService(
     usersService as never,
     outbox as never,
     { emailVerified: jest.fn() } as never,
-    { verifyChallengeToken: jest.fn() } as never,
+    (overrides.adminChallenge ?? {
+      consumeChallengeToken: jest.fn().mockResolvedValue(undefined),
+    }) as never,
     { record: jest.fn(), recordSync: jest.fn() } as never,
     links,
     accountSecurity as never,
@@ -142,6 +146,72 @@ describe('AuthService.login (first factor only)', () => {
     await expect(
       service.login({ email: 'a@b.co', password: 'pw' }),
     ).rejects.toMatchObject({ response: { code: 'ACCOUNT_SUSPENDED' } });
+  });
+});
+
+describe('AuthService.login for a super admin (Task 12)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const admin = {
+    id: 'u-admin',
+    email: 'owner@b.co',
+    password: 'hash',
+    isActive: true,
+    isEmailVerified: true,
+    role: 'SUPER_ADMIN',
+  };
+
+  function build(consume = jest.fn().mockResolvedValue(undefined)) {
+    const order: string[] = [];
+    (bcrypt.compare as jest.Mock).mockImplementation((pw: string) => {
+      order.push('bcrypt');
+      return Promise.resolve(pw === 'right');
+    });
+    consume.mockImplementation(() => {
+      order.push('consume');
+      return Promise.resolve();
+    });
+    const { service } = makeAuthService({
+      usersService: { findByEmail: jest.fn().mockResolvedValue(admin) },
+      adminChallenge: { consumeChallengeToken: consume },
+    });
+    return { service, consume, order };
+  }
+
+  it('a wrong password does not consume the emailed token', async () => {
+    const b = build();
+    await expect(
+      b.service.login({
+        email: admin.email,
+        password: 'wrong',
+        challengeToken: 't',
+      }),
+    ).rejects.toThrow('Invalid credentials');
+    expect(b.consume).not.toHaveBeenCalled();
+  });
+
+  it('the right password consumes the emailed token for this user, after bcrypt', async () => {
+    const b = build();
+    await expect(
+      b.service.login({
+        email: admin.email,
+        password: 'right',
+        challengeToken: 't',
+      }),
+    ).resolves.toBe(admin);
+    expect(b.consume).toHaveBeenCalledWith('t', 'u-admin');
+    expect(b.order).toEqual(['bcrypt', 'consume']);
+  });
+
+  it('a spent or missing token is the 401 and the login fails', async () => {
+    const consume = jest.fn();
+    const b = build(consume);
+    consume.mockImplementation(() =>
+      Promise.reject(new UnauthorizedException('Invalid credentials')),
+    );
+    await expect(
+      b.service.login({ email: admin.email, password: 'right' }),
+    ).rejects.toThrow('Invalid credentials');
   });
 });
 

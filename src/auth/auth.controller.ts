@@ -168,8 +168,10 @@ export class AuthController {
     // device.
     const user = await this.authService.login(loginDto);
 
+    // A super admin has passed the password AND the emailed code; the issuer
+    // stacks TOTP on top when it is on, and never trusts their device (B5).
     const issued = await this.issuer.issue(user.id, request, response, {
-      via: 'password',
+      via: user.role === 'SUPER_ADMIN' ? 'admin' : 'password',
     });
     if (issued.kind === 'mfa') {
       return {
