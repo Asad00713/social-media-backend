@@ -11,6 +11,8 @@ import {
   mfaSetupMissing,
   reauthRequired,
   sessionIsCurrent,
+  wrongPassword,
+  emailNotVerified,
 } from './mfa-errors';
 
 const body = (e: HttpException) => e.getResponse() as Record<string, unknown>;
@@ -50,6 +52,13 @@ describe('mfa-errors (R5)', () => {
       400,
       'SESSION_IS_CURRENT',
       "This is the session you're using. Log out instead.",
+    ],
+    [wrongPassword(), 400, 'WRONG_PASSWORD', "That password isn't right."],
+    [
+      emailNotVerified(),
+      403,
+      'EMAIL_NOT_VERIFIED',
+      'Verify your email address before you turn on two-step sign-in.',
     ],
   ] as const)('%#: %s → %s %s', (error, status, code, message) => {
     expect(error.getStatus()).toBe(status);

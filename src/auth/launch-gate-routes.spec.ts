@@ -4,6 +4,7 @@ import { SKIP_LAUNCH_GATE } from './decorators/skip-launch-gate.decorator';
 import { GoogleAuthController } from './google/google-auth.controller';
 import { TwoFactorAuthController } from './two-factor/two-factor-auth.controller';
 import { SessionsController } from './session/sessions.controller';
+import { TwoFactorSettingsController } from './two-factor/two-factor-settings.controller';
 import { WorkspaceMembersController } from '../workspace-members/workspace-members.controller';
 
 /**
@@ -105,6 +106,23 @@ describe('launch gate route exemptions', () => {
           reflector.getAllAndOverride<boolean>(SKIP_LAUNCH_GATE, [
             SessionsController.prototype[method] as unknown as () => unknown,
             SessionsController,
+          ]),
+        ).toBe(true);
+      },
+    );
+  });
+
+  describe('the two-step settings stay reachable', () => {
+    it.each(['status', 'setup', 'enable', 'regenerate', 'disable'] as const)(
+      'TwoFactorSettingsController.%s skips the gate (class-level)',
+      (method) => {
+        expect(
+          reflector.getAllAndOverride<boolean>(SKIP_LAUNCH_GATE, [
+            Reflect.get(
+              TwoFactorSettingsController.prototype,
+              method,
+            ) as () => unknown,
+            TwoFactorSettingsController,
           ]),
         ).toBe(true);
       },

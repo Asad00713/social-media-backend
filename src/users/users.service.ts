@@ -45,6 +45,8 @@ export type PublicUser = Pick<
   hasPassword: boolean;
   /** True when a Google account is linked; the Google id itself never leaves the server. */
   hasGoogle: boolean;
+  /** Two-step sign-in is on. The secret and its columns never leave the server. */
+  twoFactorEnabled: boolean;
 };
 
 /**
@@ -74,15 +76,19 @@ const PUBLIC_USER_COLUMNS = {
 } as const;
 
 /**
- * `hasPassword` and `hasGoogle`, computed in SQL next to PUBLIC_USER_COLUMNS,
+ * `hasPassword`, `hasGoogle` and `twoFactorEnabled`, computed in SQL next to PUBLIC_USER_COLUMNS,
  * so a public read never loads the password hash or the Google id at all.
  */
 const PUBLIC_USER_EXTRAS = (fields: {
   password: typeof users.password;
   googleSub: typeof users.googleSub;
+  totpEnabledAt: typeof users.totpEnabledAt;
 }) => ({
   hasPassword: sql<boolean>`${fields.password} is not null`.as('has_password'),
   hasGoogle: sql<boolean>`${fields.googleSub} is not null`.as('has_google'),
+  twoFactorEnabled: sql<boolean>`${fields.totpEnabledAt} is not null`.as(
+    'two_factor_enabled',
+  ),
 });
 
 /** Narrow a full row to the public shape. Counterpart to PUBLIC_USER_COLUMNS
@@ -91,6 +97,7 @@ export function toPublicUser(row: User): PublicUser {
   return {
     hasPassword: row.password !== null,
     hasGoogle: row.googleSub !== null,
+    twoFactorEnabled: row.totpEnabledAt != null,
     id: row.id,
     email: row.email,
     name: row.name,

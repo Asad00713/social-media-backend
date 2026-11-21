@@ -400,6 +400,53 @@ describe('toPublicUser hasGoogle and passwordChangedAt', () => {
   });
 });
 
+describe('PublicUser.twoFactorEnabled (Task 14)', () => {
+  const full = {
+    id: 'u1',
+    email: 'sara@daybreak.co',
+    name: 'Sara',
+    role: 'USER',
+    isEmailVerified: true,
+    password: 'hash',
+    googleSub: null,
+    totpSecretEnc: 'iv:tag:ct',
+    totpPendingSecretEnc: 'iv:tag:ct2',
+    totpEnabledAt: new Date('2026-11-01T00:00:00Z'),
+    totpLastStep: 123,
+    mfaFailures: 3,
+    mfaLockedUntil: null,
+  } as unknown as User;
+
+  it('findOne and toPublicUser expose twoFactorEnabled and no totp_* / mfa_* column', async () => {
+    const out = toPublicUser(full);
+    expect(out.twoFactorEnabled).toBe(true);
+    expect(
+      toPublicUser({ ...full, totpEnabledAt: null }).twoFactorEnabled,
+    ).toBe(false);
+    const leaked = Object.keys(out).filter(
+      (k) => /totp|mfa/i.test(k) && k !== 'twoFactorEnabled',
+    );
+    expect(leaked).toEqual([]);
+
+    const findFirst = jest.fn().mockResolvedValue({ id: 'u1' });
+    const service = new UsersService(
+      { query: { users: { findFirst } } } as never,
+      {} as never,
+      {} as never,
+    );
+    await service.findOne('u1');
+    const real = drizzle({ client: {} as Pool, schema });
+    const { sql } = real.query.users
+      .findFirst(
+        firstArg<Parameters<typeof real.query.users.findFirst>[0]>(findFirst),
+      )
+      .toSQL();
+    expect(sql).toMatch(/"totp_enabled_at" is not null/i);
+    expect(sql).not.toMatch(/totp_secret_enc|totp_pending_secret_enc/i);
+    expect(sql).not.toMatch(/"totp_enabled_at"(?! is not null)/i);
+  });
+});
+
 /** A db whose transaction hands `tx` (with the same execute) to the callback. */
 function txDb() {
   const execute = jest.fn().mockResolvedValue(undefined);

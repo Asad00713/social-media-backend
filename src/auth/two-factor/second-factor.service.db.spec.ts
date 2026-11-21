@@ -377,6 +377,20 @@ describeDb('SecondFactorService (database)', () => {
     expect(r.enabled).toBe(false);
   });
 
+  it('regenerating replaces every code: an old code no longer works, a new one does', async () => {
+    const r = await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const userId = await seedUser(client);
+      const s = build(db);
+      const [old] = await s.replaceBackupCodes(userId);
+      const [fresh] = await s.replaceBackupCodes(userId);
+      return {
+        old: await codeOf(s.check(userId, { backupCode: old })),
+        fresh: await codeOf(s.check(userId, { backupCode: fresh })),
+      };
+    });
+    expect(r).toEqual({ old: 'MFA_CODE_INVALID', fresh: 'ok' });
+  });
+
   it('replaceBackupCodes stores only peppered hashes, never the codes', async () => {
     const r = await withRollbackDb(MIGRATIONS, async (db, client) => {
       const userId = await seedUser(client);

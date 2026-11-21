@@ -111,3 +111,25 @@ export function mfaCodeOf(error: unknown): string | undefined {
     ? String((body as { code: unknown }).code)
     : undefined;
 }
+
+/** The account password re-entered for a two-step change is wrong or missing. */
+export function wrongPassword(): HttpException {
+  return mfaError(
+    HttpStatus.BAD_REQUEST,
+    'WRONG_PASSWORD',
+    "That password isn't right.",
+  );
+}
+
+/**
+ * Two-step setup on an unverified account (batch-2 review ruling 2): the
+ * address was never proven, so a squatter must not be able to lock the real
+ * owner out with their own authenticator.
+ */
+export function emailNotVerified(): HttpException {
+  return mfaError(
+    HttpStatus.FORBIDDEN,
+    'EMAIL_NOT_VERIFIED',
+    'Verify your email address before you turn on two-step sign-in.',
+  );
+}

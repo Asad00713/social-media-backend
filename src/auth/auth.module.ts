@@ -26,6 +26,8 @@ import { TwoFactorNotices } from './two-factor/two-factor-notices.service';
 import { MfaChallengeService } from './two-factor/mfa-challenge.service';
 import { TwoFactorAuthController } from './two-factor/two-factor-auth.controller';
 import { SessionsController } from './session/sessions.controller';
+import { TwoFactorSettingsController } from './two-factor/two-factor-settings.controller';
+import { TwoFactorService } from './two-factor/two-factor.service';
 
 @Module({
   imports: [
@@ -48,6 +50,8 @@ import { SessionsController } from './session/sessions.controller';
     // Two-step sign-in security emails.
     TwoFactorNotices,
     MfaChallengeService,
+    // Settings -> Security -> Two-step sign-in (setup, enable, codes, off).
+    TwoFactorService,
     WelcomeEmailService,
     JwtStrategy,
     JwtRefreshStrategy,
@@ -74,6 +78,8 @@ import { SessionsController } from './session/sessions.controller';
     TwoFactorAuthController,
     // GET/DELETE /users/me/sessions: list and end the user's sessions.
     SessionsController,
+    // /users/me/2fa: status, setup, enable, regenerate, disable.
+    TwoFactorSettingsController,
   ],
 })
 export class AuthModule {}
