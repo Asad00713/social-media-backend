@@ -57,6 +57,22 @@ describe('TwoFactorNotices', () => {
     expect(call(0).email.template.id).toBe('two-step-failed');
   });
 
+  it('disabledBySupport(): two-step-disabled by support, naming support as the device, no location', async () => {
+    const { notices, call } = build();
+    await notices.disabledBySupport('u1');
+    const c = call();
+    expect(c.userId).toBe('u1');
+    expect(c.event).toBe('security_alert');
+    expect(c.email.template.id).toBe('two-step-disabled');
+    expect(c.email.props).toMatchObject({
+      by: 'support',
+      device: 'Schedura support',
+      location: null,
+      notMeUrl: 'https://api.test/email/security/tok',
+    });
+    expect(c.email.idempotencyKey).toMatch(/^two-step-disabled\.u1\.\d+$/);
+  });
+
   it('builds the shared props: time, device, country and the not-me link', async () => {
     const { notices, tokens, call } = build();
     await notices.enabled('u1', CTX);

@@ -465,6 +465,20 @@ export class AdminController {
     );
   }
 
+  /**
+   * Turns off a person's two-step sign-in and signs them out everywhere
+   * (audited as `user.2fa_reset`; the person is emailed). Super admin only,
+   * through the class guards. 404 unknown user, 409 MFA_NOT_ENABLED.
+   */
+  @Post('users/:userId/2fa/reset')
+  @HttpCode(HttpStatus.OK)
+  async resetTwoFactor(
+    @Param('userId') userId: string,
+    @CurrentUser() admin: { userId: string },
+  ) {
+    return this.adminService.resetTwoFactor(admin.userId, userId);
+  }
+
   @Post('users/:userId/reactivate')
   @HttpCode(HttpStatus.OK)
   async reactivateUser(

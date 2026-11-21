@@ -18,6 +18,9 @@ import type { RequestContext } from '../../users/account-security.service';
 import { deviceLabel } from '../devices/device-label';
 import { GeoipService } from '../services/geoip.service';
 
+/** The device row of an email for a change support made. */
+const SUPPORT_DEVICE = 'Schedura support';
+
 /**
  * The two-step sign-in security emails (R16). Every method never throws: the
  * action it reports has already happened, and a failed email must not undo
@@ -58,6 +61,22 @@ export class TwoFactorNotices {
       twoStepDisabledTemplate,
       { by },
       `two-step-disabled.${userId}.${Date.now()}`,
+    );
+  }
+
+  /**
+   * Support turned two-step off (admin reset). The request came from the
+   * admin's browser, not the person's, so the device row names support and
+   * no location is looked up.
+   */
+  disabledBySupport(userId: string): Promise<void> {
+    return this.send(
+      userId,
+      { ip: null, userAgent: null },
+      twoStepDisabledTemplate,
+      { by: 'support' },
+      `two-step-disabled.${userId}.${Date.now()}`,
+      SUPPORT_DEVICE,
     );
   }
 
@@ -102,16 +121,17 @@ export class TwoFactorNotices {
     template: EmailTemplateDef<P>,
     extra: Omit<P, keyof TwoStepNoticeProps>,
     idempotencyKey: string,
+    device?: string,
   ): Promise<void> {
     try {
       const [timeZone, geo] = await Promise.all([
         this.recipients.userTimezone(userId),
-        this.geoip.lookup(ctx.ip),
+        device ? null : this.geoip.lookup(ctx.ip),
       ]);
       const token = this.tokens.securityToken({ uid: userId, act: 'not_me' });
       const props = {
         when: formatWhen(new Date(), timeZone),
-        device: deviceLabel(ctx.userAgent),
+        device: device ?? deviceLabel(ctx.userAgent),
         location: geo?.country ?? null,
         notMeUrl: this.links.api('/email/security/' + token),
         ...extra,

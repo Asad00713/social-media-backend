@@ -12,6 +12,9 @@ import { EmailModule } from '../email/email.module';
 import { QueueModule } from '../queue/queue.module';
 import { ChannelsModule } from '../channels/channels.module';
 import { WorkspaceMembersModule } from '../workspace-members/workspace-members.module';
+import { SecurityCoreModule } from '../auth/security-core.module';
+import { TwoFactorNotices } from '../auth/two-factor/two-factor-notices.service';
+import { GeoipService } from '../auth/services/geoip.service';
 
 @Module({
   // Channels and members are imported for their services rather than
@@ -26,6 +29,8 @@ import { WorkspaceMembersModule } from '../workspace-members/workspace-members.m
     QueueModule,
     ChannelsModule,
     WorkspaceMembersModule,
+    // The two-step reset: SecondFactorService.clear and SessionStore.revokeAll.
+    SecurityCoreModule,
   ],
   controllers: [AdminController],
   providers: [
@@ -36,6 +41,11 @@ import { WorkspaceMembersModule } from '../workspace-members/workspace-members.m
     AdminLogsService,
     UserInactivityService,
     QueueMonitorService,
+    // The two-step-disabled email of the reset. NotifyService and
+    // RecipientsService are global; EmailTokensService and AppLinks come from
+    // EmailModule. GeoipService is stateless (AuthModule keeps its own).
+    TwoFactorNotices,
+    GeoipService,
   ],
   exports: [
     AdminService,
