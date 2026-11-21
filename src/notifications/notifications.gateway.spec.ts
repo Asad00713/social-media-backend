@@ -11,6 +11,7 @@ function setup(
     | { sessionsRevokedAt: Date | null; deletedAt?: Date | null }
     | undefined,
   lookupError?: Error,
+  live = true,
 ) {
   const jwt = new JwtService({});
   const where = lookupError
@@ -22,8 +23,14 @@ function setup(
     }),
   };
   const config = { get: jest.fn().mockReturnValue(SECRET) };
-  const gateway = new NotificationsGateway(jwt, config as never, db as never);
-  return { gateway, jwt };
+  const check = { isLive: jest.fn().mockResolvedValue(live) };
+  const gateway = new NotificationsGateway(
+    jwt,
+    config as never,
+    db as never,
+    check as never,
+  );
+  return { gateway, jwt, check };
 }
 
 function socketWith(token: string) {
@@ -39,6 +46,39 @@ function socketWith(token: string) {
 function tokenAt(jwt: JwtService, iat: number): string {
   return jwt.sign({ sub: 'u1', email: 'a@b.co', iat }, { secret: SECRET });
 }
+
+describe('NotificationsGateway.handleConnection session (sid)', () => {
+  const SID = '11111111-1111-4111-8111-111111111111';
+  beforeEach(() => {
+    jest.spyOn(Logger.prototype, 'error').mockImplementation();
+    jest.spyOn(Logger.prototype, 'log').mockImplementation();
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  const sidToken = (jwt: JwtService, iat: number) =>
+    jwt.sign({ sub: 'u1', email: 'a@b.co', iat, sid: SID }, { secret: SECRET });
+
+  it('disconnects a handshake whose sid is revoked', async () => {
+    const { gateway, jwt, check } = setup(
+      { sessionsRevokedAt: null },
+      undefined,
+      false,
+    );
+    const client = socketWith(sidToken(jwt, 1_800_000_000));
+    await gateway.handleConnection(client as never);
+    expect(check.isLive).toHaveBeenCalledWith(SID, 'u1');
+    expect(client.disconnect).toHaveBeenCalled();
+    expect(client.join).not.toHaveBeenCalled();
+  });
+
+  it('a live sid connects even when it predates the floor (row is the authority)', async () => {
+    const { gateway, jwt } = setup({ sessionsRevokedAt: REVOKED_AT });
+    const client = socketWith(sidToken(jwt, 1_699_000_000));
+    await gateway.handleConnection(client as never);
+    expect(client.disconnect).not.toHaveBeenCalled();
+    expect(client.join).toHaveBeenCalledWith('user:u1');
+  });
+});
 
 describe('NotificationsGateway.handleConnection session revocation', () => {
   beforeEach(() => {

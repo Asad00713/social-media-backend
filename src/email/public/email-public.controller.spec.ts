@@ -23,6 +23,7 @@ import { UsersService } from '../../users/users.service';
 import { AppLinks } from '../links/app-links';
 import { EmailTokensService } from '../tokens/email-tokens.service';
 import { EmailPublicController } from './email-public.controller';
+import { SessionCheck } from '../../auth/session/session-check';
 
 const SECRET = 'email-public-controller-spec-secret';
 /** A fresh user per test: the POST throttle is per token, and a token is the same for the same claims within a second. */
@@ -100,6 +101,11 @@ describe('EmailPublicController over HTTP', () => {
         { provide: ConfigService, useValue: config },
         { provide: UsersService, useValue: users_ },
         { provide: APP_GUARD, useClass: AllowlistGuard },
+        // AllowlistGuard checks the session behind a token; every one is live here.
+        {
+          provide: SessionCheck,
+          useValue: { isLive: () => Promise.resolve(true) },
+        },
       ],
     }).compile();
     app = moduleRef.createNestApplication();

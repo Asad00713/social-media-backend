@@ -11,6 +11,7 @@ import { UserPreferencesService } from './preferences/user-preferences.service';
 import { MyWorkspacesService } from './my-workspaces.service';
 import { AccountDeletionService } from './account-deletion.service';
 import { BillingModule } from '../billing/billing.module';
+import { SecurityCoreModule } from '../auth/security-core.module';
 
 @Module({
   // For R2, which issues the presigned URL a profile picture is uploaded to.
@@ -19,7 +20,9 @@ import { BillingModule } from '../billing/billing.module';
   // NotificationsModule. BillingModule for the account delete, which cancels
   // the subscription and decrements member counts (it does not import this
   // module back, so there is no cycle).
-  imports: [MediaModule, EmailModule, BillingModule],
+  // SecurityCoreModule: every sessions_revoked_at write goes through
+  // SessionStore, which also revokes the session rows.
+  imports: [MediaModule, EmailModule, BillingModule, SecurityCoreModule],
   // GeoipService is stateless; AuthModule keeps its own instance.
   providers: [
     UsersService,

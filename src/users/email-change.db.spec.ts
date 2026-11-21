@@ -74,6 +74,7 @@ function build(db: DbType) {
     links,
     none,
     none,
+    {} as never,
   );
   const minted: SecurityClaims[] = [];
   const tokens = {

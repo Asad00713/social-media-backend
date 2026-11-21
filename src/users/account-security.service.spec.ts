@@ -33,6 +33,8 @@ function setup(
     geo?: GeoLocation | null;
     /** What `update ... returning()` answers; defaults to the unlinked row. */
     updated?: unknown[];
+    /** Rows SessionStore.revokeOthers reports. */
+    revoked?: number;
   } = {},
 ) {
   const password =
@@ -62,7 +64,14 @@ function setup(
     );
   const set = jest.fn().mockReturnValue({ where });
   const update = jest.fn().mockReturnValue({ set });
-  const db = { query: { users: { findFirst } }, update };
+  // changePassword writes inside a transaction; `tx` is what it receives.
+  const tx = { update };
+  const transaction = jest.fn((fn: (t: typeof tx) => unknown) => fn(tx));
+  const db = { query: { users: { findFirst } }, update, transaction };
+  const sessions = {
+    revokeOthers: jest.fn().mockResolvedValue(opts.revoked ?? 2),
+    revokeAll: jest.fn().mockResolvedValue(3),
+  };
 
   const shouldSend = jest.fn().mockResolvedValue(opts.appAllowed ?? true);
   const enqueue = jest.fn().mockResolvedValue(undefined);
@@ -101,10 +110,13 @@ function setup(
     links,
     geoip as unknown as GeoipService,
     emitter as unknown as NotificationEmitterService,
+    sessions as never,
   );
   return {
     service,
     db,
+    tx,
+    sessions,
     set,
     where,
     returning,
@@ -210,25 +222,28 @@ describe('AccountSecurityService.changePassword', () => {
     expect(emitter.passwordChanged).not.toHaveBeenCalled();
   });
 
-  it('success hashes, sets sessions_revoked_at, enqueues password-changed (security footer), rings passwordChanged when security_alert app is on', async () => {
-    const { service, set, shouldSend, enqueue, tokens, emitter } = setup();
+  it('success hashes, revokes the other sessions, enqueues password-changed (security footer), rings passwordChanged when security_alert app is on', async () => {
+    const { service, set, sessions, tx, shouldSend, enqueue, tokens, emitter } =
+      setup();
     const notice = jest.spyOn(service, 'sendPasswordChanged');
-    const before = Date.now();
 
-    await service.changePassword(
+    const result = await service.changePassword(
       'u1',
       { currentPassword: OLD, newPassword: NEW },
       CTX,
+      'sid-1',
     );
     await noticeSettled(notice);
 
-    const written = firstArg<{ password: string; sessionsRevokedAt: Date }>(
+    const written = firstArg<Record<string, unknown> & { password: string }>(
       set,
     );
     expect(written.password).not.toBe(NEW);
     await expect(bcrypt.compare(NEW, written.password)).resolves.toBe(true);
-    expect(written.sessionsRevokedAt).toBeInstanceOf(Date);
-    expect(written.sessionsRevokedAt.getTime()).toBeGreaterThanOrEqual(before);
+    // The floor is written by SessionStore only, never by this service.
+    expect(written).not.toHaveProperty('sessionsRevokedAt');
+    expect(sessions.revokeOthers).toHaveBeenCalledWith('u1', 'sid-1', tx);
+    expect(result).toEqual({ revokedSessions: 2 });
 
     expect(tokens.securityToken).toHaveBeenCalledWith({
       uid: 'u1',
@@ -259,8 +274,8 @@ describe('AccountSecurityService.changePassword', () => {
     expect(emitter.passwordChanged).toHaveBeenCalledWith('u1');
   });
 
-  it('stamps passwordChangedAt with the same instant as the session revocation', async () => {
-    const { service, set } = setup();
+  it('writes the password and revokes the other sessions in ONE transaction', async () => {
+    const { service, db, tx, sessions, set } = setup();
     jest.spyOn(service, 'sendPasswordChanged').mockResolvedValue(undefined);
 
     await service.changePassword(
@@ -269,19 +284,19 @@ describe('AccountSecurityService.changePassword', () => {
       CTX,
     );
 
-    const written = firstArg<{
-      passwordChangedAt: Date;
-      sessionsRevokedAt: Date;
-    }>(set);
-    expect(written.passwordChangedAt).toBeInstanceOf(Date);
-    expect(written.passwordChangedAt).toBe(written.sessionsRevokedAt);
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+    expect(db.update).toHaveBeenCalledTimes(1); // the tx.update (same mock)
+    expect(sessions.revokeOthers).toHaveBeenCalledWith('u1', null, tx);
+    expect(
+      firstArg<{ passwordChangedAt: Date }>(set).passwordChangedAt,
+    ).toBeInstanceOf(Date);
   });
 
-  it('revokeOtherSessions: false keeps the other sessions: the password and its date are written, sessionsRevokedAt is not', async () => {
-    const { service, set } = setup();
+  it('revokeOtherSessions: false keeps the other sessions: the password and its date are written, nothing is revoked, no revokedSessions', async () => {
+    const { service, set, sessions } = setup();
     jest.spyOn(service, 'sendPasswordChanged').mockResolvedValue(undefined);
 
-    await service.changePassword(
+    const result = await service.changePassword(
       'u1',
       { currentPassword: OLD, newPassword: NEW, revokeOtherSessions: false },
       CTX,
@@ -291,21 +306,30 @@ describe('AccountSecurityService.changePassword', () => {
     expect(written.password).toEqual(expect.any(String));
     expect(written.passwordChangedAt).toBeInstanceOf(Date);
     expect(written).not.toHaveProperty('sessionsRevokedAt');
+    expect(sessions.revokeOthers).not.toHaveBeenCalled();
+    expect(result).toEqual({});
   });
 
-  it('revokeOtherSessions: true revokes, like omitting it', async () => {
-    const { service, set } = setup();
+  it('revokeOtherSessions: true revokes, like omitting it, and reports the count', async () => {
+    const { service, set, sessions } = setup({ revoked: 5 });
     jest.spyOn(service, 'sendPasswordChanged').mockResolvedValue(undefined);
 
-    await service.changePassword(
+    const result = await service.changePassword(
       'u1',
       { currentPassword: OLD, newPassword: NEW, revokeOtherSessions: true },
       CTX,
+      'sid-1',
     );
 
-    const written = firstArg<Record<string, unknown>>(set);
-    expect(written.sessionsRevokedAt).toBeInstanceOf(Date);
-    expect(written.passwordChangedAt).toBeInstanceOf(Date);
+    expect(sessions.revokeOthers).toHaveBeenCalledWith(
+      'u1',
+      'sid-1',
+      expect.anything(),
+    );
+    expect(result).toEqual({ revokedSessions: 5 });
+    expect(
+      firstArg<Record<string, unknown>>(set).passwordChangedAt,
+    ).toBeInstanceOf(Date);
   });
 
   it('does not ring the bell when the security_alert app switch is off, and still emails', async () => {
@@ -333,7 +357,7 @@ describe('AccountSecurityService.changePassword', () => {
         { currentPassword: OLD, newPassword: NEW },
         CTX,
       ),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ revokedSessions: 2 });
     await noticeSettled(notice);
     expect(set).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalled();
@@ -351,7 +375,7 @@ describe('AccountSecurityService.changePassword', () => {
         { currentPassword: OLD, newPassword: NEW },
         CTX,
       ),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ revokedSessions: 2 });
 
     // Revoke first, then answer: the one write landed before the notice ran.
     expect(set).toHaveBeenCalledTimes(1);
@@ -374,7 +398,7 @@ describe('AccountSecurityService.changePassword', () => {
         { currentPassword: OLD, newPassword: NEW },
         CTX,
       ),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ revokedSessions: 2 });
   });
 });
 
@@ -415,12 +439,11 @@ describe('AccountSecurityService.sendPasswordChanged', () => {
 });
 
 describe('AccountSecurityService.revokeSessions', () => {
-  it('stamps sessions_revoked_at', async () => {
-    const { service, set } = setup();
+  it('ends every session through SessionStore.revokeAll (rows and the floor)', async () => {
+    const { service, sessions, set } = setup();
     await service.revokeSessions('u1');
-    expect(
-      firstArg<{ sessionsRevokedAt: Date }>(set).sessionsRevokedAt,
-    ).toBeInstanceOf(Date);
+    expect(sessions.revokeAll).toHaveBeenCalledWith('u1');
+    expect(set).not.toHaveBeenCalled();
   });
 });
 

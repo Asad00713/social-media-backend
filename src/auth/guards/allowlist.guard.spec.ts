@@ -16,7 +16,9 @@ const reflector = (skip: boolean) =>
 
 function make(opts: {
   skip?: boolean;
-  verify?: (t: string) => { sub: string; email: string };
+  verify?: (t: string) => { sub: string; email: string; sid?: string };
+  /** What SessionCheck answers for a sid (default: live). */
+  live?: boolean;
   role?: string;
   /** The address on the users row; the claim's email is never read. */
   email?: string;
@@ -52,6 +54,7 @@ function make(opts: {
     jwtService as never,
     config as never,
     usersService as never,
+    { isLive: jest.fn().mockResolvedValue(opts.live ?? true) } as never,
   );
 }
 
@@ -183,6 +186,39 @@ describe('AllowlistGuard', () => {
     });
     await expect(
       listed.canActivate(ctx({ authorization: 'Bearer t' })),
+    ).resolves.toBe(true);
+  });
+
+  it('a revoked sid → 401 Session ended (never the 403 NOT_LAUNCHED or a pass)', async () => {
+    process.env.ALLOWLIST_EMAILS = 'a@x.com';
+    for (const email of ['a@x.com', 'c@z.com']) {
+      const g = make({
+        verify: () => ({
+          sub: 'u1',
+          email,
+          sid: '11111111-1111-4111-8111-111111111111',
+        }),
+        email,
+        live: false,
+      });
+      await expect(
+        g.canActivate(ctx({ authorization: 'Bearer t' })),
+      ).rejects.toMatchObject({ status: 401, message: 'Session ended' });
+    }
+  });
+
+  it('a live sid on an allowlisted user passes', async () => {
+    process.env.ALLOWLIST_EMAILS = 'a@x.com';
+    const g = make({
+      verify: () => ({
+        sub: 'u1',
+        email: 'a@x.com',
+        sid: '11111111-1111-4111-8111-111111111111',
+      }),
+      email: 'a@x.com',
+    });
+    await expect(
+      g.canActivate(ctx({ authorization: 'Bearer t' })),
     ).resolves.toBe(true);
   });
 });

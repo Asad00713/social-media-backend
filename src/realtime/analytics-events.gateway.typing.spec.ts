@@ -1,6 +1,9 @@
 import { Logger } from '@nestjs/common';
 import { AnalyticsEventsGateway } from './analytics-events.gateway';
 
+/** What the fake SessionCheck answers for a sid. */
+const sessionLive = true;
+
 const findUser = jest.fn();
 jest.mock('../drizzle/db', () => ({
   db: {
@@ -36,6 +39,7 @@ function build(role: string | null = 'MEMBER') {
     {} as never,
     {} as never,
     { getRole } as never,
+    { isLive: jest.fn().mockResolvedValue(sessionLive) } as never,
   );
   const serverEmit = jest.fn();
   const serverTo = jest.fn(() => ({ emit: serverEmit }));

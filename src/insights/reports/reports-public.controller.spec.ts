@@ -28,6 +28,7 @@ import { ReportTokensService } from './report-tokens.service';
 import { ReportsPublicController } from './reports-public.controller';
 import { ReportsRepository } from './reports.repository';
 import { ReportsService } from './reports.service';
+import { SessionCheck } from '../../auth/session/session-check';
 
 const SECRET = 'public-controller-spec-secret';
 /** What report tokens are signed with (derived from the login secret). */
@@ -138,6 +139,11 @@ describe('ReportsPublicController over HTTP', () => {
         { provide: ConfigService, useValue: config },
         { provide: UsersService, useValue: users },
         { provide: APP_GUARD, useClass: AllowlistGuard },
+        // AllowlistGuard checks the session behind a token; every one is live here.
+        {
+          provide: SessionCheck,
+          useValue: { isLive: () => Promise.resolve(true) },
+        },
       ],
     }).compile();
     app = moduleRef.createNestApplication();

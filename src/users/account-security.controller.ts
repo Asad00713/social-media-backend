@@ -93,18 +93,25 @@ export class AccountSecurityController {
     @Headers('user-agent') userAgent: string | undefined,
     @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
-  ): Promise<{ accessToken: string }> {
-    await this.security.changePassword(caller.userId, dto, {
-      ip: ip ?? null,
-      userAgent: userAgent ?? null,
-    });
+  ): Promise<{ accessToken: string; revokedSessions?: number }> {
+    const { revokedSessions } = await this.security.changePassword(
+      caller.userId,
+      dto,
+      { ip: ip ?? null, userAgent: userAgent ?? null },
+      caller.sid ?? null,
+    );
     const { accessToken } = await this.issuer.issue(
       caller.userId,
       request,
       response,
       { via: 'password_change', sid: caller.sid ?? null },
     );
-    return { accessToken };
+    // revokedSessions only when other sessions were asked to end (the FE
+    // toasts "Logged out of {n} other sessions.").
+    return {
+      accessToken,
+      ...(revokedSessions !== undefined && { revokedSessions }),
+    };
   }
 
   /**

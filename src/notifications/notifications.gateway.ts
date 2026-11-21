@@ -18,9 +18,10 @@ import { DRIZZLE } from '../drizzle/drizzle.module';
 import { users } from '../drizzle/schema/users.schema';
 import {
   assertNotDeleted,
-  assertSessionLive,
   assertSessionTokenShape,
+  assertTokenLive,
 } from '../auth/strategies/jwt.strategy';
+import { SessionCheck } from '../auth/session/session-check';
 
 interface AuthenticatedSocket extends Socket {
   userId?: string;
@@ -48,6 +49,7 @@ export class NotificationsGateway
     private jwtService: JwtService,
     private configService: ConfigService,
     @Inject(DRIZZLE) private readonly db: DbType,
+    private readonly sessionCheck: SessionCheck,
   ) {}
 
   /**
@@ -67,10 +69,11 @@ export class NotificationsGateway
 
       // Verify JWT token
       const secret = this.configService.get<string>('JWT_ACCESS_SECRET');
-      const payload = this.jwtService.verify<{ sub: string; iat?: number }>(
-        token as string,
-        { secret },
-      );
+      const payload = this.jwtService.verify<{
+        sub: string;
+        iat?: number;
+        sid?: string;
+      }>(token as string, { secret });
       // Only a session token opens a socket (not an admin challenge token).
       assertSessionTokenShape(payload);
       const userId = payload.sub;
@@ -87,7 +90,8 @@ export class NotificationsGateway
         .where(eq(users.id, userId));
       if (!account) throw new Error(`User ${userId} not found`);
       assertNotDeleted(account.deletedAt);
-      assertSessionLive(payload.iat, account.sessionsRevokedAt);
+      // A revoked session (its sid) or, for a pre-deploy token, the floor.
+      await assertTokenLive(payload, account, this.sessionCheck);
 
       // Store userId on socket
       client.userId = userId;

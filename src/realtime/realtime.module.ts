@@ -4,10 +4,13 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AnalyticsEventsGateway } from './analytics-events.gateway';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 import { AnalyticsEventEmitter } from './analytics-event-emitter.service';
+import { SecurityCoreModule } from '../auth/security-core.module';
 
 @Global() // expose emitter app-wide without per-module import
 @Module({
   imports: [
+    // SessionCheck for the socket handshake (a revoked session cannot open one).
+    SecurityCoreModule,
     ConfigModule,
     WorkspaceRoleModule,
     JwtModule.registerAsync({

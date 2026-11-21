@@ -122,6 +122,23 @@ describe('SessionIssuer is the only session minter', () => {
     },
   );
 
+  it('only SessionStore and AccountDeletionService write sessions_revoked_at', () => {
+    // B1: the floor judges sid-less tokens only, and every write of it must
+    // also revoke the session rows - so it lives in SessionStore. The account
+    // delete also deletes the rows itself. A read (`sessionsRevokedAt: true`,
+    // a `Date | null` type, `users.sessionsRevokedAt`) is not a write.
+    const WRITE =
+      /sessionsRevokedAt\s*:(?!\s*(?:true\b|Date\b|users\.|timestamp\())|sessions_revoked_at\s*=(?!=)/;
+    const ALLOWED = [
+      'auth/session/session-store.ts',
+      'users/account-deletion.service.ts',
+    ];
+    const writers = files.filter((f) => WRITE.test(read(f))).map(rel);
+    expect(writers.filter((f) => !ALLOWED.includes(f))).toEqual([]);
+    // Not vacuous: the store itself matches.
+    expect(writers).toContain('auth/session/session-store.ts');
+  });
+
   it('SIGNERS_ALLOWED has no stale entries', () => {
     const missing = Object.keys(SIGNERS_ALLOWED).filter(
       (f) => !fs.existsSync(path.join(SRC, f)),

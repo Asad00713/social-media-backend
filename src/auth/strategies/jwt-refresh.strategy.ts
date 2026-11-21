@@ -4,10 +4,11 @@ import { PassportStrategy } from '@nestjs/passport';
 import { Request } from 'express';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { UsersService } from '../../users/users.service';
+import { SessionCheck } from '../session/session-check';
 import {
   assertNotDeleted,
-  assertSessionLive,
   assertSessionTokenShape,
+  assertTokenLive,
   sidOf,
 } from './jwt.strategy';
 
@@ -27,6 +28,7 @@ export class JwtRefreshStrategy extends PassportStrategy(
   constructor(
     private configService: ConfigService,
     private usersService: UsersService,
+    private sessionCheck: SessionCheck,
   ) {
     const secret = configService.get<string>('JWT_REFRESH_SECRET');
 
@@ -68,7 +70,10 @@ export class JwtRefreshStrategy extends PassportStrategy(
     // A deleted account's refresh token never mints a new pair, whatever its
     // iat (the delete also sets sessions_revoked_at; this does not rely on it).
     assertNotDeleted(user.deletedAt);
-    assertSessionLive(payload.iat, user.sessionsRevokedAt);
+    // A revoked or idle sid is refused here; the issuer's touch refuses it
+    // again (uncached) before minting, so the 30 s cache cannot mint around
+    // a revoke made on another instance.
+    await assertTokenLive(payload, user, this.sessionCheck);
 
     // The current address, not the claim: /auth/refresh re-mints both tokens
     // from this, so a stale claim would otherwise live on after an email change.

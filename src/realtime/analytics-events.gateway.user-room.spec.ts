@@ -1,6 +1,9 @@
 import { Logger } from '@nestjs/common';
 import { AnalyticsEventsGateway } from './analytics-events.gateway';
 
+/** What the fake SessionCheck answers for a sid. */
+const sessionLive = true;
+
 // The session check at connect finds a user whose sessions were never revoked.
 jest.mock('../drizzle/db', () => ({
   db: {
@@ -19,6 +22,7 @@ function build(verify: () => Promise<unknown>) {
     { verifyAsync: jest.fn(verify) } as never,
     { get: () => 'secret' } as never,
     {} as never,
+    { isLive: jest.fn().mockResolvedValue(sessionLive) } as never,
   );
   const emit = jest.fn();
   const to = jest.fn(() => ({ emit }));

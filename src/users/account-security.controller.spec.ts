@@ -19,12 +19,12 @@ import type { EmailChangeService } from './email-change.service';
 describe('AccountSecurityController.changePassword', () => {
   const SID = '11111111-1111-4111-8111-111111111111';
 
-  function setup(refusal?: Error) {
+  function setup(refusal?: Error, outcome: { revokedSessions?: number } = {}) {
     const calls: string[] = [];
     const security = {
       changePassword: jest.fn(() => {
         calls.push('change');
-        return refusal ? Promise.reject(refusal) : Promise.resolve();
+        return refusal ? Promise.reject(refusal) : Promise.resolve(outcome);
       }),
     };
     const issuer = {
@@ -63,16 +63,34 @@ describe('AccountSecurityController.changePassword', () => {
     );
 
     expect(result).toEqual({ accessToken: 'access-token' });
-    expect(security.changePassword).toHaveBeenCalledWith('u1', dto, {
-      ip: '39.48.12.201',
-      userAgent: 'UA',
-    });
+    expect(security.changePassword).toHaveBeenCalledWith(
+      'u1',
+      dto,
+      { ip: '39.48.12.201', userAgent: 'UA' },
+      SID,
+    );
     // Minted after the revocation, so the new pair is not refused.
     expect(calls).toEqual(['change', 'issue']);
     expect(issuer.issue).toHaveBeenCalledWith('u1', request, response, {
       via: 'password_change',
       sid: SID,
     });
+  });
+
+  it('POST /users/me/password returns {accessToken, revokedSessions: 2} after revoking two other sessions', async () => {
+    const { controller, response, request } = setup(undefined, {
+      revokedSessions: 2,
+    });
+    await expect(
+      controller.changePassword(
+        caller,
+        dto,
+        undefined,
+        undefined,
+        request as never,
+        response as unknown as Response,
+      ),
+    ).resolves.toEqual({ accessToken: 'access-token', revokedSessions: 2 });
   });
 
   it('a pre-deploy caller (no sid) asks the issuer for a new row', async () => {
