@@ -1688,3 +1688,176 @@ describeDb('0098 user_sessions', () => {
     expect(indexes).toEqual(['user_sessions_pkey', 'user_sessions_user_live_idx']);
   });
 });
+
+const FILE_0099 = '0099_two_factor.sql';
+/** known_devices, which 0099 alters. */
+const FILE_0072 = '0072_known_devices.sql';
+
+describeDb('0099 two_factor', () => {
+  const MIGRATIONS = [FILE_0072, FILE_0098, FILE_0099];
+
+  it('adds six users columns with mfa_failures NOT NULL DEFAULT 0', async () => {
+    const result = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const columns = await client.query<{
+        column_name: string;
+        data_type: string;
+        is_nullable: string;
+        column_default: string | null;
+      }>(
+        `SELECT column_name, data_type, is_nullable, column_default
+           FROM information_schema.columns
+          WHERE table_name = 'users'
+            AND column_name IN ('totp_secret_enc', 'totp_pending_secret_enc',
+                                'totp_enabled_at', 'totp_last_step',
+                                'mfa_failures', 'mfa_locked_until')
+          ORDER BY column_name`,
+      );
+      const userId = await seedUser(client);
+      const row = await client.query<{ mfa_failures: number }>(
+        `SELECT mfa_failures FROM users WHERE id = $1`,
+        [userId],
+      );
+      return { columns: columns.rows, failures: row.rows[0].mfa_failures };
+    });
+
+    const col = (
+      column_name: string,
+      data_type: string,
+      is_nullable: string,
+      column_default: string | null = null,
+    ) => ({ column_name, data_type, is_nullable, column_default });
+    expect(result.columns).toEqual([
+      col('mfa_failures', 'integer', 'NO', '0'),
+      col('mfa_locked_until', 'timestamp with time zone', 'YES'),
+      col('totp_enabled_at', 'timestamp with time zone', 'YES'),
+      col('totp_last_step', 'bigint', 'YES'),
+      col('totp_pending_secret_enc', 'text', 'YES'),
+      col('totp_secret_enc', 'text', 'YES'),
+    ]);
+    expect(result.failures).toBe(0);
+  });
+
+  it('adds known_devices.mfa_trusted_until', async () => {
+    const columns = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const r = await client.query<{ data_type: string; is_nullable: string }>(
+        `SELECT data_type, is_nullable FROM information_schema.columns
+          WHERE table_name = 'known_devices' AND column_name = 'mfa_trusted_until'`,
+      );
+      return r.rows;
+    });
+    expect(columns).toEqual([
+      { data_type: 'timestamp with time zone', is_nullable: 'YES' },
+    ]);
+  });
+
+  it('login_challenges.purpose accepts mfa and admin_email and rejects anything else', async () => {
+    const result = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const userId = await seedUser(client);
+      const insert = (purpose: string) =>
+        client.query<{ attempts: number; device_hash: string | null }>(
+          `INSERT INTO login_challenges (user_id, purpose, expires_at)
+           VALUES ($1, $2, now() + interval '5 minutes')
+           RETURNING attempts, device_hash`,
+          [userId, purpose],
+        );
+      const mfa = await insert('mfa');
+      const admin = await insert('admin_email');
+      await expectPgError(client, '23514', () => insert('x'));
+      const columns = await client.query<{
+        column_name: string;
+        data_type: string;
+        is_nullable: string;
+      }>(
+        `SELECT column_name, data_type, is_nullable FROM information_schema.columns
+          WHERE table_name = 'login_challenges' ORDER BY ordinal_position`,
+      );
+      const index = await client.query<{ indexdef: string }>(
+        `SELECT indexdef FROM pg_indexes
+          WHERE tablename = 'login_challenges'
+            AND indexname = 'login_challenges_user_idx'`,
+      );
+      return {
+        mfa: mfa.rows[0],
+        admin: admin.rowCount,
+        columns: columns.rows,
+        index: index.rows,
+      };
+    });
+
+    expect(result.mfa).toEqual({ attempts: 0, device_hash: null });
+    expect(result.admin).toBe(1);
+    const col = (column_name: string, data_type: string, is_nullable: string) => ({
+      column_name,
+      data_type,
+      is_nullable,
+    });
+    expect(result.columns).toEqual([
+      col('id', 'uuid', 'NO'),
+      col('user_id', 'uuid', 'NO'),
+      col('purpose', 'text', 'NO'),
+      col('attempts', 'integer', 'NO'),
+      col('device_hash', 'character', 'YES'),
+      col('expires_at', 'timestamp with time zone', 'NO'),
+      col('consumed_at', 'timestamp with time zone', 'YES'),
+      col('created_at', 'timestamp with time zone', 'NO'),
+    ]);
+    expect(result.index).toHaveLength(1);
+    expect(result.index[0].indexdef).toContain('(user_id)');
+  });
+
+  it('user_backup_codes has the partial index WHERE used_at IS NULL', async () => {
+    const result = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const userId = await seedUser(client);
+      await client.query(
+        `INSERT INTO user_backup_codes (user_id, code_hash) VALUES ($1, $2)`,
+        [userId, 'a'.repeat(64)],
+      );
+      const columns = await client.query<{
+        column_name: string;
+        data_type: string;
+        is_nullable: string;
+      }>(
+        `SELECT column_name, data_type, is_nullable FROM information_schema.columns
+          WHERE table_name = 'user_backup_codes' ORDER BY ordinal_position`,
+      );
+      const index = await client.query<{ indexdef: string }>(
+        `SELECT indexdef FROM pg_indexes
+          WHERE tablename = 'user_backup_codes' AND indexdef LIKE '%WHERE%'`,
+      );
+      // Both new tables cascade with the user.
+      await client.query(
+        `INSERT INTO login_challenges (user_id, purpose, expires_at)
+         VALUES ($1, 'mfa', now() + interval '5 minutes')`,
+        [userId],
+      );
+      await client.query(`DELETE FROM users WHERE id = $1`, [userId]);
+      const left = await client.query<{ n: string }>(
+        `SELECT (SELECT count(*) FROM user_backup_codes WHERE user_id = $1)
+              + (SELECT count(*) FROM login_challenges WHERE user_id = $1) AS n`,
+        [userId],
+      );
+      return {
+        columns: columns.rows,
+        index: index.rows,
+        left: Number(left.rows[0].n),
+      };
+    });
+
+    const col = (column_name: string, data_type: string, is_nullable: string) => ({
+      column_name,
+      data_type,
+      is_nullable,
+    });
+    expect(result.columns).toEqual([
+      col('id', 'uuid', 'NO'),
+      col('user_id', 'uuid', 'NO'),
+      col('code_hash', 'character', 'NO'),
+      col('used_at', 'timestamp with time zone', 'YES'),
+      col('created_at', 'timestamp with time zone', 'NO'),
+    ]);
+    expect(result.index).toHaveLength(1);
+    expect(result.index[0].indexdef).toContain('(user_id)');
+    expect(result.index[0].indexdef).toContain('WHERE (used_at IS NULL)');
+    expect(result.left).toBe(0);
+  });
+});

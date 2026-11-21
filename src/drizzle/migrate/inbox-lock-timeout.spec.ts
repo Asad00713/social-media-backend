@@ -49,6 +49,8 @@ import { readMigrations } from './runner';
  * 0097 validates those keys (SHARE UPDATE EXCLUSIVE on each referencing
  * table, ROW SHARE on the referenced one).
  * 0098 creates user_sessions; its FK takes SHARE ROW EXCLUSIVE on users.
+ * 0099 ALTERs users and known_devices: ACCESS EXCLUSIVE, metadata-only ADD
+ * COLUMN; the FKs of its two new tables take SHARE ROW EXCLUSIVE on users.
  */
 const FILES = [
   '0046_inbox_items_thread_key.sql',
@@ -76,6 +78,7 @@ const FILES = [
   '0095_users_fk_set_null.sql',
   '0097_users_fk_validate.sql',
   '0098_user_sessions.sql',
+  '0099_two_factor.sql',
 ];
 
 const firstStatement = (sql: string): string =>
