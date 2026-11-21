@@ -121,3 +121,27 @@ describe('AnalyticsEventsGateway.handleConnection', () => {
     expect(disconnect).toHaveBeenCalledWith(true);
   });
 });
+
+describe('AnalyticsEventsGateway.handleConnection token shape', () => {
+  beforeEach(() => {
+    findUser.mockReset();
+    jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it('disconnects a super-admin challenge token (purpose claim)', async () => {
+    findUser.mockResolvedValue({ sessionsRevokedAt: null });
+    const { gateway, socket, fake, disconnect } = build({
+      sub: 'u1',
+      email: 'a@b.co',
+      purpose: 'admin-login',
+      iat: ISSUED_AT,
+    });
+
+    await gateway.handleConnection(socket);
+
+    expect(disconnect).toHaveBeenCalledWith(true);
+    expect(fake.userId).toBeUndefined();
+  });
+});
