@@ -1051,5 +1051,79 @@ describe('MaestroService.streamMessage', () => {
 
       expect(names(events)).not.toContain('error');
     });
+
+    /**
+     * Pressing Stop is how the controller behaves: it aborts the signal and
+     * BREAKS out of its `for await`. Breaking a for-await calls `.return()`
+     * on the generator, so it is torn down at whichever `yield` it is
+     * sitting on — and every line after the loop, the save included, is
+     * skipped. `run()` above cannot show this, because it drains the
+     * generator to completion, which a stopped turn never reaches.
+     */
+    async function stopAfter(h: Harness, n: number): Promise<void> {
+      const controller = new AbortController();
+      const gen = h.service.streamMessage(
+        { conversationId: CONVERSATION_ID, userId: USER_ID, message: 'hi' },
+        controller.signal,
+      ) as AsyncGenerator<unknown, void, unknown>;
+
+      let seen = 0;
+      for await (const _ev of gen) {
+        if (++seen >= n) {
+          controller.abort();
+          break; // exactly what maestro.controller.ts does
+        }
+      }
+    }
+
+    /** The assistant rows this turn wrote. */
+    function assistantSaves(h: Harness): unknown[][] {
+      return h.addMessage.mock.calls.filter((c) => c[1] === 'assistant');
+    }
+
+    it('keeps what a stopped turn had already written', async () => {
+      // The failure this guards: the text was on screen and gone on
+      // reload, leaving a question with no reply at all.
+      const h = makeHarness([
+        ...textDeltas('Here is ', 'your week'),
+        DONE_EVENT,
+      ]);
+
+      await stopAfter(h, 2);
+
+      const [saved] = assistantSaves(h);
+      expect(saved).toBeDefined();
+      expect(saved[2]).toContain('Here is');
+    });
+
+    it('marks the saved row as stopped', async () => {
+      // So the panel can draw it as an interrupted answer after a reload,
+      // rather than as a reply that merely ended early.
+      const h = makeHarness([...textDeltas('Half an ', 'answer'), DONE_EVENT]);
+
+      await stopAfter(h, 2);
+
+      expect(assistantSaves(h)[0][3]).toMatchObject({ maestroStopped: true });
+    });
+
+    it('writes nothing when the turn was stopped before it spoke', async () => {
+      // An empty assistant row is worse than none: it reads as Maestro
+      // having answered with silence.
+      const h = makeHarness([...textDeltas('   '), DONE_EVENT]);
+
+      await stopAfter(h, 1);
+
+      expect(assistantSaves(h)).toHaveLength(0);
+    });
+
+    it('does not save the answer twice', async () => {
+      // A turn that finishes normally saves below, with its full metadata.
+      // If the rescue fired as well, the thread would hold the reply twice.
+      const h = makeHarness([...textDeltas('All done'), DONE_EVENT]);
+
+      await run(h);
+
+      expect(assistantSaves(h)).toHaveLength(1);
+    });
   });
 });

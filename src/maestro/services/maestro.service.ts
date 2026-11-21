@@ -1056,6 +1056,14 @@ export class MaestroService {
     let maestroNavigated: { destination: string; reason?: string } | null =
       null;
 
+    // What the assistant has written so far, and whether it has been saved.
+    // Both exist for the `finally` below: a stopped turn is torn down at a
+    // `yield`, so the rescue there cannot see anything scoped inside the
+    // try. `raw` is not usable for it — it is declared inside, and it also
+    // still holds the follow-ups marker.
+    let partialText = '';
+    let savedAssistant = false;
+
     // Both adapters implement the same port, so everything below — the SSE
     // translation, the media/question/reference extraction, persistence — is
     // shared. That is what makes the two tabs comparable.
@@ -1095,6 +1103,12 @@ export class MaestroService {
                 emittedLen = safeEnd;
               }
             }
+            // Mirrored for the abort rescue in `finally`, which cannot see
+            // `raw` — it is declared inside the try. Set HERE, after
+            // `markerIdx` has been resolved for this chunk, so a turn
+            // stopped mid-follow-ups saves its answer rather than one with
+            // "FOLLOWUPS:" trailing it.
+            partialText = markerIdx === -1 ? raw : raw.slice(0, markerIdx);
             break;
           }
           case 'tool_call':
@@ -1241,6 +1255,10 @@ export class MaestroService {
           model,
           usage.outputTokens,
         );
+        // Tells the abort rescue in `finally` that this turn is already on
+        // disk. Without it, a Stop pressed between this line and the end
+        // of the generator would write the answer a second time.
+        savedAssistant = true;
         yield {
           event: 'message_complete',
           data: { content: displayText, messageId: saved.id },
@@ -1293,6 +1311,38 @@ export class MaestroService {
           message: err instanceof Error ? err.message : 'Maestro failed',
         },
       };
+    } finally {
+      // A STOPPED turn still keeps what it wrote.
+      //
+      // When the user presses Stop the controller breaks out of its
+      // `for await`, and breaking a for-await calls `.return()` on this
+      // generator — so it dies at whichever `yield` it is sitting on and
+      // the save further down never runs at all. The text was on screen,
+      // and it was gone on reload: a question with no reply.
+      //
+      // `finally` is the only place that survives that teardown, which is
+      // why the save cannot simply be moved earlier. Guarded on `aborted`
+      // so the normal path, which saves below with full metadata and a
+      // `message_complete`, is left untouched — and on `savedAssistant`
+      // so a turn aborted AFTER its save does not write a second row.
+      //
+      // Nothing is yielded here: the consumer has already stopped reading,
+      // and a yield in a finally during teardown is discarded anyway.
+      if (signal.aborted && !savedAssistant && partialText.trim()) {
+        try {
+          await this.conversations.addMessage(
+            conversationId,
+            'assistant',
+            partialText.trim(),
+            { maestroStopped: true },
+            model,
+            usage.outputTokens,
+          );
+        } catch (err) {
+          // Never let the rescue break the teardown it is running inside.
+          this.logger.error(`failed to save stopped turn: ${err}`);
+        }
+      }
     }
   }
 }
