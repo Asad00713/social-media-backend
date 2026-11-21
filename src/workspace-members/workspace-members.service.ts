@@ -10,7 +10,7 @@ import {
 } from '@nestjs/common';
 import type { DbType } from 'src/drizzle/db';
 import { DRIZZLE } from 'src/drizzle/drizzle.module';
-import { and, eq, gt, inArray, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, gt, inArray, max, ne, or, sql, type SQL } from 'drizzle-orm';
 import * as crypto from 'crypto';
 import { InviteMemberDto } from './dto/invite-member.dto';
 import {
@@ -19,6 +19,7 @@ import {
   workspace,
   workspaceInvitation,
 } from 'src/drizzle/schema';
+import { userSessions } from 'src/drizzle/schema/user-sessions.schema';
 import { UpdateMemberDto } from './dto/update-member.dto';
 import { MemberRole } from './dto/add-member.dto';
 import { UsageService } from 'src/billing/services/usage.service';
@@ -930,17 +931,48 @@ export class WorkspaceMembersService {
       ],
     });
 
-    // lastActiveAt is the last sign-in, as an ISO string for the Team page.
+    // lastActiveAt is the latest session use, else the last sign-in (R14),
+    // as an ISO string for the Team page. last_login_at keeps being written
+    // on refresh too (the inactivity emails read it).
+    const sessionUse = await this.latestSessionUse([
+      ...(owner ? [owner.id] : []),
+      ...members.flatMap((m) => (m.user ? [m.user.id] : [])),
+    ]);
+    const lastActive = (
+      user: { id: string; lastLoginAt: Date | null } | null | undefined,
+    ): string | null =>
+      user
+        ? ((sessionUse.get(user.id) ?? user.lastLoginAt)?.toISOString() ?? null)
+        : null;
     return {
-      owner: owner
-        ? { ...owner, lastActiveAt: owner.lastLoginAt?.toISOString() ?? null }
-        : owner,
+      owner: owner ? { ...owner, lastActiveAt: lastActive(owner) } : owner,
       members: members.map((m) => ({
         ...m,
-        lastActiveAt: m.user?.lastLoginAt?.toISOString() ?? null,
+        lastActiveAt: lastActive(m.user),
       })),
       totalMembers: members.length + 1, // +1 for owner
     };
+  }
+
+  /**
+   * The newest `user_sessions.last_used_at` per user, revoked and expired
+   * rows included (a use is a use). One grouped read for the whole list.
+   */
+  private async latestSessionUse(
+    userIds: string[],
+  ): Promise<Map<string, Date>> {
+    if (userIds.length === 0) return new Map();
+    const rows = await this.db
+      .select({
+        userId: userSessions.userId,
+        lastUsedAt: max(userSessions.lastUsedAt),
+      })
+      .from(userSessions)
+      .where(inArray(userSessions.userId, userIds))
+      .groupBy(userSessions.userId);
+    return new Map(
+      rows.flatMap((r) => (r.lastUsedAt ? [[r.userId, r.lastUsedAt]] : [])),
+    );
   }
 
   // Update member role (only for ACCEPTED members)

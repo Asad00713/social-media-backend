@@ -186,6 +186,14 @@ describe('no response carries the invitation token', () => {
   it('the pending list and the member list leave the column out', async () => {
     const findMany = jest.fn().mockResolvedValue([]);
     const svc = makeService({
+      // getMembers' newest-session read (none here).
+      select: () => {
+        const b: Record<string, unknown> = {};
+        b.from = () => b;
+        b.where = () => b;
+        b.groupBy = () => Promise.resolve([]);
+        return b;
+      },
       query: {
         workspace: {
           findFirst: jest.fn().mockResolvedValue({ id: WS, ownerId: ADMIN }),

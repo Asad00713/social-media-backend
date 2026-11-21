@@ -23,6 +23,8 @@ const MIGRATIONS = [
   // The users columns two-step sign-in adds (0099 also alters known_devices).
   '0072_known_devices.sql',
   '0099_two_factor.sql',
+  // user_sessions: "Last active" is the newest session use (R14).
+  '0098_user_sessions.sql',
 ];
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -356,6 +358,72 @@ describeDb('WorkspaceMembersService.getMembers lastActiveAt (database)', () => {
     });
   });
 });
+
+describeDb(
+  'WorkspaceMembersService.getMembers lastActiveAt from sessions (database)',
+  () => {
+    it('lastActiveAt is the newest session last_used_at, falling back to last_login_at when the user has no session', async () => {
+      await run(ROOMY, async (service, client) => {
+        const owner = await seedUser(client, 'Owner');
+        const a = await seedUser(client, 'A');
+        const b = await seedUser(client, 'B');
+        const ws = await seedWorkspace(client, owner.id);
+        // T0 for both members' last sign-in (UTC wall-clock, see above).
+        for (const id of [a.id, b.id]) {
+          await client.query(
+            `UPDATE users SET last_login_at = $2::timestamp WHERE id = $1`,
+            [id, '2026-11-10T09:00:00.000Z'],
+          );
+        }
+        // A: two sessions, T1 < T2, a revoked one still counts as a use.
+        await client.query(
+          `INSERT INTO user_sessions (user_id, label, device_type, expires_at, last_used_at, revoked_at)
+         VALUES ($1, 'Chrome on Windows', 'desktop', now() + interval '30 days', $2::timestamptz, NULL),
+                ($1, 'Safari on iPhone', 'mobile', now() + interval '30 days', $3::timestamptz, now())`,
+          [a.id, '2026-11-12T10:00:00.000Z', '2026-11-14T11:15:00.000Z'],
+        );
+        for (const m of [a, b]) {
+          await client.query(
+            `INSERT INTO workspace_invitations
+             (workspace_id, email, user_id, role, status, token, expires_at, accepted_at)
+           VALUES ($1, $2, $3, 'MEMBER', 'ACCEPTED', $4, now() + interval '7 days', now())`,
+            [ws, m.email, m.id, rand() + rand()],
+          );
+        }
+
+        const res = await service.getMembers(ws, owner.id);
+
+        const byUser = new Map(
+          res.members.map((m) => [m.user?.id, m.lastActiveAt]),
+        );
+        expect(byUser.get(a.id)).toBe('2026-11-14T11:15:00.000Z');
+        expect(byUser.get(b.id)).toBe('2026-11-10T09:00:00.000Z');
+        // No session and never signed in.
+        expect(res.owner?.lastActiveAt).toBeNull();
+      });
+    });
+
+    it('the owner gets the newest session use too', async () => {
+      await run(ROOMY, async (service, client) => {
+        const owner = await seedUser(client, 'Owner');
+        const ws = await seedWorkspace(client, owner.id);
+        await client.query(
+          `UPDATE users SET last_login_at = $2::timestamp WHERE id = $1`,
+          [owner.id, '2026-11-01T00:00:00.000Z'],
+        );
+        await client.query(
+          `INSERT INTO user_sessions (user_id, label, device_type, expires_at, last_used_at)
+         VALUES ($1, 'Firefox on Linux', 'desktop', now() + interval '30 days', $2::timestamptz)`,
+          [owner.id, '2026-11-20T18:45:30.123Z'],
+        );
+
+        const res = await service.getMembers(ws, owner.id);
+
+        expect(res.owner?.lastActiveAt).toBe('2026-11-20T18:45:30.123Z');
+      });
+    });
+  },
+);
 
 describeDb('WorkspaceMembersService.resendInvitation (database)', () => {
   it('a pending invite gets 7 more days on the same token, and the email goes out', async () => {
