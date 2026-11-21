@@ -59,11 +59,25 @@ describe('SecondFactorService', () => {
     );
   });
 
-  it('NODE_ENV unset without a pepper → the constructor throws too (fail closed)', () => {
-    delete process.env.NODE_ENV;
+  it('a Railway service without a pepper → the constructor throws, whatever NODE_ENV says', () => {
+    process.env.NODE_ENV = 'development';
+    process.env.RAILWAY_ENVIRONMENT_NAME = 'production';
     delete process.env.MFA_CODE_PEPPER;
     expect(() => new SecondFactorService({} as never)).toThrow(
       /MFA_CODE_PEPPER/,
     );
+  });
+
+  it('locally with NODE_ENV unset and no pepper → boots on the dev default', () => {
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    delete process.env.NODE_ENV;
+    delete process.env.MFA_CODE_PEPPER;
+    delete process.env.RAILWAY_ENVIRONMENT_NAME;
+    delete process.env.RAILWAY_ENVIRONMENT;
+    delete process.env.RAILWAY_PROJECT_ID;
+    expect(() => new SecondFactorService({} as never)).not.toThrow();
+    expect(warn).toHaveBeenCalled();
   });
 });

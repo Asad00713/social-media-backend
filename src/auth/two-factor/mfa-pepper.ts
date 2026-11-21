@@ -3,11 +3,15 @@ import { Logger } from '@nestjs/common';
 /**
  * The server pepper for backup-code hashes (`MFA_CODE_PEPPER`).
  *
- * Every environment except NODE_ENV=development|test refuses to boot without
- * one of at least 32 characters (fail closed, so a deploy with no NODE_ENV
- * is refused too): a missing pepper would mean hashing with a public
- * default, and a short one is guessable. In development and test a fixed dev
- * default keeps local setups working, with one warning so it is not missed.
+ * Deployed processes refuse to boot without one of at least 32 characters
+ * (fail closed): a missing pepper would mean hashing with a public default,
+ * and a short one is guessable. "Deployed" is NODE_ENV=production OR any
+ * variable Railway injects into every service (RAILWAY_ENVIRONMENT_NAME,
+ * RAILWAY_ENVIRONMENT, RAILWAY_PROJECT_ID) - so a Railway service that
+ * forgets NODE_ENV, or sets it to anything else, is still refused.
+ *
+ * Everywhere else (a local machine, whatever NODE_ENV says) a fixed dev
+ * default keeps setups working, with one loud warning so it is not missed.
  *
  * Never rotate it: every stored backup code is an HMAC under it, so a new
  * pepper silently invalidates all of them.
@@ -16,28 +20,39 @@ import { Logger } from '@nestjs/common';
 const MIN_LENGTH = 32;
 const DEV_DEFAULT = 'dev-only-mfa-code-pepper-not-for-production';
 
-/** Only these may fall back to the dev default; anything else fails closed. */
-const DEV_ENVIRONMENTS = new Set(['development', 'test']);
+/** Railway sets these on every deployment; any one of them means "deployed". */
+const RAILWAY_MARKERS = [
+  'RAILWAY_ENVIRONMENT_NAME',
+  'RAILWAY_ENVIRONMENT',
+  'RAILWAY_PROJECT_ID',
+] as const;
+
+function deployedReason(env: NodeJS.ProcessEnv): string | null {
+  if ((env.NODE_ENV ?? '').trim().toLowerCase() === 'production') {
+    return 'NODE_ENV is production';
+  }
+  const marker = RAILWAY_MARKERS.find((name) => !!env[name]);
+  return marker ? `${marker} is set (Railway)` : null;
+}
 
 export function resolveMfaPepper(env: NodeJS.ProcessEnv = process.env): string {
   const value = env.MFA_CODE_PEPPER;
-  // Fail closed: production, staging, and an unset or misspelt NODE_ENV all
-  // require a real pepper. A deploy that forgets NODE_ENV must refuse to boot
-  // rather than key every backup code with a default that is in the repo.
-  if (!DEV_ENVIRONMENTS.has(env.NODE_ENV ?? '')) {
+  const deployed = deployedReason(env);
+  if (deployed) {
     if (!value || value.length < MIN_LENGTH) {
       throw new Error(
         `MFA_CODE_PEPPER must be set to ${MIN_LENGTH}+ random characters ` +
-          `(NODE_ENV is "${env.NODE_ENV ?? ''}"; only development and test ` +
-          'may use the default). HMAC pepper for two-step backup codes.',
+          `(${deployed}; the dev default is only for local machines). ` +
+          'HMAC pepper for two-step backup codes.',
       );
     }
     return value;
   }
   if (value) return value;
   new Logger('MfaPepper').warn(
-    `MFA_CODE_PEPPER is not set; using the development default "${DEV_DEFAULT}". ` +
-      'Set it before deploying.',
+    `MFA_CODE_PEPPER is not set; using the LOCAL DEVELOPMENT default ` +
+      `"${DEV_DEFAULT}". Backup codes hashed with it are not secret. ` +
+      'Production and Railway refuse to boot without a real pepper.',
   );
   return DEV_DEFAULT;
 }
