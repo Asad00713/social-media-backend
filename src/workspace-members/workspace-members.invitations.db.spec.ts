@@ -20,6 +20,9 @@ const MIGRATIONS = [
   '0092_user_account_settings.sql',
   '0093_workspace_settings.sql',
   '0095_users_fk_set_null.sql',
+  // The users columns two-step sign-in adds (0099 also alters known_devices).
+  '0072_known_devices.sql',
+  '0099_two_factor.sql',
 ];
 
 const DAY_MS = 24 * 60 * 60 * 1000;

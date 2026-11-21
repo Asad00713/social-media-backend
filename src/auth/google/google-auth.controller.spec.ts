@@ -8,6 +8,7 @@ function build(callbackResult?: unknown, issueError?: Error) {
     start: jest.fn(),
     callback: jest.fn().mockResolvedValue(callbackResult),
     failureUrl: jest.fn().mockReturnValue(FAIL_URL),
+    twoStepUrl: jest.fn(),
   };
   const issuer = {
     issue: issueError
@@ -124,16 +125,31 @@ describe('GoogleAuthController.callback', () => {
     expect(b.res.redirect).toHaveBeenCalledTimes(1);
   });
 
-  it('an mfa answer fails closed until the two-step page exists', async () => {
-    const b = build({
-      redirectUrl: 'https://ok',
-      session: { userId: 'u1', email: 'a@b.c', isNewAccount: false },
-      mode: 'redirect',
-    });
-    b.issuer.issue.mockResolvedValue({ kind: 'mfa', challengeToken: 'c' });
-    await b.controller.callback({}, req as never, b.res as never);
-    expect(b.google.failureUrl).toHaveBeenCalledWith('redirect');
-    expect(b.res.redirect).toHaveBeenCalledWith(302, FAIL_URL);
-    expect(b.res.redirect).toHaveBeenCalledTimes(1);
-  });
+  it.each([
+    ['redirect', 'https://app/auth/two-step?challenge=c'],
+    [
+      'popup',
+      'https://app/auth/google/done?status=mfa_required&challenge=c&mode=popup',
+    ],
+  ] as const)(
+    'callback %s mode, 2FA user -> 302 to the two-step URL, no refreshToken cookie',
+    async (mode, url) => {
+      const b = build({
+        redirectUrl: 'https://ok',
+        session: { userId: 'u1', email: 'a@b.c', isNewAccount: false },
+        mode,
+      });
+      b.issuer.issue.mockResolvedValue({ kind: 'mfa', challengeToken: 'c' });
+      b.google.twoStepUrl.mockReturnValue(url);
+      await b.controller.callback({}, req as never, b.res as never);
+      expect(b.google.twoStepUrl).toHaveBeenCalledWith(mode, 'c');
+      expect(b.res.redirect).toHaveBeenCalledWith(302, url);
+      expect(b.res.redirect).toHaveBeenCalledTimes(1);
+      expect(
+        (b.res.cookie.mock.calls as unknown[][]).some(
+          (c) => c[0] === 'refreshToken',
+        ),
+      ).toBe(false);
+    },
+  );
 });

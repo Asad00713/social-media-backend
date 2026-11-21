@@ -123,6 +123,27 @@ describe('AuthController.register', () => {
   });
 });
 
+describe('AuthController two-step answers (Task 10)', () => {
+  it('POST /auth/login: issuer answers mfa -> 200 {mfaRequired:true, challengeToken}, no refreshToken cookie', async () => {
+    const b = build({ mfa: true });
+    const result = await b.controller.login(credentials, req, b.res as never);
+    expect(result).toEqual({ mfaRequired: true, challengeToken: 'challenge' });
+    expect(result).not.toHaveProperty('accessToken');
+    expect(b.res.cookie).not.toHaveBeenCalled();
+  });
+
+  it('POST /auth/register: issuer answers mfa -> 200 {mfaRequired:true, challengeToken}, no cookie', async () => {
+    const b = build({ mfa: true });
+    const result = await b.controller.register(
+      { email: 'a@b.co' } as never,
+      req,
+      b.res as never,
+    );
+    expect(result).toEqual({ mfaRequired: true, challengeToken: 'challenge' });
+    expect(b.res.cookie).not.toHaveBeenCalled();
+  });
+});
+
 describe('AuthController.refreshTokens', () => {
   it('reissues the caller session through the issuer (same sid)', async () => {
     const b = build();

@@ -75,10 +75,13 @@ export class GoogleAuthController {
           via: 'google',
           silentDevice: session.isNewAccount,
         });
-        // Two-step sign-in lands in a later task; until it does a challenge
-        // cannot be answered here, so it fails closed.
+        // Two-step sign-in on: no session and no refresh cookie, only the
+        // challenge, carried to the two-step page (R6).
         if (issued.kind === 'mfa') {
-          return res.redirect(302, this.google.failureUrl(mode));
+          return res.redirect(
+            302,
+            this.google.twoStepUrl(mode, issued.challengeToken),
+          );
         }
       } catch {
         return res.redirect(302, this.google.failureUrl(mode));

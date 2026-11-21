@@ -190,6 +190,7 @@ describe('the email the strategies hand on comes from the row, not the claim', (
       none,
       { record: jest.fn().mockResolvedValue(undefined) } as never,
       none,
+      none,
     );
     const res = { cookie: jest.fn() };
 

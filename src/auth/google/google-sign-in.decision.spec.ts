@@ -123,3 +123,19 @@ describe('buildDoneUrl', () => {
     );
   });
 });
+
+describe('buildDoneUrl with a two-step challenge', () => {
+  it('carries status=mfa_required and the challenge', () => {
+    const url = new URL(
+      buildDoneUrl('https://app.schedura.com', {
+        status: 'mfa_required',
+        challenge: 'a.b.c',
+        mode: 'popup',
+      }),
+    );
+    expect(url.pathname).toBe('/auth/google/done');
+    expect(url.searchParams.get('status')).toBe('mfa_required');
+    expect(url.searchParams.get('challenge')).toBe('a.b.c');
+    expect(url.searchParams.get('mode')).toBe('popup');
+  });
+});

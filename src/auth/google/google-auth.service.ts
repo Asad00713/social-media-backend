@@ -220,6 +220,26 @@ export class GoogleAuthService {
     return this.done('error', mode, 'GOOGLE_ERROR');
   }
 
+  /**
+   * Where a Google sign-in lands when the account has two-step sign-in on
+   * (R6). No session exists yet. Redirect mode: the two-step page, which
+   * reads the challenge once and drops it from the URL. Popup mode: the done
+   * page, which posts the challenge to the opener.
+   */
+  twoStepUrl(mode: GoogleAuthMode, challengeToken: string): string {
+    const frontendUrl = (
+      this.config.get<string>('FRONTEND_URL') ?? 'http://localhost:3001'
+    ).replace(/\/+$/, '');
+    if (mode === 'redirect') {
+      return `${frontendUrl}/auth/two-step?${new URLSearchParams({ challenge: challengeToken }).toString()}`;
+    }
+    return buildDoneUrl(frontendUrl, {
+      status: 'mfa_required',
+      challenge: challengeToken,
+      mode: 'popup',
+    });
+  }
+
   private done(
     status: GoogleDoneStatus,
     mode: GoogleAuthMode,

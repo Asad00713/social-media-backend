@@ -36,6 +36,8 @@ function build(
     touch?: boolean;
     geo?: Promise<unknown>;
     secrets?: Record<string, string | undefined>;
+    /** What KnownDevicesService.isMfaTrusted answers. */
+    trusted?: boolean;
   } = {},
 ) {
   const calls: string[] = [];
@@ -66,6 +68,17 @@ function build(
     track: jest.fn(() => {
       calls.push('track');
     }),
+    isMfaTrusted: jest.fn(() => Promise.resolve(over.trusted ?? false)),
+    markMfaTrusted: jest.fn(() => {
+      calls.push('markMfaTrusted');
+      return Promise.resolve();
+    }),
+  };
+  const challenges = {
+    create: jest.fn(() => {
+      calls.push('challenge');
+      return Promise.resolve('challenge-token');
+    }),
   };
   const loginActivity = {
     record: jest.fn(() => {
@@ -89,6 +102,7 @@ function build(
     knownDevices as never,
     loginActivity as never,
     geoip as never,
+    challenges as never,
   );
   const res = {
     cookie: jest.fn((name: string) => {
@@ -99,6 +113,7 @@ function build(
     issuer,
     db,
     sessions,
+    challenges,
     knownDevices,
     loginActivity,
     geoip,
@@ -374,5 +389,188 @@ describe('SessionIssuer', () => {
     expect(b.sessions.create).not.toHaveBeenCalled();
     expect(b.res.cookie).not.toHaveBeenCalled();
     expect(b.knownDevices.track).not.toHaveBeenCalled();
+  });
+});
+
+describe('SessionIssuer two-step branch (Task 10)', () => {
+  const TOTP_USER = { ...USER, totpEnabledAt: new Date('2026-11-01') };
+  const ADMIN = { ...TOTP_USER, role: 'SUPER_ADMIN' };
+  const sha = (v: string) => createHash('sha256').update(v).digest('hex');
+
+  /** The invariant of every "mints nothing" path. */
+  function expectNothingMinted(b: ReturnType<typeof build>, result: unknown) {
+    expect(result).toEqual({ kind: 'mfa', challengeToken: 'challenge-token' });
+    expect(
+      (b.res.cookie.mock.calls as unknown[][]).some(
+        (c) => c[0] === 'refreshToken',
+      ),
+    ).toBe(false);
+    expect(b.sessions.create).not.toHaveBeenCalled();
+    expect(b.knownDevices.track).not.toHaveBeenCalled();
+    expect(b.loginActivity.record).not.toHaveBeenCalled();
+    expect(result).not.toHaveProperty('accessToken');
+  }
+
+  it('password: 2FA user on an untrusted device → mfaRequired, no row, no cookie, no track, no record', async () => {
+    const b = build({ user: TOTP_USER, trusted: false });
+    const result = await b.issuer.issue(
+      'u1',
+      request({ cookies: { sd_device: DEVICE } }),
+      b.res as never,
+      { via: 'password' },
+    );
+    expectNothingMinted(b, result);
+    // The challenge is bound to this browser, and its cookie is (re)set so
+    // /auth/2fa/verify sees the same device.
+    expect(b.challenges.create).toHaveBeenCalledWith('u1', sha(DEVICE));
+    expect(deviceCookie(b.res)).toBe(DEVICE);
+    expect(b.knownDevices.isMfaTrusted).toHaveBeenCalledWith('u1', DEVICE);
+  });
+
+  it('password: 2FA user on a trusted device → session', async () => {
+    const b = build({ user: TOTP_USER, trusted: true });
+    const result = await b.issuer.issue(
+      'u1',
+      request({ cookies: { sd_device: DEVICE } }),
+      b.res as never,
+      { via: 'password' },
+    );
+    expect(result.kind).toBe('session');
+    expect(b.challenges.create).not.toHaveBeenCalled();
+    expect(b.sessions.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('password: no sd_device cookie → never trusted (a minted id is not looked up)', async () => {
+    const b = build({ user: TOTP_USER, trusted: true });
+    const result = await b.issuer.issue('u1', request(), b.res as never, {
+      via: 'password',
+    });
+    expectNothingMinted(b, result);
+    expect(b.knownDevices.isMfaTrusted).not.toHaveBeenCalled();
+    // A fresh device cookie is minted and the challenge bound to it.
+    const minted = deviceCookie(b.res) as string;
+    expect(minted).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(b.challenges.create).toHaveBeenCalledWith('u1', sha(minted));
+  });
+
+  it('admin: SUPER_ADMIN with a trusted device is still challenged (B5)', async () => {
+    const b = build({ user: ADMIN, trusted: true });
+    const result = await b.issuer.issue(
+      'u1',
+      request({ cookies: { sd_device: DEVICE } }),
+      b.res as never,
+      { via: 'admin' },
+    );
+    expectNothingMinted(b, result);
+    expect(b.knownDevices.isMfaTrusted).not.toHaveBeenCalled();
+  });
+
+  it('register: a user row with totpEnabledAt (impossible today) is still challenged', async () => {
+    const b = build({ user: TOTP_USER, trusted: true });
+    const result = await b.issuer.issue(
+      'u1',
+      request({ cookies: { sd_device: DEVICE } }),
+      b.res as never,
+      { via: 'register' },
+    );
+    expectNothingMinted(b, result);
+  });
+
+  it('google: 2FA user → mfaRequired', async () => {
+    const b = build({ user: TOTP_USER });
+    const result = await b.issuer.issue('u1', request(), b.res as never, {
+      via: 'google',
+      silentDevice: false,
+    });
+    expectNothingMinted(b, result);
+  });
+
+  it('a user without 2FA is never challenged and trust is never read', async () => {
+    const b = build({ user: USER });
+    const result = await b.issuer.issue(
+      'u1',
+      request({ cookies: { sd_device: DEVICE } }),
+      b.res as never,
+      { via: 'password' },
+    );
+    expect(result.kind).toBe('session');
+    expect(b.knownDevices.isMfaTrusted).not.toHaveBeenCalled();
+    expect(b.challenges.create).not.toHaveBeenCalled();
+  });
+
+  it('two_factor with a matching device hash marks trust and does not call track', async () => {
+    const b = build({ user: TOTP_USER });
+    const result = await b.issuer.issue(
+      'u1',
+      request({ cookies: { sd_device: DEVICE } }),
+      b.res as never,
+      { via: 'two_factor', trustDeviceHash: sha(DEVICE) },
+    );
+    expect(result.kind).toBe('session');
+    expect(b.sessions.create).toHaveBeenCalledTimes(1);
+    expect(b.knownDevices.markMfaTrusted).toHaveBeenCalledWith('u1', DEVICE, {
+      ip: '203.0.113.7',
+      userAgent: UA,
+    });
+    expect(b.knownDevices.track).not.toHaveBeenCalled();
+    // The trust write is awaited before the answer (R9).
+    expect(b.calls).toContain('markMfaTrusted');
+    expect(b.loginActivity.record).toHaveBeenCalledWith('u1', '203.0.113.7');
+  });
+
+  it('two_factor with another device (cookie swapped since the challenge) tracks, no trust', async () => {
+    const b = build({ user: TOTP_USER });
+    await b.issuer.issue(
+      'u1',
+      request({ cookies: { sd_device: DEVICE } }),
+      b.res as never,
+      { via: 'two_factor', trustDeviceHash: sha('w'.repeat(43)) },
+    );
+    expect(b.knownDevices.markMfaTrusted).not.toHaveBeenCalled();
+    expect(b.knownDevices.track).toHaveBeenCalledTimes(1);
+  });
+
+  it('refresh: 2FA user with a live sid is not re-challenged (same sid back)', async () => {
+    const b = build({ user: TOTP_USER });
+    const result = await b.issuer.issue('u1', request(), b.res as never, {
+      via: 'refresh',
+      sid: SID,
+    });
+    expect(result).toMatchObject({ kind: 'session', sid: SID });
+    expect(b.challenges.create).not.toHaveBeenCalled();
+  });
+
+  it('refresh: revoked sid → 401, no cookie', async () => {
+    const b = build({ user: TOTP_USER, touch: false });
+    await expect(
+      b.issuer.issue('u1', request(), b.res as never, {
+        via: 'refresh',
+        sid: SID,
+      }),
+    ).rejects.toMatchObject({ response: { code: 'SESSION_ENDED' } });
+    expect(b.res.cookie).not.toHaveBeenCalled();
+  });
+
+  it.each(['refresh', 'password_change', 'two_factor_enable'] as const)(
+    '%s: a sid-less token for a user with 2FA on → 401, no cookie, no row',
+    async (via) => {
+      // A legacy token predates 2FA; refuse rather than mint around it.
+      const b = build({ user: TOTP_USER });
+      await expect(
+        b.issuer.issue('u1', request(), b.res as never, { via, sid: null }),
+      ).rejects.toMatchObject({ response: { code: 'SESSION_ENDED' } });
+      expect(b.res.cookie).not.toHaveBeenCalled();
+      expect(b.sessions.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it('password_change: 2FA user keeps the same sid (not re-challenged)', async () => {
+    const b = build({ user: TOTP_USER });
+    const result = await b.issuer.issue('u1', request(), b.res as never, {
+      via: 'password_change',
+      sid: SID,
+    });
+    expect(result).toMatchObject({ kind: 'session', sid: SID });
+    expect(b.challenges.create).not.toHaveBeenCalled();
   });
 });

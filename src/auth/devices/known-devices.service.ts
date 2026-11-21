@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, gt, ne, sql } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import { knownDevices } from '../../drizzle/schema/known-devices.schema';
@@ -109,25 +109,138 @@ export class KnownDevicesService {
     if (inserted.length === 0) return 'known';
     if (!alert) return 'first';
 
+    await this.alertNewDevice(userId, {
+      deviceHash,
+      label,
+      country,
+      ip,
+      now,
+      ...alert,
+    });
+    return 'new';
+  }
+
+  /**
+   * Is this browser trusted to skip the second factor (spec §7.2)? Only
+   * while its row's `mfa_trusted_until` is ahead.
+   */
+  async isMfaTrusted(userId: string, deviceId: string): Promise<boolean> {
+    const deviceHash = createHash('sha256').update(deviceId).digest('hex');
+    const rows = await this.db
+      .select({ userId: knownDevices.userId })
+      .from(knownDevices)
+      .where(
+        and(
+          eq(knownDevices.userId, userId),
+          eq(knownDevices.deviceHash, deviceHash),
+          gt(knownDevices.mfaTrustedUntil, sql`now()`),
+        ),
+      )
+      .limit(1);
+    return rows.length > 0;
+  }
+
+  /**
+   * After a correct second factor: trust this browser for `days` (awaited
+   * upsert, R9). It is also that sign-in's device sighting (B4): when the
+   * upsert INSERTED the row and the person has another device, the A6
+   * alert goes out detached, exactly as `seen()` would have sent it. Calling
+   * track() as well would read this fresh row as "known" and lose the A6.
+   */
+  async markMfaTrusted(
+    userId: string,
+    deviceId: string,
+    ctx: SignInContext,
+    days = 30,
+  ): Promise<void> {
+    const deviceHash = createHash('sha256').update(deviceId).digest('hex');
+    const label = deviceLabel(ctx.userAgent);
+    const now = new Date();
+    const until = sql`now() + make_interval(days => ${days})`;
+    const [row] = await this.db
+      .insert(knownDevices)
+      .values({ userId, deviceHash, label, mfaTrustedUntil: until })
+      .onConflictDoUpdate({
+        target: [knownDevices.userId, knownDevices.deviceHash],
+        set: { mfaTrustedUntil: until, lastSeenAt: sql`now()` },
+      })
+      .returning({ inserted: sql<boolean>`(xmax = 0)` });
+    if (!row?.inserted) return;
+
+    // Detached: GeoIP and the alert must not hold up the sign-in.
+    void (async () => {
+      const other = await this.db
+        .select({ userId: knownDevices.userId })
+        .from(knownDevices)
+        .where(
+          and(
+            eq(knownDevices.userId, userId),
+            ne(knownDevices.deviceHash, deviceHash),
+          ),
+        )
+        .limit(1);
+      const ip = clientIp(ctx.ip);
+      const country = (await this.geoip.lookup(ip))?.country ?? null;
+      if (country) {
+        await this.db
+          .update(knownDevices)
+          .set({ country })
+          .where(
+            and(
+              eq(knownDevices.userId, userId),
+              eq(knownDevices.deviceHash, deviceHash),
+            ),
+          );
+      }
+      if (other.length === 0) return; // the first device ever: silent
+      await this.alertNewDevice(userId, {
+        deviceHash,
+        label,
+        country,
+        ip,
+        now,
+        timeZone: await this.recipients.userTimezone(userId),
+        token: this.tokens.securityToken({ uid: userId, act: 'not_me' }),
+      });
+    })().catch((error: unknown) => {
+      this.logger.warn(
+        `Trusted-device sighting failed for user ${userId}: ${error instanceof Error ? error.message : 'unknown error'}`,
+      );
+    });
+  }
+
+  /** A6 and the `newLogin` bell for a device first seen just now. */
+  private async alertNewDevice(
+    userId: string,
+    d: {
+      deviceHash: string;
+      label: string;
+      country: string | null;
+      ip: string | null;
+      now: Date;
+      timeZone: string;
+      token: string;
+    },
+  ): Promise<void> {
     // NotifyService.notify never throws.
     await this.notify.notify({
       userId,
       workspaceId: null,
       event: 'security_alert',
-      bell: () => this.emitter.newLogin(userId, label, country ?? undefined),
+      bell: () =>
+        this.emitter.newLogin(userId, d.label, d.country ?? undefined),
       email: {
         template: NEW_SIGN_IN,
         props: {
-          when: formatWhen(now, alert.timeZone),
-          device: label,
-          location: country,
-          ip,
-          notMeUrl: this.links.api(`/email/security/${alert.token}`),
+          when: formatWhen(d.now, d.timeZone),
+          device: d.label,
+          location: d.country,
+          ip: d.ip,
+          notMeUrl: this.links.api(`/email/security/${d.token}`),
         },
-        idempotencyKey: `new-sign-in.${userId}.${deviceHash.slice(0, 16)}`,
+        idempotencyKey: `new-sign-in.${userId}.${d.deviceHash.slice(0, 16)}`,
       },
     });
-    return 'new';
   }
 
   /**
