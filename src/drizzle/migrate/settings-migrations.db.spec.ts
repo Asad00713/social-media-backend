@@ -1715,8 +1715,22 @@ describeDb('0098 user_sessions', () => {
     });
     expect(indexes).toEqual([
       'user_sessions_pkey',
+      'user_sessions_user_idx',
       'user_sessions_user_live_idx',
     ]);
+  });
+
+  it('has a plain (user_id) index for the prune and the user cascade', async () => {
+    const defs = await withRollbackDb([FILE_0098], async (_db, client) => {
+      const r = await client.query<{ indexdef: string }>(
+        `SELECT indexdef FROM pg_indexes
+          WHERE tablename = 'user_sessions' AND indexname = 'user_sessions_user_idx'`,
+      );
+      return r.rows.map((x) => x.indexdef);
+    });
+    expect(defs).toHaveLength(1);
+    expect(defs[0]).toContain('(user_id)');
+    expect(defs[0]).not.toContain('WHERE');
   });
 });
 

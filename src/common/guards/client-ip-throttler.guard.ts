@@ -54,6 +54,8 @@ export class ClientIpThrottlerGuard extends ThrottlerGuard {
   protected getTracker(req: Record<string, any>): Promise<string> {
     // The address order (X-Real-IP, rightmost X-Forwarded-For, req.ip) lives
     // in requestClientIp, shared with the session issuer.
+    // An unusable header falls back to the raw req.ip as the bucket key, as
+    // before (the key only needs to be stable, not a valid address).
     return Promise.resolve(requestClientIp(req) ?? (req.ip as string));
   }
 

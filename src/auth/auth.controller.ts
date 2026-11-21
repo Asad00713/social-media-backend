@@ -43,6 +43,7 @@ import { CreateUserDto } from 'src/users/dto/create-user.dto';
 import { SkipLaunchGate } from './decorators/skip-launch-gate.decorator';
 import { clearRefreshCookie } from './refresh-cookie';
 import { SessionIssuer } from './session/session-issuer';
+import { requestClientIp } from '../common/utils/request-client-ip';
 import { toPublicUser } from '../users/users.service';
 
 @Controller('auth')
@@ -125,13 +126,14 @@ export class AuthController {
   @Throttle(REGISTER_THROTTLE)
   async register(
     @Body() createUserDto: CreateUserDto,
-    @Ip() ip: string,
     @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
   ) {
+    // The visitor's address (X-Real-IP), as the issuer stores it, not the
+    // proxy's (@Ip()): signup last-seen and region come from it.
     const { user, message } = await this.authService.register(
       createUserDto,
-      ip,
+      requestClientIp(request) ?? undefined,
     );
 
     // The issuer writes the session, sets the refresh cookie and records the

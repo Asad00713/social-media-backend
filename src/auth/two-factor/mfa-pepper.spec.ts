@@ -47,4 +47,23 @@ describe('resolveMfaPepper', () => {
       }),
     ).toBe('dev-pepper');
   });
+
+  it.each([undefined, '', 'staging', 'Production', 'dev'])(
+    'NODE_ENV=%p without a pepper fails closed (only development/test may default)',
+    (nodeEnv) => {
+      expect(() =>
+        resolveMfaPepper(nodeEnv === undefined ? {} : { NODE_ENV: nodeEnv }),
+      ).toThrow(/MFA_CODE_PEPPER/);
+    },
+  );
+
+  it('test, like development, may use the default', () => {
+    expect(resolveMfaPepper({ NODE_ENV: 'test' }).length).toBeGreaterThan(0);
+  });
+
+  it('a short pepper outside development/test is refused even with NODE_ENV unset', () => {
+    expect(() => resolveMfaPepper({ MFA_CODE_PEPPER: 'short' })).toThrow(
+      /MFA_CODE_PEPPER/,
+    );
+  });
 });

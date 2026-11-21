@@ -45,6 +45,8 @@ export const userSessions = pgTable(
     index('user_sessions_user_live_idx')
       .on(t.userId)
       .where(sql`${t.revokedAt} IS NULL`),
+    // Prune of old rows on sign-in and the users ON DELETE CASCADE.
+    index('user_sessions_user_idx').on(t.userId),
   ],
 );
 

@@ -51,6 +51,20 @@ describe('totp-secret.util', () => {
     );
   });
 
+  it('a truncated GCM tag or a short IV throws (lengths pinned at 16 bytes)', () => {
+    const enc = encryptTotpSecret(SECRET);
+    const [iv, tag, ct] = enc.split(':');
+    const short = (b64: string, n: number) =>
+      Buffer.from(b64, 'base64').subarray(0, n).toString('base64');
+    expect(() => decryptStrict(`${iv}:${short(tag, 4)}:${ct}`)).toThrow(
+      TotpSecretCorruptError,
+    );
+    expect(() => decryptStrict(`${short(iv, 12)}:${tag}:${ct}`)).toThrow(
+      TotpSecretCorruptError,
+    );
+    expect(decryptStrict(`${iv}:${tag}:${ct}`)).toBe(SECRET);
+  });
+
   it('encryptTotpSecret refuses an empty secret (encrypt would return it as-is)', () => {
     expect(() => encryptTotpSecret('')).toThrow();
   });

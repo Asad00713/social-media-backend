@@ -32,8 +32,11 @@
 -- behind any open transaction on the still-running old instance, and every
 -- write to users would queue behind it. With it a blocked deploy fails fast
 -- and rolls back; retry the deploy. The table is new and empty, so the
--- index build is instant. The partial index serves the reads the app makes
--- (a user's live sessions) and stays small as revoked rows pile up.
+-- index builds are instant. The partial index serves the reads the app
+-- makes (a user's live sessions) and stays small as revoked rows pile up.
+-- The plain (user_id) index serves what the partial one cannot: pruning a
+-- user's old revoked/expired rows on each new sign-in, and the ON DELETE
+-- CASCADE from users (both would otherwise scan the whole table).
 --
 -- NEVER edit this file after it has been applied: the migrator's checksum
 -- guard refuses to boot. Write a new migration for any later change.
@@ -66,3 +69,6 @@ CREATE TABLE IF NOT EXISTS "user_sessions" (
 CREATE INDEX IF NOT EXISTS "user_sessions_user_live_idx"
   ON "user_sessions" ("user_id")
   WHERE "revoked_at" IS NULL;
+
+CREATE INDEX IF NOT EXISTS "user_sessions_user_idx"
+  ON "user_sessions" ("user_id");

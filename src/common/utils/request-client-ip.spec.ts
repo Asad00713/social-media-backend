@@ -61,6 +61,22 @@ describe('requestClientIp', () => {
     expect(requestClientIp({ headers: {}, ip: '' })).toBeNull();
   });
 
+  it('a value that is not an IP address is null (never stored or looked up)', () => {
+    expect(
+      requestClientIp({ headers: { 'x-real-ip': 'not-an-ip' } }),
+    ).toBeNull();
+    expect(
+      requestClientIp({
+        headers: { 'x-real-ip': '1'.repeat(60) },
+        ip: '192.0.2.1',
+      }),
+    ).toBeNull();
+    expect(
+      requestClientIp({ headers: { 'x-forwarded-for': '1.1.1.1, <script>' } }),
+    ).toBeNull();
+    expect(requestClientIp({ headers: {}, ip: '::ffff:999.1.1.1' })).toBeNull();
+  });
+
   it('unmaps IPv4-in-IPv6 from any source', () => {
     expect(requestClientIp({ headers: {}, ip: '::ffff:192.0.2.1' })).toBe(
       '192.0.2.1',

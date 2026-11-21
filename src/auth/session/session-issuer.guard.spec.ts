@@ -59,6 +59,128 @@ const REISSUE_OWNERS: Record<string, string> = {
   two_factor: 'auth/two-factor/two-factor-auth.controller.ts',
 };
 
+/**
+ * The ways a file can mint a JWT. Every hit outside SIGNERS_ALLOWED is an
+ * offender, whatever secret it uses: a minter does not have to spell the
+ * secret's name (a module default secret, a key from a helper or constant).
+ */
+const SIGN_CALL = /\.(sign|signAsync)\s*\(/;
+const JSONWEBTOKEN =
+  /(from\s+['"]jsonwebtoken['"]|require\(\s*['"]jsonwebtoken['"]\s*\))/;
+const JSONWEBTOKEN_SIGN =
+  /import\s*\{[^}]*\bsign\b[^}]*\}\s*from\s*['"]jsonwebtoken['"]|\{[^}]*\bsign\b[^}]*\}\s*=\s*require\(\s*['"]jsonwebtoken['"]\s*\)/;
+
+function callsSign(text: string): boolean {
+  return SIGN_CALL.test(text) || JSONWEBTOKEN_SIGN.test(text);
+}
+
+/** The text of every `JwtModule.register(...)` / `registerAsync(...)` call. */
+function jwtModuleRegistrations(text: string): string[] {
+  const out: string[] = [];
+  const re = /JwtModule\.register(?:Async)?\s*\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    let depth = 1;
+    let i = m.index + m[0].length;
+    while (depth > 0 && i < text.length) {
+      if (text[i] === '(') depth++;
+      else if (text[i] === ')') depth--;
+      i++;
+    }
+    out.push(text.slice(m.index, i));
+  }
+  return out;
+}
+
+/**
+ * Why a file could mint a token outside the issuer, or [] when it cannot:
+ *   - it calls `.sign(` / `.signAsync(` (JwtService or jsonwebtoken) or
+ *     imports `sign` from jsonwebtoken, and is not allow-listed;
+ *   - it imports jsonwebtoken at all outside the allow-list (a namespace
+ *     import reaches `sign` too);
+ *   - it gives JwtModule a default secret (any `secret` / key option in a
+ *     `register` / `registerAsync` call): every provider in that module
+ *     could then sign without naming a secret. No file may do this.
+ */
+function signerFindings(file: string, text: string): string[] {
+  const found: string[] = [];
+  const allowed = file in SIGNERS_ALLOWED;
+  if (!allowed && callsSign(text)) found.push(`${file}: signs a JWT`);
+  if (!allowed && JSONWEBTOKEN.test(text))
+    found.push(`${file}: imports jsonwebtoken`);
+  for (const call of jwtModuleRegistrations(text)) {
+    if (/\b(secret|secretOrPrivateKey|privateKey)\b/.test(call))
+      found.push(`${file}: JwtModule default secret`);
+  }
+  return found;
+}
+
+describe('the signer scanner flags every bypass (fixtures)', () => {
+  const flagged = (file: string, text: string) =>
+    signerFindings(file, text).length > 0;
+
+  it('a module default secret (registerAsync with JWT_ACCESS_SECRET)', () => {
+    expect(
+      flagged(
+        'realtime/realtime.module.ts',
+        `JwtModule.registerAsync({ inject: [ConfigService],
+           useFactory: (c: ConfigService) => ({ secret: c.get('JWT_ACCESS_SECRET') }) })`,
+      ),
+    ).toBe(true);
+    expect(
+      flagged('x/x.module.ts', `JwtModule.register({ secret: KEY })`),
+    ).toBe(true);
+  });
+
+  it('a JwtService sign that never names a secret (module default)', () => {
+    expect(
+      flagged(
+        'realtime/sneaky-minter.service.ts',
+        `constructor(private readonly jwt: JwtService) {}
+         mint(u: U) { return this.jwt.sign({ sub: u.id, email: u.email }, { expiresIn: '15m' }); }`,
+      ),
+    ).toBe(true);
+    expect(
+      flagged('a/b.ts', `await this.jwtService.signAsync({ sub }, opts)`),
+    ).toBe(true);
+  });
+
+  it('a bare jsonwebtoken sign with a key imported from elsewhere', () => {
+    expect(
+      flagged(
+        'auth/sneaky2.ts',
+        `import { sign } from 'jsonwebtoken';\nimport { KEY } from './key';\nexport const t = sign({ sub: 'u1', email: 'e' }, KEY);`,
+      ),
+    ).toBe(true);
+    expect(
+      flagged(
+        'auth/sneaky3.ts',
+        `import * as jwt from 'jsonwebtoken';\nexport const t = jwt.sign({ sub: 'u1' }, k);`,
+      ),
+    ).toBe(true);
+    expect(
+      flagged('auth/sneaky4.ts', `const { sign } = require('jsonwebtoken');`),
+    ).toBe(true);
+  });
+
+  it('an allow-listed signer passes; text that only mentions a secret is not a signer', () => {
+    expect(
+      flagged(ISSUER, `this.jwt.sign(payload, { secret: s.access })`),
+    ).toBe(false);
+    expect(
+      flagged('a/notes.ts', `// JWT_ACCESS_SECRET is read by JwtStrategy`),
+    ).toBe(false);
+    expect(flagged('a/a.module.ts', `JwtModule.register({})`)).toBe(false);
+    expect(flagged('a/v.ts', `this.jwt.verify(t, { secret: KEY })`)).toBe(
+      false,
+    );
+  });
+
+  it('even an allow-listed file may not set a JwtModule default secret', () => {
+    expect(flagged(ISSUER, `JwtModule.register({ secret: 'x' })`)).toBe(true);
+  });
+});
+
 describe('SessionIssuer is the only session minter', () => {
   const files = walk(SRC);
   const read = (f: string) => fs.readFileSync(f, 'utf8');
@@ -76,25 +198,15 @@ describe('SessionIssuer is the only session minter', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('only allow-listed files sign with JWT_ACCESS_SECRET or JWT_REFRESH_SECRET', () => {
-    const offenders = files
-      .filter((f) => {
-        const text = read(f);
-        return (
-          /\.(sign|signAsync)\(/.test(text) &&
-          /JWT_(ACCESS|REFRESH)_SECRET/.test(text)
-        );
-      })
-      .map(rel)
-      .filter((f) => !(f in SIGNERS_ALLOWED));
+  it('no file outside SIGNERS_ALLOWED can sign a JWT (any secret, any spelling)', () => {
+    const offenders = files.flatMap((f) => signerFindings(rel(f), read(f)));
     expect(offenders).toEqual([]);
   });
 
-  it('the issuer itself signs with both secrets (the check above is not vacuous)', () => {
-    const text = read(path.join(SRC, ISSUER));
-    expect(text).toMatch(/\.(sign|signAsync)\(/);
-    expect(text).toMatch(/JWT_ACCESS_SECRET/);
-    expect(text).toMatch(/JWT_REFRESH_SECRET/);
+  it('every SIGNERS_ALLOWED file really signs (the list is not padding)', () => {
+    for (const f of Object.keys(SIGNERS_ALLOWED)) {
+      expect(callsSign(read(path.join(SRC, f)))).toBe(true);
+    }
   });
 
   it('only refresh-cookie.ts sets the refreshToken cookie', () => {

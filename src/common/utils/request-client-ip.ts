@@ -1,3 +1,5 @@
+import { isIP } from 'net';
+
 type HeaderValue = string | string[] | undefined;
 
 export interface ClientIpRequest {
@@ -34,6 +36,10 @@ function lastEntry(header: HeaderValue): string | undefined {
  *      address it saw, so only the last hop is not client-controlled.
  *   3. `req.ip`.
  * IPv4-in-IPv6 (`::ffff:1.2.3.4`) is unmapped so one visitor has one form.
+ * Anything that is not an IP address after that (a garbage header, a value
+ * too long for the `varchar(45)` it is stored in) is `null`, never stored.
+ * Only the chosen source is validated: an invalid X-Real-IP does not fall
+ * through to the client-controlled X-Forwarded-For.
  *
  * Shared by the IP throttler (its bucket key) and the session issuer (the
  * address stored on a session and looked up for its country).
@@ -45,5 +51,6 @@ export function requestClientIp(req: ClientIpRequest): string | null {
     lastEntry(headers['x-forwarded-for']) ??
     (req.ip?.trim() || undefined);
   if (!raw) return null;
-  return raw.toLowerCase().startsWith('::ffff:') ? raw.slice(7) : raw;
+  const ip = raw.toLowerCase().startsWith('::ffff:') ? raw.slice(7) : raw;
+  return isIP(ip) ? ip : null;
 }

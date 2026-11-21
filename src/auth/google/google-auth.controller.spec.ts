@@ -62,7 +62,11 @@ describe('GoogleAuthController.start', () => {
 });
 
 describe('GoogleAuthController.callback', () => {
-  const req = { cookies: { g_auth: 'state-cookie' } };
+  const req = {
+    cookies: { g_auth: 'state-cookie' },
+    headers: { 'x-real-ip': '1.1.1.1' },
+    ip: '10.0.0.1',
+  };
 
   it('always clears the state cookie and mints nothing on failure', async () => {
     const b = build({
@@ -70,7 +74,7 @@ describe('GoogleAuthController.callback', () => {
       session: null,
       mode: 'popup',
     });
-    await b.controller.callback({}, req as never, '1.1.1.1', b.res as never);
+    await b.controller.callback({}, req as never, b.res as never);
     expect(b.res.clearCookie).toHaveBeenCalledWith(
       'g_auth',
       expect.any(Object),
@@ -96,7 +100,7 @@ describe('GoogleAuthController.callback', () => {
         session: { userId: 'u1', email: 'a@b.c', isNewAccount },
         mode: 'popup',
       });
-      await b.controller.callback({}, req as never, 'ip', b.res as never);
+      await b.controller.callback({}, req as never, b.res as never);
       expect(b.issuer.issue).toHaveBeenCalledWith('u1', req, b.res, {
         via: 'google',
         silentDevice: isNewAccount,
@@ -114,7 +118,7 @@ describe('GoogleAuthController.callback', () => {
       },
       new Error('jwt down'),
     );
-    await b.controller.callback({}, req as never, 'ip', b.res as never);
+    await b.controller.callback({}, req as never, b.res as never);
     expect(b.google.failureUrl).toHaveBeenCalledWith('popup');
     expect(b.res.redirect).toHaveBeenCalledWith(302, FAIL_URL);
     expect(b.res.redirect).toHaveBeenCalledTimes(1);
@@ -127,7 +131,7 @@ describe('GoogleAuthController.callback', () => {
       mode: 'redirect',
     });
     b.issuer.issue.mockResolvedValue({ kind: 'mfa', challengeToken: 'c' });
-    await b.controller.callback({}, req as never, 'ip', b.res as never);
+    await b.controller.callback({}, req as never, b.res as never);
     expect(b.google.failureUrl).toHaveBeenCalledWith('redirect');
     expect(b.res.redirect).toHaveBeenCalledWith(302, FAIL_URL);
     expect(b.res.redirect).toHaveBeenCalledTimes(1);

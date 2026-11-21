@@ -97,14 +97,15 @@ describe('AuthController.register', () => {
   it('creates the account, then mints through the issuer with via register', async () => {
     const b = build();
     const dto = { email: 'a@b.co', password: 'Passw0rd!', name: 'A' } as never;
-    const result = await b.controller.register(
-      dto,
-      '1.2.3.4',
-      req,
-      b.res as never,
-    );
-    expect(b.authService.register).toHaveBeenCalledWith(dto, '1.2.3.4');
-    expect(b.issuer.issue).toHaveBeenCalledWith('u1', req, b.res, {
+    const withIp = {
+      cookies: {},
+      headers: { 'x-real-ip': '203.0.113.9' },
+      ip: '10.0.0.1',
+    } as never;
+    const result = await b.controller.register(dto, withIp, b.res as never);
+    // The visitor's address, not the proxy's req.ip.
+    expect(b.authService.register).toHaveBeenCalledWith(dto, '203.0.113.9');
+    expect(b.issuer.issue).toHaveBeenCalledWith('u1', withIp, b.res, {
       via: 'register',
     });
     expect(result).toEqual({
@@ -117,7 +118,7 @@ describe('AuthController.register', () => {
   it('a failed mint is the response', async () => {
     const b = build({ issueError: new Error('boom') });
     await expect(
-      b.controller.register({} as never, 'ip', req, b.res as never),
+      b.controller.register({} as never, req, b.res as never),
     ).rejects.toThrow('boom');
   });
 });

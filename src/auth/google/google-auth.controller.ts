@@ -1,14 +1,7 @@
-import {
-  Controller,
-  Get,
-  Ip,
-  Query,
-  Req,
-  Res,
-  UseGuards,
-} from '@nestjs/common';
+import { Controller, Get, Query, Req, Res, UseGuards } from '@nestjs/common';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
+import { requestClientIp } from '../../common/utils/request-client-ip';
 import { SkipLaunchGate } from '../decorators/skip-launch-gate.decorator';
 import { SessionIssuer } from '../session/session-issuer';
 import { GOOGLE_STATE_COOKIE, GoogleAuthService } from './google-auth.service';
@@ -57,7 +50,6 @@ export class GoogleAuthController {
   async callback(
     @Query() query: { code?: string; state?: string; error?: string },
     @Req() req: Request,
-    @Ip() ip: string,
     @Res() res: Response,
   ) {
     const stateCookie = (req.cookies as Record<string, string> | undefined)?.[
@@ -67,10 +59,12 @@ export class GoogleAuthController {
     // state to match.
     res.clearCookie(GOOGLE_STATE_COOKIE, STATE_COOKIE_OPTIONS);
 
+    // The visitor's address (X-Real-IP behind Railway's edge), the same one
+    // the issuer stores on the session, not the proxy's (@Ip()).
     const { redirectUrl, session, mode } = await this.google.callback(
       query,
       stateCookie,
-      ip,
+      requestClientIp(req) ?? undefined,
     );
     if (session) {
       // The issuer writes the session, sets the refresh cookie and records
