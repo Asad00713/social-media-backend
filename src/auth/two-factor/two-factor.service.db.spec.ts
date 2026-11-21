@@ -26,6 +26,7 @@ const SECRETS: Record<string, string> = {
 };
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+type ReplaceArgs = Parameters<SecondFactorService['replaceBackupCodes']>;
 const rand = () => Math.random().toString(36).slice(2, 10);
 
 /** A Google-only account: no password, verified, two-step off. */
@@ -137,7 +138,7 @@ describeDb('TwoFactorService (database)', () => {
       await expect(
         service.setup({ userId, sid: (fresh as { sid: string }).sid }, {}),
       ).resolves.toMatchObject({
-        otpauthUrl: expect.stringMatching(/^otpauth:/),
+        otpauthUrl: expect.stringMatching(/^otpauth:/) as unknown as string,
       });
     });
   });
@@ -168,7 +169,8 @@ describeDb('TwoFactorService (database)', () => {
           );
           return { method: 'totp' as const, backupCodesRemaining: 0 };
         }),
-        replaceBackupCodes: real.replaceBackupCodes.bind(real),
+        replaceBackupCodes: (...args: ReplaceArgs) =>
+          real.replaceBackupCodes(...args),
       };
       const { service } = build(db, racing);
 
@@ -225,7 +227,8 @@ describeDb('TwoFactorService (database)', () => {
         check: jest.fn(() =>
           Promise.resolve({ method: 'totp' as const, backupCodesRemaining: 0 }),
         ),
-        replaceBackupCodes: real.replaceBackupCodes.bind(real),
+        replaceBackupCodes: (...args: ReplaceArgs) =>
+          real.replaceBackupCodes(...args),
       });
 
       const out = await service.enable(
