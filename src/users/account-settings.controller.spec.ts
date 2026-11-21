@@ -145,6 +145,24 @@ describe('DELETE /users/me', () => {
     });
   });
 
+  it('passes the second factor through (`code` and `backupCode`)', async () => {
+    const { controller, accountDeletion } = makeController();
+
+    await controller.deleteAccount(
+      CALLER,
+      { confirmEmail: 'a@example.test', code: 'abcd-efgh', backupCode: 'x' },
+      response() as unknown as Response,
+    );
+
+    expect(accountDeletion.deleteAccount).toHaveBeenCalledWith('user-1', {
+      confirmEmail: 'a@example.test',
+      code: 'abcd-efgh',
+      backupCode: 'x',
+      actor: 'self',
+      actorId: 'user-1',
+    });
+  });
+
   it('a refused delete leaves the cookie alone (the person is still signed in)', async () => {
     const { controller, accountDeletion } = makeController();
     const refused = new BadRequestException({ code: 'EMAIL_MISMATCH' });

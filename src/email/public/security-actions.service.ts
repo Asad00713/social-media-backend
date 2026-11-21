@@ -44,10 +44,15 @@ type RevertResult =
 
 /**
  * Tables whose rows a bare sign-up leaves behind and nobody would miss: the
- * device a registration signs in from. Any other row pointing at a squatter
- * means it holds data, and it is never deleted.
+ * device a registration signs in from, its session rows and its sign-in
+ * challenges. Any other row pointing at a squatter means it holds data, and
+ * it is never deleted.
  */
-const SIGN_IN_TRACE_TABLES = new Set(['known_devices']);
+const SIGN_IN_TRACE_TABLES = new Set([
+  'known_devices',
+  'user_sessions',
+  'login_challenges',
+]);
 
 const SECURE_BUTTON = 'Secure my account';
 const SECURED_TITLE = 'Your account is secured';

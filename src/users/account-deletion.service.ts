@@ -22,6 +22,7 @@ import {
   inboxUserSettings,
   insightHiddenSteps,
   knownDevices,
+  loginChallenges,
   maestroBridgeThreads,
   maestroChannelLinks,
   notificationPreferences,
@@ -30,7 +31,9 @@ import {
   plannerPreferences,
   stripeCustomers,
   telegramChatBindings,
+  userBackupCodes,
   users,
+  userSessions,
   workspace,
   workspaceInvitation,
 } from '../drizzle/schema';
@@ -44,6 +47,10 @@ import { normalizeEmail } from './normalize-email';
 import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 import { NotificationsGateway } from '../notifications/notifications.gateway';
 import { AnalyticsEventEmitter } from '../realtime/analytics-event-emitter.service';
+import {
+  SecondFactorService,
+  type SecondFactorInput,
+} from '../auth/two-factor/second-factor.service';
 
 type Executor = DbType | Parameters<Parameters<DbType['transaction']>[0]>[0];
 type Tx = Parameters<Parameters<DbType['transaction']>[0]>[0];
@@ -56,6 +63,29 @@ export interface DeleteAccountInput {
   actor: DeletionActor;
   /** Who is deleting: the person themselves, or the super admin. */
   actorId: string;
+  /**
+   * `self` with two-step sign-in on: a 6-digit TOTP or a backup code in any
+   * shape (R13). Ignored when two-step is off and for a super admin.
+   */
+  code?: string;
+  backupCode?: string;
+}
+
+const TOTP_SHAPE = /^\d{6}$/;
+
+/**
+ * The delete dialog sends one `code` field for either factor: six digits is
+ * a TOTP, anything else a backup code. Both fields given are passed as they
+ * are, so the check refuses the pair ("not both").
+ */
+export function deleteSecondFactor(
+  input: Pick<DeleteAccountInput, 'code' | 'backupCode'>,
+): SecondFactorInput {
+  const code = input.code?.trim();
+  const backupCode = input.backupCode?.trim();
+  if (code && backupCode) return { code, backupCode };
+  if (code) return TOTP_SHAPE.test(code) ? { code } : { backupCode: code };
+  return backupCode ? { backupCode } : {};
 }
 
 /**
@@ -109,7 +139,12 @@ const PUSH_ONLY_TABLES = [
  *
  * Order, and why:
  *  1. Email check (self only) and the owned-workspace block (409): neither
- *     changes anything.
+ *     changes anything. Then, for `self` with two-step sign-in on, the
+ *     second factor (MFA_CODE_REQUIRED / MFA_CODE_INVALID / MFA_LOCKED).
+ *     After the 409 on purpose: the blocker list is already the caller's to
+ *     read (GET /users/me/workspaces), and a backup code is single-use, so it
+ *     must not be spent on a delete that is then refused for owning a
+ *     workspace.
  *  2. The account's subscription is cancelled at the provider, immediately.
  *     Outside the transaction (it is a network call); a failure is a 502 and
  *     nothing has been written.
@@ -128,6 +163,7 @@ export class AccountDeletionService {
     private readonly subscriptions: SubscriptionService,
     private readonly usage: UsageService,
     private readonly r2: CloudflareR2Service,
+    private readonly secondFactor: SecondFactorService,
     // Last two: positional specs construct this service directly. Not
     // @Optional - both modules are global and always provide them; optional
     // in the type only so a spec that never deletes can leave them out.
@@ -173,6 +209,12 @@ export class AccountDeletionService {
 
     const owned = await ownedWorkspaces(this.db, userId);
     if (owned.length > 0) throw ownsWorkspaces(owned);
+
+    // Before billing and before any write: a refusal changes nothing (but
+    // the failed attempt, which the lockout counts).
+    if (input.actor === 'self' && (await this.secondFactor.isEnabled(userId))) {
+      await this.secondFactor.check(userId, deleteSecondFactor(input));
+    }
 
     try {
       await this.subscriptions.cancelForAccount(userId, false, {
@@ -300,6 +342,14 @@ export class AccountDeletionService {
         countryCode: null,
         // Admin free text that often names the person.
         suspensionNote: null,
+        // Two-step sign-in: the seed (active and pending), its replay step
+        // and the lockout state.
+        totpSecretEnc: null,
+        totpPendingSecretEnc: null,
+        totpEnabledAt: null,
+        totpLastStep: null,
+        mfaFailures: 0,
+        mfaLockedUntil: null,
         isActive: false,
         deletedAt: now,
         // Every token minted before now is refused; the strategies also
@@ -448,6 +498,11 @@ export class AccountDeletionService {
     await tx
       .delete(adminLoginChallenges)
       .where(eq(adminLoginChallenges.userId, userId));
+    // Sessions (the rows the sid tokens are judged by: none left, so every
+    // one is refused), backup codes and open sign-in challenges.
+    await tx.delete(userSessions).where(eq(userSessions.userId, userId));
+    await tx.delete(userBackupCodes).where(eq(userBackupCodes.userId, userId));
+    await tx.delete(loginChallenges).where(eq(loginChallenges.userId, userId));
     // The bell.
     await tx.delete(notifications).where(eq(notifications.userId, userId));
     // A connect link still open would let a client attach channels in the

@@ -29,6 +29,7 @@ function fakeDb(
     holder?: Holder;
     holderHasData?: boolean;
     uniqueViolation?: boolean;
+    refs?: { tbl: string; col: string }[];
   } = {},
 ) {
   // `taken` is someone's real account: verified, older than the link.
@@ -91,7 +92,9 @@ function fakeDb(
     // finds a row only when the holder has data.
     execute: jest
       .fn()
-      .mockResolvedValueOnce({ rows: [{ tbl: 'workspace', col: 'owner_id' }] })
+      .mockResolvedValueOnce({
+        rows: opts.refs ?? [{ tbl: 'workspace', col: 'owner_id' }],
+      })
       .mockResolvedValueOnce({
         rows: opts.holderHasData ? [{ '?column?': 1 }] : [],
       }),
@@ -118,6 +121,7 @@ function setup(
     holderHasData?: boolean;
     uniqueViolation?: boolean;
     resetSent?: boolean;
+    refs?: { tbl: string; col: string }[];
   } = {},
 ) {
   const { db, writes, update, deleted } = fakeDb(row, opts);
@@ -371,6 +375,33 @@ describe('SecurityActionsService.perform (POST)', () => {
       id: UID,
       email: OLD,
     });
+  });
+
+  it('a squatter who only signed in (sessions + challenges) still holds nothing', async () => {
+    const row = { id: UID, email: NEW };
+    // Every row the squatter has is a sign-in trace. If any of these tables
+    // were probed, the probe would answer "has data" and refuse.
+    const { service, db, deleted } = setup(REVERT, row, {
+      holder: {
+        id: 'squatter',
+        isEmailVerified: false,
+        createdAfterLink: true,
+      },
+      holderHasData: true,
+      refs: [
+        { tbl: 'known_devices', col: 'user_id' },
+        { tbl: 'user_sessions', col: 'user_id' },
+        { tbl: 'login_challenges', col: 'user_id' },
+      ],
+    });
+
+    const done = await service.perform('tok');
+
+    expect(deleted).toEqual(['squatter']);
+    expect(row.email).toBe(OLD);
+    expect(done?.title).toBe('Your account is secured');
+    // The catalogue read only: no probe ran.
+    expect(db.execute).toHaveBeenCalledTimes(1);
   });
 
   it.each([
