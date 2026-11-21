@@ -1598,3 +1598,93 @@ describeDb('0096 guest seat recount', () => {
     expect(result.secondRun).toEqual({ members_count: 3, updated: false });
   });
 });
+
+/*
+ * Settings redesign, Part B.
+ *
+ *   0098  user_sessions: one row per sign-in, so a session can be listed and
+ *         revoked by its `sid`.
+ *   0099  two-step sign-in: six users columns, known_devices trust,
+ *         user_backup_codes and login_challenges.
+ */
+const FILE_0098 = '0098_user_sessions.sql';
+
+describeDb('0098 user_sessions', () => {
+  it('creates the table, the CHECK and the partial live index', async () => {
+    const result = await withRollbackDb([FILE_0098], async (_db, client) => {
+      const columns = await client.query<{
+        column_name: string;
+        data_type: string;
+        is_nullable: string;
+      }>(
+        `SELECT column_name, data_type, is_nullable
+           FROM information_schema.columns
+          WHERE table_name = 'user_sessions'
+          ORDER BY ordinal_position`,
+      );
+      const userId = await seedUser(client);
+      await expectPgError(client, '23514', () =>
+        client.query(
+          `INSERT INTO user_sessions (user_id, label, device_type, expires_at)
+           VALUES ($1, 'Chrome on Windows', 'phone', now() + interval '30 days')`,
+          [userId],
+        ),
+      );
+      const ok = await client.query<{ id: string; created_at: Date }>(
+        `INSERT INTO user_sessions (user_id, label, device_type, expires_at)
+         VALUES ($1, 'Chrome on Windows', 'desktop', now() + interval '30 days')
+         RETURNING id, created_at`,
+        [userId],
+      );
+      const index = await client.query<{ indexdef: string }>(
+        `SELECT indexdef FROM pg_indexes
+          WHERE tablename = 'user_sessions'
+            AND indexname = 'user_sessions_user_live_idx'`,
+      );
+      // ON DELETE CASCADE: deleting the user removes the row.
+      await client.query(`DELETE FROM users WHERE id = $1`, [userId]);
+      const left = await client.query(
+        `SELECT 1 FROM user_sessions WHERE id = $1`,
+        [ok.rows[0].id],
+      );
+      return {
+        columns: columns.rows,
+        inserted: ok.rows[0],
+        index: index.rows,
+        left: left.rowCount,
+      };
+    });
+
+    expect(result.columns).toEqual([
+      { column_name: 'id', data_type: 'uuid', is_nullable: 'NO' },
+      { column_name: 'user_id', data_type: 'uuid', is_nullable: 'NO' },
+      { column_name: 'device_hash', data_type: 'character', is_nullable: 'YES' },
+      { column_name: 'label', data_type: 'character varying', is_nullable: 'NO' },
+      { column_name: 'device_type', data_type: 'text', is_nullable: 'NO' },
+      { column_name: 'ip', data_type: 'character varying', is_nullable: 'YES' },
+      { column_name: 'country', data_type: 'character varying', is_nullable: 'YES' },
+      { column_name: 'created_at', data_type: 'timestamp with time zone', is_nullable: 'NO' },
+      { column_name: 'last_used_at', data_type: 'timestamp with time zone', is_nullable: 'NO' },
+      { column_name: 'expires_at', data_type: 'timestamp with time zone', is_nullable: 'NO' },
+      { column_name: 'revoked_at', data_type: 'timestamp with time zone', is_nullable: 'YES' },
+    ]);
+    expect(result.inserted.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(result.index).toHaveLength(1);
+    expect(result.index[0].indexdef).toContain('(user_id)');
+    expect(result.index[0].indexdef).toContain('WHERE (revoked_at IS NULL)');
+    expect(result.left).toBe(0);
+  });
+
+  it('applies twice without error (idempotent)', async () => {
+    // The harness has already applied the file twice; run it a third time.
+    const indexes = await withRollbackDb([FILE_0098], async (_db, client) => {
+      await client.query(readFileSync(join(MIGRATIONS_DIR, FILE_0098), 'utf8'));
+      const r = await client.query<{ indexname: string }>(
+        `SELECT indexname FROM pg_indexes WHERE tablename = 'user_sessions'
+          ORDER BY indexname`,
+      );
+      return r.rows.map((x) => x.indexname);
+    });
+    expect(indexes).toEqual(['user_sessions_pkey', 'user_sessions_user_live_idx']);
+  });
+});
