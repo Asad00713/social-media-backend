@@ -34,11 +34,11 @@ const ISSUER = 'auth/session/session-issuer.ts';
  * their text. Every one except the issuer signs a NON-session token, which
  * JwtStrategy refuses (`assertSessionTokenShape`: no string `sub`, or a
  * `purpose` / `aud` claim).
- * The two-step challenge (`auth/two-factor/mfa-challenge.service.ts`, signed
- * with a key derived from JWT_ACCESS_SECRET) joins this list when it lands.
  */
 const SIGNERS_ALLOWED: Record<string, string> = {
   [ISSUER]: 'the issuer',
+  'auth/two-factor/mfa-challenge.service.ts':
+    'two-step challenge: purpose mfa, key derived from JWT_ACCESS_SECRET',
   'auth/admin-challenge.service.ts':
     'super-admin emailed challenge (purpose: admin-login)',
   'auth/google/google-auth.service.ts': 'OAuth state cookie, no sub',

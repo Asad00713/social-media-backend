@@ -23,6 +23,7 @@ import { SecurityActionsService } from '../email/public/security-actions.service
 import { SecurityCoreModule } from './security-core.module';
 import { SessionIssuer } from './session/session-issuer';
 import { TwoFactorNotices } from './two-factor/two-factor-notices.service';
+import { MfaChallengeService } from './two-factor/mfa-challenge.service';
 
 @Module({
   imports: [
@@ -44,6 +45,7 @@ import { TwoFactorNotices } from './two-factor/two-factor-notices.service';
     SessionIssuer,
     // Two-step sign-in security emails.
     TwoFactorNotices,
+    MfaChallengeService,
     WelcomeEmailService,
     JwtStrategy,
     JwtRefreshStrategy,
