@@ -3,6 +3,7 @@ import { AuthController } from './auth.controller';
 import { SKIP_LAUNCH_GATE } from './decorators/skip-launch-gate.decorator';
 import { GoogleAuthController } from './google/google-auth.controller';
 import { TwoFactorAuthController } from './two-factor/two-factor-auth.controller';
+import { SessionsController } from './session/sessions.controller';
 import { WorkspaceMembersController } from '../workspace-members/workspace-members.controller';
 
 /**
@@ -93,6 +94,21 @@ describe('launch gate route exemptions', () => {
         ),
       ).toBe(true);
     });
+  });
+
+  describe('the sessions page stays reachable', () => {
+    // Securing an account must work before launch access.
+    it.each(['list', 'revoke', 'revokeOthers'] as const)(
+      'SessionsController.%s skips the gate (class-level)',
+      (method) => {
+        expect(
+          reflector.getAllAndOverride<boolean>(SKIP_LAUNCH_GATE, [
+            SessionsController.prototype[method] as unknown as () => unknown,
+            SessionsController,
+          ]),
+        ).toBe(true);
+      },
+    );
   });
 
   describe('invitations', () => {

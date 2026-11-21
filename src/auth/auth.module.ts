@@ -25,6 +25,7 @@ import { SessionIssuer } from './session/session-issuer';
 import { TwoFactorNotices } from './two-factor/two-factor-notices.service';
 import { MfaChallengeService } from './two-factor/mfa-challenge.service';
 import { TwoFactorAuthController } from './two-factor/two-factor-auth.controller';
+import { SessionsController } from './session/sessions.controller';
 
 @Module({
   imports: [
@@ -71,6 +72,8 @@ import { TwoFactorAuthController } from './two-factor/two-factor-auth.controller
     EmailSecurityController,
     // POST /auth/2fa/verify: the second step of a two-step sign-in.
     TwoFactorAuthController,
+    // GET/DELETE /users/me/sessions: list and end the user's sessions.
+    SessionsController,
   ],
 })
 export class AuthModule {}

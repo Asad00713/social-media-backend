@@ -34,12 +34,14 @@ function build(
           ),
   };
   const res = { cookie: jest.fn(), clearCookie: jest.fn() };
+  const sessions = { revoke: jest.fn().mockResolvedValue(true) };
   const controller = new AuthController(
     authService as never,
     {} as never,
     issuer as never,
+    sessions as never,
   );
-  return { controller, authService, issuer, res };
+  return { controller, authService, issuer, res, sessions };
 }
 
 const req = { cookies: {}, headers: {} } as never;
@@ -210,5 +212,34 @@ describe('AuthController.refreshTokens', () => {
       ),
     ).rejects.toBe(ended);
     expect(b.res.cookie).not.toHaveBeenCalled();
+  });
+});
+
+describe('AuthController.logout (Task 13)', () => {
+  const caller = (sid: string | null) =>
+    ({ userId: 'u1', email: 'a@b.co', role: 'USER', sid, iat: 1 }) as never;
+
+  it("revokes the caller's own session row, then clears the cookie", async () => {
+    const b = build();
+    const order: string[] = [];
+    b.sessions.revoke.mockImplementation(() => {
+      order.push('revoke');
+      return Promise.resolve(true);
+    });
+    b.res.clearCookie.mockImplementation(() => {
+      order.push('clear');
+    });
+    await expect(
+      b.controller.logout(caller(SID), b.res as never),
+    ).resolves.toEqual({ message: 'Logged out successfully' });
+    expect(b.sessions.revoke).toHaveBeenCalledWith('u1', SID);
+    expect(order).toEqual(['revoke', 'clear']);
+  });
+
+  it('a sid-less caller revokes nothing and is still logged out', async () => {
+    const b = build();
+    await b.controller.logout(caller(null), b.res as never);
+    expect(b.sessions.revoke).not.toHaveBeenCalled();
+    expect(b.res.clearCookie).toHaveBeenCalled();
   });
 });

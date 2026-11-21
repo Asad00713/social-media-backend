@@ -43,6 +43,8 @@ import { CreateUserDto } from 'src/users/dto/create-user.dto';
 import { SkipLaunchGate } from './decorators/skip-launch-gate.decorator';
 import { clearRefreshCookie } from './refresh-cookie';
 import { SessionIssuer } from './session/session-issuer';
+import { SessionStore } from './session/session-store';
+import type { JwtUser } from './strategies/jwt.strategy';
 import { requestClientIp } from '../common/utils/request-client-ip';
 import { toPublicUser } from '../users/users.service';
 
@@ -52,6 +54,7 @@ export class AuthController {
     private readonly authService: AuthService,
     private readonly adminChallengeService: AdminChallengeService,
     private readonly issuer: SessionIssuer,
+    private readonly sessions: SessionStore,
   ) {}
 
   // ==================== Admin sign-in second factor ====================
@@ -214,7 +217,13 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
   @SkipLaunchGate()
-  async logout(@Res({ passthrough: true }) response: Response) {
+  async logout(
+    @CurrentUser() user: JwtUser,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    // This session's row ends first, so its refresh token (if it survives
+    // the cookie clear, e.g. copied elsewhere) refreshes nothing.
+    if (user.sid) await this.sessions.revoke(user.userId, user.sid);
     // Same options as the cookie was set with, or the browser keeps it.
     clearRefreshCookie(response);
 
