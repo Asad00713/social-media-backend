@@ -82,9 +82,9 @@ describe('template registry', () => {
     expect(() => getTemplate('nope')).toThrow('Unknown email template "nope"');
   });
 
-  it('TEMPLATE_IDS lists the 29 ids from the spec plus channel-connect-link and sign-in-method-changed, once each', () => {
-    expect(TEMPLATE_IDS).toHaveLength(31);
-    expect(new Set(TEMPLATE_IDS).size).toBe(31);
+  it('TEMPLATE_IDS lists the 29 ids from the spec plus channel-connect-link, sign-in-method-changed and the five two-step emails, once each', () => {
+    expect(TEMPLATE_IDS).toHaveLength(36);
+    expect(new Set(TEMPLATE_IDS).size).toBe(36);
     expect(TEMPLATE_IDS).toContain('sign-in-method-changed');
   });
 
@@ -145,5 +145,70 @@ describe('email source text', () => {
         hit: false,
       });
     }
+  });
+});
+
+describe('two-step sign-in security emails (R16)', () => {
+  const SUBJECTS: [string, string][] = [
+    ['two-step-enabled', 'Two-step sign-in is on'],
+    ['two-step-disabled', 'Two-step sign-in is off'],
+    ['backup-code-used', 'A backup code was used to sign in'],
+    ['two-step-failed', 'Someone entered your password but not your code'],
+    ['backup-codes-regenerated', 'Your backup codes were replaced'],
+  ];
+
+  it.each(SUBJECTS)(
+    '%s: security mail with subject "%s" and the not-me link',
+    async (id, subject) => {
+      const def = getTemplate(id);
+      expect(def.category).toBe('security');
+      expect(def.event).toBeNull();
+      expect(def.footer).toBe('security');
+      const props = def.fixture as { notMeUrl: string };
+      const r = await renderEmail(def, props, ctx);
+      expect(r.subject).toBe(subject);
+      // The not-me URL is the href of a link.
+      expect(r.html).toContain(`href="${props.notMeUrl}"`);
+      expect(r.html).toContain('Chrome on Windows');
+      expect(r.html).toContain('Pakistan (approximate)');
+    },
+  );
+
+  it('two-step-failed tells the person to change the password', async () => {
+    const def = getTemplate('two-step-failed');
+    const r = await renderEmail(def, def.fixture, ctx);
+    expect(r.text).toContain('Your password is correct, so change it now.');
+  });
+
+  it('backup-code-used: the count, and the regenerate hint only at 2 or fewer', async () => {
+    const def = getTemplate('backup-code-used');
+    const base = def.fixture as Record<string, unknown>;
+    const seven = await renderEmail(def, { ...base, remaining: 7 }, ctx);
+    expect(seven.text).toContain('7 backup codes left.');
+    expect(seven.text).not.toContain('Make new ones in Settings');
+    const two = await renderEmail(def, { ...base, remaining: 2 }, ctx);
+    expect(two.text).toContain('2 backup codes left.');
+    expect(two.text).toContain('Make new ones in Settings → Security.');
+  });
+
+  it('two-step-disabled by support says so', async () => {
+    const def = getTemplate('two-step-disabled');
+    const base = def.fixture as Record<string, unknown>;
+    const r = await renderEmail(def, { ...base, by: 'support' }, ctx);
+    expect(r.text).toContain(
+      'Our support team turned off two-step sign-in at your request.',
+    );
+    const you = await renderEmail(def, { ...base, by: 'you' }, ctx);
+    expect(you.text).not.toContain('support team');
+  });
+
+  it('leaves the Location row out when GeoIP found no country', async () => {
+    const def = getTemplate('two-step-enabled');
+    const r = await renderEmail(
+      def,
+      { ...(def.fixture as object), location: null },
+      ctx,
+    );
+    expect(r.html).not.toContain('approximate');
   });
 });

@@ -22,6 +22,7 @@ import { EmailSecurityController } from '../email/public/email-security.controll
 import { SecurityActionsService } from '../email/public/security-actions.service';
 import { SecurityCoreModule } from './security-core.module';
 import { SessionIssuer } from './session/session-issuer';
+import { TwoFactorNotices } from './two-factor/two-factor-notices.service';
 
 @Module({
   imports: [
@@ -41,6 +42,8 @@ import { SessionIssuer } from './session/session-issuer';
     KnownDevicesService,
     // The only session minter (see session-issuer.guard.spec.ts).
     SessionIssuer,
+    // Two-step sign-in security emails.
+    TwoFactorNotices,
     WelcomeEmailService,
     JwtStrategy,
     JwtRefreshStrategy,
