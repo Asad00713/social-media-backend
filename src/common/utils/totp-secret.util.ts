@@ -20,7 +20,8 @@ export class TotpSecretCorruptError extends Error {
 }
 
 export function encryptTotpSecret(secretB32: string): string {
-  if (!secretB32) throw new TotpSecretCorruptError('Refusing to store an empty secret');
+  if (!secretB32)
+    throw new TotpSecretCorruptError('Refusing to store an empty secret');
   return encrypt(secretB32);
 }
 

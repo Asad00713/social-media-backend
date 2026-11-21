@@ -35,7 +35,9 @@ describe('totp-secret.util', () => {
     const enc = encryptTotpSecret(SECRET);
     const [iv, tag, ct] = enc.split(':');
     const flipped = (ct[0] === 'A' ? 'B' : 'A') + ct.slice(1);
-    expect(() => decryptStrict(`${iv}:${tag}:${flipped}`)).toThrow(TotpSecretCorruptError);
+    expect(() => decryptStrict(`${iv}:${tag}:${flipped}`)).toThrow(
+      TotpSecretCorruptError,
+    );
   });
 
   it('empty, missing parts and extra parts throw', () => {
@@ -44,7 +46,9 @@ describe('totp-secret.util', () => {
     expect(() => decryptStrict('')).toThrow(TotpSecretCorruptError);
     expect(() => decryptStrict(`${iv}:${tag}`)).toThrow(TotpSecretCorruptError);
     expect(() => decryptStrict(`${iv}::${ct}`)).toThrow(TotpSecretCorruptError);
-    expect(() => decryptStrict(`${iv}:${tag}:${ct}:x`)).toThrow(TotpSecretCorruptError);
+    expect(() => decryptStrict(`${iv}:${tag}:${ct}:x`)).toThrow(
+      TotpSecretCorruptError,
+    );
   });
 
   it('encryptTotpSecret refuses an empty secret (encrypt would return it as-is)', () => {

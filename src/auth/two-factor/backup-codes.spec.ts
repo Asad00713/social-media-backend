@@ -25,7 +25,8 @@ describe('backup codes', () => {
   it('newBackupCodes honours a count and every code normalises to itself', () => {
     const codes = newBackupCodes(3);
     expect(codes).toHaveLength(3);
-    for (const c of codes) expect(normalizeBackupCode(c)).toBe(c.replace('-', ''));
+    for (const c of codes)
+      expect(normalizeBackupCode(c)).toBe(c.replace('-', ''));
   });
 
   it('draws every Crockford symbol over many codes (not a narrowed alphabet)', () => {

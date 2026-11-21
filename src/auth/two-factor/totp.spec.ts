@@ -99,6 +99,8 @@ describe('totp primitives', () => {
     const now = Date.now();
     const step = matchTotp(SECRET, codeAt(now));
     expect(step).not.toBeNull();
-    expect(Math.abs((step as number) - Math.floor(now / 30_000))).toBeLessThanOrEqual(1);
+    expect(
+      Math.abs((step as number) - Math.floor(now / 30_000)),
+    ).toBeLessThanOrEqual(1);
   });
 });

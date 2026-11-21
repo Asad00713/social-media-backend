@@ -1658,15 +1658,43 @@ describeDb('0098 user_sessions', () => {
     expect(result.columns).toEqual([
       { column_name: 'id', data_type: 'uuid', is_nullable: 'NO' },
       { column_name: 'user_id', data_type: 'uuid', is_nullable: 'NO' },
-      { column_name: 'device_hash', data_type: 'character', is_nullable: 'YES' },
-      { column_name: 'label', data_type: 'character varying', is_nullable: 'NO' },
+      {
+        column_name: 'device_hash',
+        data_type: 'character',
+        is_nullable: 'YES',
+      },
+      {
+        column_name: 'label',
+        data_type: 'character varying',
+        is_nullable: 'NO',
+      },
       { column_name: 'device_type', data_type: 'text', is_nullable: 'NO' },
       { column_name: 'ip', data_type: 'character varying', is_nullable: 'YES' },
-      { column_name: 'country', data_type: 'character varying', is_nullable: 'YES' },
-      { column_name: 'created_at', data_type: 'timestamp with time zone', is_nullable: 'NO' },
-      { column_name: 'last_used_at', data_type: 'timestamp with time zone', is_nullable: 'NO' },
-      { column_name: 'expires_at', data_type: 'timestamp with time zone', is_nullable: 'NO' },
-      { column_name: 'revoked_at', data_type: 'timestamp with time zone', is_nullable: 'YES' },
+      {
+        column_name: 'country',
+        data_type: 'character varying',
+        is_nullable: 'YES',
+      },
+      {
+        column_name: 'created_at',
+        data_type: 'timestamp with time zone',
+        is_nullable: 'NO',
+      },
+      {
+        column_name: 'last_used_at',
+        data_type: 'timestamp with time zone',
+        is_nullable: 'NO',
+      },
+      {
+        column_name: 'expires_at',
+        data_type: 'timestamp with time zone',
+        is_nullable: 'NO',
+      },
+      {
+        column_name: 'revoked_at',
+        data_type: 'timestamp with time zone',
+        is_nullable: 'YES',
+      },
     ]);
     expect(result.inserted.id).toMatch(/^[0-9a-f-]{36}$/);
     expect(result.index).toHaveLength(1);
@@ -1685,7 +1713,10 @@ describeDb('0098 user_sessions', () => {
       );
       return r.rows.map((x) => x.indexname);
     });
-    expect(indexes).toEqual(['user_sessions_pkey', 'user_sessions_user_live_idx']);
+    expect(indexes).toEqual([
+      'user_sessions_pkey',
+      'user_sessions_user_live_idx',
+    ]);
   });
 });
 
@@ -1786,7 +1817,11 @@ describeDb('0099 two_factor', () => {
 
     expect(result.mfa).toEqual({ attempts: 0, device_hash: null });
     expect(result.admin).toBe(1);
-    const col = (column_name: string, data_type: string, is_nullable: string) => ({
+    const col = (
+      column_name: string,
+      data_type: string,
+      is_nullable: string,
+    ) => ({
       column_name,
       data_type,
       is_nullable,
@@ -1843,7 +1878,11 @@ describeDb('0099 two_factor', () => {
       };
     });
 
-    const col = (column_name: string, data_type: string, is_nullable: string) => ({
+    const col = (
+      column_name: string,
+      data_type: string,
+      is_nullable: string,
+    ) => ({
       column_name,
       data_type,
       is_nullable,
