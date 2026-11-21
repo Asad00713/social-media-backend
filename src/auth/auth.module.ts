@@ -24,6 +24,7 @@ import { SecurityCoreModule } from './security-core.module';
 import { SessionIssuer } from './session/session-issuer';
 import { TwoFactorNotices } from './two-factor/two-factor-notices.service';
 import { MfaChallengeService } from './two-factor/mfa-challenge.service';
+import { TwoFactorAuthController } from './two-factor/two-factor-auth.controller';
 
 @Module({
   imports: [
@@ -68,6 +69,8 @@ import { MfaChallengeService } from './two-factor/mfa-challenge.service';
     GoogleAuthController,
     AccountSecurityController,
     EmailSecurityController,
+    // POST /auth/2fa/verify: the second step of a two-step sign-in.
+    TwoFactorAuthController,
   ],
 })
 export class AuthModule {}

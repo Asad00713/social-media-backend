@@ -2,6 +2,7 @@ import { Reflector } from '@nestjs/core';
 import { AuthController } from './auth.controller';
 import { SKIP_LAUNCH_GATE } from './decorators/skip-launch-gate.decorator';
 import { GoogleAuthController } from './google/google-auth.controller';
+import { TwoFactorAuthController } from './two-factor/two-factor-auth.controller';
 import { WorkspaceMembersController } from '../workspace-members/workspace-members.controller';
 
 /**
@@ -74,6 +75,22 @@ describe('launch gate route exemptions', () => {
     it('the whole Google controller skips the gate', () => {
       expect(
         reflector.get<boolean>(SKIP_LAUNCH_GATE, GoogleAuthController),
+      ).toBe(true);
+    });
+  });
+
+  describe('two-step sign-in stays reachable', () => {
+    it('verify skips the gate - a sign-in started on /auth/login must be able to finish', () => {
+      // Unauthenticated, so the guard passes it today anyway; the decorator
+      // keeps it working if a token is ever attached. Login stays gated.
+      expect(
+        reflector.get<boolean>(
+          SKIP_LAUNCH_GATE,
+          Reflect.get(
+            TwoFactorAuthController.prototype,
+            'verify',
+          ) as () => unknown,
+        ),
       ).toBe(true);
     });
   });

@@ -7,7 +7,9 @@ import {
   LOGIN_THROTTLE,
   REGISTER_THROTTLE,
   RESEND_CODE_THROTTLE,
+  TWO_FACTOR_VERIFY_THROTTLE,
 } from './auth-throttle';
+import { TwoFactorAuthController } from './two-factor/two-factor-auth.controller';
 import { ClientIpThrottlerGuard } from '../common/guards/client-ip-throttler.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { JwtRefreshGuard } from './guards/jwt-refresh.guard';
@@ -171,5 +173,25 @@ describe('every unauthenticated route is bounded by something', () => {
       expect(typeof proto[name]).toBe('function');
       expect(why.length).toBeGreaterThan(20);
     }
+  });
+});
+
+describe('POST /auth/2fa/verify', () => {
+  const verify = Reflect.get(
+    TwoFactorAuthController.prototype,
+    'verify',
+  ) as object;
+
+  it('carries TWO_FACTOR_VERIFY_THROTTLE: 10 per 15 minutes', () => {
+    expect(TWO_FACTOR_VERIFY_THROTTLE.default).toEqual({
+      limit: 10,
+      ttl: 15 * 60 * 1000,
+    });
+    expect(throttleOf(verify)).toEqual(TWO_FACTOR_VERIFY_THROTTLE.default);
+  });
+
+  it('buckets by the visitor (ClientIpThrottlerGuard), never the plain guard', () => {
+    expect(guardsOf(verify)).toContain(ClientIpThrottlerGuard);
+    expect(guardsOf(verify)).not.toContain(ThrottlerGuard);
   });
 });
