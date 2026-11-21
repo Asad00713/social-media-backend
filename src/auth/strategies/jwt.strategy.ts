@@ -81,8 +81,16 @@ export function assertNotDeleted(deletedAt: Date | null | undefined): void {
  *     verify step (Review Focus 1);
  *   - it carries a `sid` whose row is revoked, idle-expired or someone
  *     else's (30 s cache, SessionCheck);
- *   - it carries no `sid` (a pre-deploy token) and predates the user's
- *     `sessions_revoked_at` floor.
+ *   - it carries no `sid` and the caller did not opt into sid-less tokens:
+ *     every ACCESS consumer (JwtStrategy, AllowlistGuard, both sockets)
+ *     requires a sid, so a token minted outside SessionIssuer - even by an
+ *     allow-listed signer holding JWT_ACCESS_SECRET - opens nothing without a
+ *     real session row (batch-2 review ruling 4). Pre-deploy access tokens
+ *     live at most 15 minutes; the client refreshes once on the 401;
+ *   - it carries no `sid` (a pre-deploy REFRESH token, `allowSidless`) and
+ *     predates the user's `sessions_revoked_at` floor. The refresh path is
+ *     the only one that still accepts sid-less tokens: the issuer gives them
+ *     a session row (or refuses them when 2FA is on).
  * A token WITH a sid is judged by its row only (B1): the floor moves on
  * "log out of other sessions" to kill legacy tokens, and must not take the
  * caller's own session with it.
@@ -91,10 +99,13 @@ export async function assertTokenLive(
   payload: { sub?: unknown; sid?: unknown; iat?: number },
   user: { sessionsRevokedAt: Date | null },
   check: Pick<SessionCheck, 'isLive'>,
+  opts: { allowSidless?: boolean } = {},
 ): Promise<void> {
   assertSessionTokenShape(payload);
   const sub = payload.sub as string;
-  if ('sid' in payload && payload.sid !== undefined) {
+  if (!('sid' in payload) || payload.sid === undefined) {
+    if (!opts.allowSidless) throw new UnauthorizedException('Session ended');
+  } else {
     const sid = sidOf(payload);
     if (!sid || !(await check.isLive(sid, sub))) {
       throw new UnauthorizedException('Session ended');

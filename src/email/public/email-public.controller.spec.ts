@@ -365,7 +365,11 @@ describe('EmailPublicController over HTTP', () => {
   describe('a signed-out visitor', () => {
     it('gets through with a validly signed login token of a non-allowlisted user, where the launch gate is live', async () => {
       const bearer = `Bearer ${jwt.sign(
-        { sub: 'u9', email: 'stranger@example.com' },
+        {
+          sub: 'u9',
+          email: 'stranger@example.com',
+          sid: '11111111-1111-4111-8111-111111111111',
+        },
         { secret: SECRET },
       )}`;
       const control = await get('/control').set('Authorization', bearer);

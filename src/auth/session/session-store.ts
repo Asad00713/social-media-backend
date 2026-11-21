@@ -214,12 +214,25 @@ export class SessionStore {
       .update(users)
       .set({ sessionsRevokedAt: sql`now()` })
       .where(eq(users.id, userId));
+    await this.clearTrust(userId, executor);
+    this.forgetAll(rows.map((r) => r.id));
+    return rows.length;
+  }
+
+  /**
+   * Every trusted device of the user must pass two-step sign-in again (spec
+   * §7.2: trust is cleared on revoke-others and on a password change, even
+   * one that keeps the other sessions).
+   */
+  async clearTrust(
+    userId: string,
+    executor: SessionExecutor = this.db,
+  ): Promise<void> {
+    if (!isUuid(userId)) return;
     await executor
       .update(knownDevices)
       .set({ mfaTrustedUntil: null })
       .where(eq(knownDevices.userId, userId));
-    this.forgetAll(rows.map((r) => r.id));
-    return rows.length;
   }
 
   private forgetAll(ids: string[]): void {

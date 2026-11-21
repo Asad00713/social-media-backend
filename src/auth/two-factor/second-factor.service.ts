@@ -44,18 +44,35 @@ const present = (v: unknown): v is string =>
   typeof v === 'string' && v.trim().length > 0;
 
 /**
+ * Exactly one of `code` / `backupCode`, else MFA_CODE_REQUIRED (or its "not
+ * both" variant). Exported so a caller can refuse a malformed body before it
+ * reserves anything of its own (the verify step's challenge attempt).
+ */
+export function requireOneFactor(input: SecondFactorInput): void {
+  const hasCode = present(input.code);
+  const hasBackup = present(input.backupCode);
+  if (!hasCode && !hasBackup) throw mfaCodeRequired();
+  if (hasCode && hasBackup) throw mfaCodeAmbiguous();
+}
+
+/**
  * Every check of a second factor (spec §7.2), in one place so the rules hold
  * for sign-in, setup, regenerate, disable and account delete alike:
  *   - exactly one of `code` (TOTP) / `backupCode`, else MFA_CODE_REQUIRED;
- *   - a locked account (`mfa_locked_until` ahead) is MFA_LOCKED, even with
- *     the right code;
+ *   - each attempt is RESERVED first - `mfa_failures + 1` in one UPDATE
+ *     that a locked account (`mfa_locked_until` ahead) cannot match - so a
+ *     burst of parallel guesses gets at most 10 evaluations, and a locked
+ *     account is MFA_LOCKED even with the right code; the TOTP replay guard
+ *     and the backup-code spend repeat the lock condition in their own
+ *     UPDATE, so a right code that lands after a parallel guess set the lock
+ *     is refused too;
  *   - TOTP: the seed through decryptStrict (a plaintext or tampered column
  *     never verifies), window ±1, then the replay guard - one UPDATE that
  *     moves `totp_last_step` only forward, so a code is good once;
  *   - backup: the active secret only, normalised, HMAC-peppered, spent by
  *     one UPDATE;
- *   - success resets `mfa_failures`; a failure adds one atomically and the
- *     10th locks for 15 minutes and resets the count (B3).
+ *   - success resets `mfa_failures`; a failure keeps the reserved count and
+ *     the 10th locks for 15 minutes and resets the count (B3).
  * The pepper is resolved in the constructor, so every process that builds
  * SecurityCoreModule (web and worker) refuses to boot without one in
  * production.
@@ -73,38 +90,37 @@ export class SecondFactorService {
     input: SecondFactorInput,
     opts: { secret?: 'active' | 'pending' } = {},
   ): Promise<{ method: SecondFactorMethod; backupCodesRemaining: number }> {
-    const hasCode = present(input.code);
-    const hasBackup = present(input.backupCode);
-    if (!hasCode && !hasBackup) throw mfaCodeRequired();
-    if (hasCode && hasBackup) throw mfaCodeAmbiguous();
+    requireOneFactor(input);
 
-    const [user] = await this.db
-      .select({
+    // Reserve the attempt BEFORE judging the code (batch-2 review ruling 1):
+    // one UPDATE counts it as a failure up front and is refused while the
+    // account is locked. N parallel guesses therefore get at most
+    // MFA_MAX_FAILURES evaluations; a read-then-check let all N through.
+    const [reserved] = await this.db
+      .update(users)
+      .set({ mfaFailures: sql`${users.mfaFailures} + 1` })
+      .where(and(eq(users.id, userId), this.notLocked()))
+      .returning({
+        failures: users.mfaFailures,
         active: users.totpSecretEnc,
         pending: users.totpPendingSecretEnc,
-        lockedFor: sql<
-          number | null
-        >`extract(epoch FROM (${users.mfaLockedUntil} - now()))::float`,
-      })
-      .from(users)
-      .where(eq(users.id, userId))
-      .limit(1);
-    if (!user) throw mfaCodeInvalid();
-    if (user.lockedFor !== null && Number(user.lockedFor) > 0) {
-      throw mfaLocked(Number(user.lockedFor));
-    }
+      });
+    if (!reserved) return this.refuseLockedOrMissing(userId);
+    // More guesses in flight than the cap allows: lock, judge nothing.
+    if (reserved.failures > MFA_MAX_FAILURES) return this.lockNow(userId);
 
-    const method: SecondFactorMethod = hasCode ? 'totp' : 'backup';
-    const ok = hasCode
-      ? await this.totpOk(
-          userId,
-          opts.secret === 'pending' ? user.pending : user.active,
-          input.code!,
-        )
-      : opts.secret !== 'pending' &&
-        (await this.spendBackupCode(userId, input.backupCode!));
+    const method: SecondFactorMethod = present(input.code) ? 'totp' : 'backup';
+    const ok =
+      method === 'totp'
+        ? await this.totpOk(
+            userId,
+            opts.secret === 'pending' ? reserved.pending : reserved.active,
+            input.code!,
+          )
+        : opts.secret !== 'pending' &&
+          (await this.spendBackupCode(userId, input.backupCode!));
 
-    if (!ok) return this.fail(userId);
+    if (!ok) return this.fail(userId, reserved.failures);
 
     await this.db
       .update(users)
@@ -219,6 +235,9 @@ export class SecondFactorService {
         and(
           eq(users.id, userId),
           sql`(${users.totpLastStep} IS NULL OR ${users.totpLastStep} < ${step})`,
+          // A right code that lands after a parallel guess set the lock is
+          // refused in the same statement.
+          this.notLocked(),
         ),
       )
       .returning({ id: users.id });
@@ -239,31 +258,67 @@ export class SecondFactorService {
           eq(userBackupCodes.userId, userId),
           eq(userBackupCodes.codeHash, hashBackupCode(normalized, this.pepper)),
           isNull(userBackupCodes.usedAt),
+          // Never spent while the account is locked (same statement).
+          sql`EXISTS (SELECT 1 FROM ${users} WHERE ${users.id} = ${userId} AND (${users.mfaLockedUntil} IS NULL OR ${users.mfaLockedUntil} <= now()))`,
         ),
       )
       .returning({ id: userBackupCodes.id });
     return spent.length > 0;
   }
 
-  /** One more failure, atomically; the 10th locks for 15 minutes. Always throws. */
-  private async fail(userId: string): Promise<never> {
-    const reaches = sql`${users.mfaFailures} + 1 >= ${MFA_MAX_FAILURES}`;
+  /**
+   * The code was wrong; the failure was already counted by the reservation.
+   * The 10th consecutive one locks for 15 minutes. Always throws: MFA_LOCKED
+   * when the account is (now) locked, else MFA_CODE_INVALID.
+   */
+  private async fail(userId: string, failures: number): Promise<never> {
+    if (failures >= MFA_MAX_FAILURES) return this.lockNow(userId);
+    const lockedFor = await this.lockedFor(userId);
+    if (lockedFor !== null && lockedFor > 0) throw mfaLocked(lockedFor);
+    throw mfaCodeInvalid();
+  }
+
+  /** Sets the 15-minute lock (keeping a later one) and resets the count. */
+  private async lockNow(userId: string): Promise<never> {
     const [row] = await this.db
       .update(users)
       .set({
-        mfaFailures: sql`CASE WHEN ${reaches} THEN 0 ELSE ${users.mfaFailures} + 1 END`,
-        mfaLockedUntil: sql`CASE WHEN ${reaches} THEN now() + make_interval(mins => ${MFA_LOCK_MINUTES}) ELSE ${users.mfaLockedUntil} END`,
+        mfaLockedUntil: sql`CASE WHEN ${users.mfaLockedUntil} > now() THEN ${users.mfaLockedUntil} ELSE now() + make_interval(mins => ${MFA_LOCK_MINUTES}) END`,
+        mfaFailures: 0,
       })
       .where(eq(users.id, userId))
       .returning({
+        lockedFor: sql<number>`extract(epoch FROM (${users.mfaLockedUntil} - now()))::float`,
+      });
+    throw mfaLocked(
+      Math.max(1, Number(row?.lockedFor ?? MFA_LOCK_MINUTES * 60)),
+    );
+  }
+
+  /** The reservation matched no row: the account is locked, or it is gone. */
+  private async refuseLockedOrMissing(userId: string): Promise<never> {
+    const lockedFor = await this.lockedFor(userId);
+    if (lockedFor === null) throw mfaCodeInvalid();
+    // Expired between the two statements: still a refusal, retry in 1 s.
+    throw mfaLocked(Math.max(1, lockedFor));
+  }
+
+  /** Seconds until the lock lifts (<= 0 when not locked); null when no user. */
+  private async lockedFor(userId: string): Promise<number | null> {
+    const [row] = await this.db
+      .select({
         lockedFor: sql<
           number | null
-        >`extract(epoch FROM (${users.mfaLockedUntil} - now()))::float`,
-      });
-    if (row && row.lockedFor !== null && Number(row.lockedFor) > 0) {
-      throw mfaLocked(Number(row.lockedFor));
-    }
-    throw mfaCodeInvalid();
+        >`coalesce(extract(epoch FROM (${users.mfaLockedUntil} - now()))::float, 0)`,
+      })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    return row ? Number(row.lockedFor) : null;
+  }
+
+  private notLocked() {
+    return sql`(${users.mfaLockedUntil} IS NULL OR ${users.mfaLockedUntil} <= now())`;
   }
 
   private async remaining(userId: string): Promise<number> {

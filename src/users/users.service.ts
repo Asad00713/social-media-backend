@@ -21,6 +21,7 @@ import { UpdateUserDto } from './dto/update-user.dto';
 import { pickAvatarColor } from './avatar-colors';
 import { normalizeEmail } from './normalize-email';
 import { SessionStore } from '../auth/session/session-store';
+import { SecondFactorService } from '../auth/two-factor/second-factor.service';
 
 // Public user type that excludes sensitive fields
 export type PublicUser = Pick<
@@ -112,6 +113,7 @@ export class UsersService {
   constructor(
     @Inject(DRIZZLE) private db: DbType,
     private readonly sessions: SessionStore,
+    private readonly secondFactor: SecondFactorService,
   ) {}
 
   async create(
@@ -532,7 +534,14 @@ export class UsersService {
     `);
       // Every session the squatter opened ends with the password (rows and
       // the legacy floor), in the same transaction.
-      if (input.clearPassword) await this.sessions.revokeAll(userId, tx);
+      if (input.clearPassword) {
+        await this.sessions.revokeAll(userId, tx);
+        // ...and so does any two-step sign-in the squatter set up: its
+        // secret, backup codes, challenges and trusted devices. Otherwise the
+        // real owner would be challenged with the squatter's authenticator
+        // (batch-2 review ruling 2).
+        await this.secondFactor.clear(userId, tx);
+      }
     });
   }
 }

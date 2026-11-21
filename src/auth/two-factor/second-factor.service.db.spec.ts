@@ -166,8 +166,21 @@ describeDb('SecondFactorService (database)', () => {
       } catch (e) {
         during = (e as { getResponse(): unknown }).getResponse();
       }
-      return { codes, afterNine, tenth, afterTen, during };
+      // A guess during the lock is refused before it is judged or counted.
+      const duringWrong = await codeOf(s.check(userId, { code: '000000' }));
+      const afterDuring = await failures(client, userId);
+      return {
+        codes,
+        afterNine,
+        tenth,
+        afterTen,
+        during,
+        duringWrong,
+        afterDuring,
+      };
     });
+    expect(r.duringWrong).toBe('MFA_LOCKED');
+    expect(r.afterDuring.mfa_failures).toBe(0);
     expect(new Set(r.codes)).toEqual(new Set(['MFA_CODE_INVALID']));
     expect(r.afterNine.mfa_failures).toBe(9);
     expect(r.tenth).toMatchObject({ code: 'MFA_LOCKED' });
@@ -178,6 +191,81 @@ describeDb('SecondFactorService (database)', () => {
     const retry = (r.during as { retryAfterSeconds: number }).retryAfterSeconds;
     expect(retry).toBeGreaterThan(890);
     expect(retry).toBeLessThanOrEqual(900);
+  });
+
+  it('a burst of 20 parallel wrong codes: at most 10 are judged, then the account is locked', async () => {
+    // node-postgres queues every statement on the one connection, so a
+    // read-the-lock-then-check implementation lets all 20 past its SELECT
+    // (19 MFA_CODE_INVALID). With the attempt reserved first, only failures
+    // 1-9 answer MFA_CODE_INVALID; the 10th sets the lock and the rest are
+    // refused unjudged.
+    const r = await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const userId = await seedUser(client);
+      const s = build(db);
+      const answers = await Promise.all(
+        Array.from({ length: 20 }, () =>
+          codeOf(s.check(userId, { code: '000000' })),
+        ),
+      );
+      return { answers, after: await failures(client, userId) };
+    });
+    expect(r.answers.filter((a) => a === 'MFA_CODE_INVALID')).toHaveLength(9);
+    expect(r.answers.filter((a) => a === 'MFA_LOCKED')).toHaveLength(11);
+    expect(r.after.locked_for).toBeGreaterThan(890);
+  });
+
+  it('a right code sent after 10 parallel wrong ones is refused (MFA_LOCKED), not accepted', async () => {
+    const r = await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const userId = await seedUser(client);
+      const s = build(db);
+      const wrong = Array.from({ length: 10 }, () =>
+        codeOf(s.check(userId, { code: '000000' })),
+      );
+      const right = codeOf(s.check(userId, { code: codeAt(Date.now()) }));
+      const answers = await Promise.all([...wrong, right]);
+      const last = await client.query<{ step: string | null }>(
+        `SELECT totp_last_step::text AS step FROM users WHERE id = $1`,
+        [userId],
+      );
+      return { right: answers[10], step: last.rows[0].step };
+    });
+    expect(r.right).toBe('MFA_LOCKED');
+    // The code was never accepted: the replay guard never moved.
+    expect(r.step).toBeNull();
+  });
+
+  it('the TOTP replay guard and the backup-code spend refuse in their own UPDATE once locked', async () => {
+    // A reservation taken just before a parallel guess set the lock reaches
+    // these statements with the lock already on; they must refuse it.
+    const r = await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const userId = await seedUser(client);
+      const s = build(db);
+      const [backup] = await s.replaceBackupCodes(userId);
+      await client.query(
+        `UPDATE users SET mfa_locked_until = now() + interval '15 minutes' WHERE id = $1`,
+        [userId],
+      );
+      const seam = s as unknown as {
+        totpOk(u: string, enc: string, code: string): Promise<boolean>;
+        spendBackupCode(u: string, code: string): Promise<boolean>;
+      };
+      const enc = await client.query<{ enc: string }>(
+        `SELECT totp_secret_enc AS enc FROM users WHERE id = $1`,
+        [userId],
+      );
+      const totp = await seam.totpOk(
+        userId,
+        enc.rows[0].enc,
+        codeAt(Date.now()),
+      );
+      const spent = await seam.spendBackupCode(userId, backup);
+      const unused = await client.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM user_backup_codes WHERE user_id = $1 AND used_at IS NULL`,
+        [userId],
+      );
+      return { totp, spent, unused: unused.rows[0].n };
+    });
+    expect(r).toEqual({ totp: false, spent: false, unused: '10' });
   });
 
   it('a success resets mfa_failures', async () => {

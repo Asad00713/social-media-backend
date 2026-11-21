@@ -83,6 +83,15 @@ export class GoogleAuthController {
             this.google.twoStepUrl(mode, issued.challengeToken),
           );
         }
+        // A signed-in existing account: last sign-in, IP and region. Only
+        // now, so a 2FA user's first factor alone moves none of them; a new
+        // account's were recorded with the account (recordSync).
+        if (!session.isNewAccount) {
+          await this.google.recordSignIn(
+            session.userId,
+            requestClientIp(req) ?? undefined,
+          );
+        }
       } catch {
         return res.redirect(302, this.google.failureUrl(mode));
       }

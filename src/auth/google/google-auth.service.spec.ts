@@ -203,7 +203,8 @@ describe('GoogleAuthService.callback', () => {
       name: 'Sara',
       clearPassword: false,
     });
-    expect(b.loginActivity.record).toHaveBeenCalledWith('u1', undefined);
+    // Recorded by the controller once a session exists (review ruling 7).
+    expect(b.loginActivity.record).not.toHaveBeenCalled();
     expect(r.session).toEqual({
       userId: 'u1',
       email: 'Sara@Gmail.com',
@@ -282,6 +283,12 @@ describe('GoogleAuthService.callback', () => {
       name: 'Sara',
       clearPassword: true,
     });
+    expect(b.loginActivity.record).not.toHaveBeenCalled();
+  });
+
+  it('recordSignIn writes last sign-in for the controller', async () => {
+    const b = build();
+    await b.service.recordSignIn('u3', '9.9.9.9');
     expect(b.loginActivity.record).toHaveBeenCalledWith('u3', '9.9.9.9');
   });
 });

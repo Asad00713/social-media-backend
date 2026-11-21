@@ -226,7 +226,11 @@ describe('ReportsPublicController over HTTP', () => {
   describe('a signed-out visitor (Review Focus 5)', () => {
     const stranger = () =>
       jwt.sign(
-        { sub: 'u9', email: 'stranger@example.com' },
+        {
+          sub: 'u9',
+          email: 'stranger@example.com',
+          sid: '11111111-1111-4111-8111-111111111111',
+        },
         { secret: SECRET },
       );
 

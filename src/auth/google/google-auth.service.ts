@@ -182,7 +182,10 @@ export class GoogleAuthService {
         // takes one, and POST /users/me/password answers PASSWORD_NOT_SET.
         clearPassword: !decision.user.isEmailVerified,
       });
-      await this.loginActivity.record(decision.user.id, ip);
+      // Last sign-in / IP / region are NOT written here: for a two-step user
+      // this is only the first factor. The controller calls recordSignIn
+      // once the issuer answers with a session (batch-2 review ruling 7);
+      // the second step records its own sign-in.
       // The stored email, not Google's spelling: the session's email claim is
       // compared against the allowlist and shown back to the user.
       return this.succeed(mode, decision.user.id, decision.user.email, false);
@@ -192,6 +195,12 @@ export class GoogleAuthService {
       );
       return this.fail('error', mode, 'GOOGLE_ERROR');
     }
+  }
+
+  /** Last sign-in, IP and region for an existing account's Google sign-in
+   *  that ended in a session. Never throws (LoginActivityService.record). */
+  recordSignIn(userId: string, ip: string | undefined): Promise<void> {
+    return this.loginActivity.record(userId, ip);
   }
 
   private succeed(

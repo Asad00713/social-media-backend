@@ -73,7 +73,11 @@ export class JwtRefreshStrategy extends PassportStrategy(
     // A revoked or idle sid is refused here; the issuer's touch refuses it
     // again (uncached) before minting, so the 30 s cache cannot mint around
     // a revoke made on another instance.
-    await assertTokenLive(payload, user, this.sessionCheck);
+    // The only consumer that still takes a sid-less (pre-deploy) token: the
+    // issuer gives it a session row, or refuses it when 2FA is on.
+    await assertTokenLive(payload, user, this.sessionCheck, {
+      allowSidless: true,
+    });
 
     // The current address, not the claim: /auth/refresh re-mints both tokens
     // from this, so a stale claim would otherwise live on after an email change.

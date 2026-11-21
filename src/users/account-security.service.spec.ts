@@ -71,6 +71,7 @@ function setup(
   const sessions = {
     revokeOthers: jest.fn().mockResolvedValue(opts.revoked ?? 2),
     revokeAll: jest.fn().mockResolvedValue(3),
+    clearTrust: jest.fn().mockResolvedValue(undefined),
   };
 
   const shouldSend = jest.fn().mockResolvedValue(opts.appAllowed ?? true);
@@ -308,6 +309,19 @@ describe('AccountSecurityService.changePassword', () => {
     expect(written).not.toHaveProperty('sessionsRevokedAt');
     expect(sessions.revokeOthers).not.toHaveBeenCalled();
     expect(result).toEqual({});
+  });
+
+  it('revokeOtherSessions: false still clears every trusted device, in the password transaction (spec §7.2)', async () => {
+    const { service, sessions, tx } = setup();
+    jest.spyOn(service, 'sendPasswordChanged').mockResolvedValue(undefined);
+
+    await service.changePassword(
+      'u1',
+      { currentPassword: OLD, newPassword: NEW, revokeOtherSessions: false },
+      CTX,
+    );
+
+    expect(sessions.clearTrust).toHaveBeenCalledWith('u1', tx);
   });
 
   it('revokeOtherSessions: true revokes, like omitting it, and reports the count', async () => {

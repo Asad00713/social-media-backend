@@ -88,7 +88,12 @@ describe('JwtStrategy refuses non-session tokens', () => {
       LIVE as never,
     );
     await expect(
-      strategy.validate({ sub: 'u1', email: 'a@b.com', iat: 1 }),
+      strategy.validate({
+        sub: 'u1',
+        email: 'a@b.com',
+        iat: 1,
+        sid: '11111111-1111-4111-8111-111111111111',
+      }),
     ).resolves.toMatchObject({ userId: 'u1' });
   });
 });

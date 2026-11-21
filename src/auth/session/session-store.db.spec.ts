@@ -303,6 +303,46 @@ describeDb('SessionStore (database)', () => {
     expect(result.forgotten).toEqual(result.ids);
   });
 
+  it("clearTrust clears that user's trusted devices only, and revokes nothing", async () => {
+    const result = await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const userId = await seedUser(client);
+      const bystander = await seedUser(client);
+      const { store } = build(db);
+      const live = await store.create(input(userId));
+      for (const u of [userId, bystander]) {
+        await client.query(
+          `INSERT INTO known_devices (user_id, device_hash, label, mfa_trusted_until)
+           VALUES ($1, $2, 'Chrome on Windows', now() + interval '30 days')`,
+          [u, 'f'.repeat(64)],
+        );
+      }
+      await store.clearTrust(userId);
+      const trust = await client.query<{
+        user_id: string;
+        mfa_trusted_until: Date | null;
+      }>(
+        `SELECT user_id, mfa_trusted_until FROM known_devices WHERE user_id = ANY($1)`,
+        [[userId, bystander]],
+      );
+      const floor = await client.query<{ at: Date | null }>(
+        `SELECT sessions_revoked_at AS at FROM users WHERE id = $1`,
+        [userId],
+      );
+      return {
+        trust: Object.fromEntries(
+          trust.rows.map((r) => [r.user_id, r.mfa_trusted_until]),
+        ),
+        ids: { userId, bystander },
+        stillLive: await store.isLive(live.id, userId),
+        floor: floor.rows[0].at,
+      };
+    });
+    expect(result.trust[result.ids.userId]).toBeNull();
+    expect(result.trust[result.ids.bystander]).not.toBeNull();
+    expect(result.stillLive).toBe(true);
+    expect(result.floor).toBeNull();
+  });
+
   it('revoke and revokeOthers run on a caller transaction (executor)', async () => {
     const result = await withRollbackDb(MIGRATIONS, async (db, client) => {
       const userId = await seedUser(client);

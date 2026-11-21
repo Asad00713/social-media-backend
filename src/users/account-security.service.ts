@@ -133,9 +133,14 @@ export class AccountSecurityService {
         .update(users)
         .set({ password, passwordChangedAt: now, updatedAt: now })
         .where(eq(users.id, userId));
-      return body.revokeOtherSessions !== false
-        ? this.sessions.revokeOthers(userId, callerSid, tx)
-        : undefined;
+      if (body.revokeOtherSessions !== false) {
+        return this.sessions.revokeOthers(userId, callerSid, tx);
+      }
+      // Sessions kept, but a leaked password must not keep skipping the
+      // second factor on 30-day trusted browsers (spec §7.2; revokeOthers
+      // clears trust itself on the other branch).
+      await this.sessions.clearTrust(userId, tx);
+      return undefined;
     });
 
     // Detached: the caller mints this device's fresh tokens next, and the old

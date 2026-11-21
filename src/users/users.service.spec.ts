@@ -26,6 +26,7 @@ describe('UsersService email matching', () => {
         query: { users: { findFirst } },
       } as never,
       {} as never,
+      {} as never,
     );
 
     await service.findByEmail('  Sara@Daybreak.CO ');
@@ -47,6 +48,7 @@ describe('UsersService email matching', () => {
         query: { users: { findFirst } },
         insert,
       } as never,
+      {} as never,
       {} as never,
     );
 
@@ -75,6 +77,7 @@ describe('UsersService.createFromGoogle', () => {
         query: { users: { findFirst } },
         insert,
       } as never,
+      {} as never,
       {} as never,
     );
   };
@@ -137,6 +140,7 @@ describe('UsersService public user shape', () => {
         update,
       } as never,
       {} as never,
+      {} as never,
     );
 
     const result = await service.update('u1', { useCase: 'clients' });
@@ -151,6 +155,7 @@ describe('UsersService public user shape', () => {
       {
         query: { users: { findFirst } },
       } as never,
+      {} as never,
       {} as never,
     );
 
@@ -172,6 +177,7 @@ describe('UsersService public user shape', () => {
         update: jest.fn().mockReturnValue({ set }),
       } as never,
       {} as never,
+      {} as never,
     );
 
     await service.update('u1', { name: 'Sara' });
@@ -189,6 +195,7 @@ describe('UsersService public user shape', () => {
         query: { users: { findFirst: jest.fn().mockResolvedValue(row) } },
         update: jest.fn().mockReturnValue({ set }),
       } as never,
+      {} as never,
       {} as never,
     );
 
@@ -210,6 +217,7 @@ describe('UsersService.update refuses the email and password fields', () => {
         query: { users: { findFirst: jest.fn().mockResolvedValue(row) } },
         update,
       } as never,
+      {} as never,
       {} as never,
     );
     return { service, update, set };
@@ -294,6 +302,7 @@ describe('UsersService hasPassword', () => {
         query: { users: { findFirst } },
       } as never,
       {} as never,
+      {} as never,
     );
 
     await service.findOne('u1');
@@ -315,6 +324,7 @@ describe('UsersService hasPassword', () => {
       {
         query: { users: { findFirst } },
       } as never,
+      {} as never,
       {} as never,
     );
 
@@ -373,6 +383,7 @@ describe('toPublicUser hasGoogle and passwordChangedAt', () => {
         query: { users: { findFirst } },
       } as never,
       {} as never,
+      {} as never,
     );
 
     await service.findOne('u1');
@@ -395,11 +406,13 @@ function txDb() {
   const tx = { execute };
   const transaction = jest.fn((fn: (t: typeof tx) => unknown) => fn(tx));
   const sessions = { revokeAll: jest.fn().mockResolvedValue(2) };
+  const secondFactor = { clear: jest.fn().mockResolvedValue(undefined) };
   const service = new UsersService(
     { execute, transaction } as never,
     sessions as never,
+    secondFactor as never,
   );
-  return { service, execute, tx, transaction, sessions };
+  return { service, execute, tx, transaction, sessions, secondFactor };
 }
 
 describe('UsersService.resetPassword', () => {
@@ -447,8 +460,14 @@ describe('UsersService.applyGoogleSignIn', () => {
     );
   });
 
-  it('a verified link keeps the sessions', async () => {
-    const { sessions } = await run(false);
+  it('pre-hijack clear also wipes the squatter two-step setup, in the same transaction', async () => {
+    const { secondFactor, tx } = await run(true);
+    expect(secondFactor.clear).toHaveBeenCalledWith('u1', tx);
+  });
+
+  it('a verified link keeps the sessions and the two-step setup', async () => {
+    const { sessions, secondFactor } = await run(false);
     expect(sessions.revokeAll).not.toHaveBeenCalled();
+    expect(secondFactor.clear).not.toHaveBeenCalled();
   });
 });

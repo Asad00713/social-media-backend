@@ -43,7 +43,12 @@ describe('AnalyticsEventsGateway user room', () => {
   });
 
   it('joins the room of the user the TOKEN names', async () => {
-    const { gateway, socket } = build(() => Promise.resolve({ sub: 'u1' }));
+    const { gateway, socket } = build(() =>
+      Promise.resolve({
+        sub: 'u1',
+        sid: '11111111-1111-4111-8111-111111111111',
+      }),
+    );
 
     await gateway.handleConnection(socket as unknown as ConnSocket);
 
@@ -61,7 +66,12 @@ describe('AnalyticsEventsGateway user room', () => {
   });
 
   it('emitToUser reaches that user room only', () => {
-    const { gateway, to, emit } = build(() => Promise.resolve({ sub: 'u1' }));
+    const { gateway, to, emit } = build(() =>
+      Promise.resolve({
+        sub: 'u1',
+        sid: '11111111-1111-4111-8111-111111111111',
+      }),
+    );
     const payload = {
       state: 'recovered' as const,
       provider: 'stripe' as const,

@@ -29,7 +29,8 @@ interface ChallengeClaims {
  * own key - `MFA_CHALLENGE_SECRET`, or HMAC-SHA256(JWT_ACCESS_SECRET,
  * 'mfa-challenge') - so it never verifies as an access token, and it carries
  * `purpose` so JwtStrategy would refuse it even if it did (Review Focus 1).
- * Five wrong codes burn the row; the counter is one atomic UPDATE.
+ * Five code attempts per challenge, reserved by one atomic UPDATE before
+ * each code is evaluated; the fifth wrong one burns the row.
  */
 @Injectable()
 export class MfaChallengeService {
@@ -109,26 +110,60 @@ export class MfaChallengeService {
   }
 
   /**
-   * One wrong code: attempts + 1 in a single UPDATE; the fifth also consumes
-   * the row. Returns the attempts left; no live row is MFA_CHALLENGE_EXPIRED.
+   * Reserves one code attempt BEFORE the code is evaluated (batch-2 review
+   * ruling 1): `attempts + 1 ... WHERE attempts < 5` in one UPDATE, so N
+   * requests racing on one challenge get at most five evaluations between
+   * them - a read-then-check would let all N past. Returns the attempts left
+   * after this one (4..0); no live row, or all five taken, is
+   * MFA_CHALLENGE_EXPIRED. The fifth reservation does NOT consume the row:
+   * if that fifth code is right, `consume` must still succeed. A wrong fifth
+   * code is followed by `burn`.
    */
-  async recordFailure(cid: string): Promise<number> {
+  async reserveAttempt(cid: string): Promise<number> {
     const [row] = await this.db
       .update(loginChallenges)
-      .set({
-        attempts: sql`${loginChallenges.attempts} + 1`,
-        consumedAt: sql`CASE WHEN ${loginChallenges.attempts} + 1 >= ${MAX_CHALLENGE_ATTEMPTS} THEN now() END`,
-      })
+      .set({ attempts: sql`${loginChallenges.attempts} + 1` })
       .where(
         and(
           eq(loginChallenges.id, cid),
           isNull(loginChallenges.consumedAt),
           gt(loginChallenges.expiresAt, sql`now()`),
+          lt(loginChallenges.attempts, MAX_CHALLENGE_ATTEMPTS),
         ),
       )
       .returning({ attempts: loginChallenges.attempts });
     if (!row) throw mfaChallengeExpired();
     return Math.max(0, MAX_CHALLENGE_ATTEMPTS - row.attempts);
+  }
+
+  /**
+   * Gives back a reserved attempt whose code was never judged wrong (the
+   * account was locked, the body was ambiguous, a dependency failed).
+   * Best effort: never throws, never goes below zero.
+   */
+  async release(cid: string): Promise<void> {
+    try {
+      await this.db
+        .update(loginChallenges)
+        .set({
+          attempts: sql`GREATEST(${loginChallenges.attempts} - 1, 0)`,
+        })
+        .where(
+          and(eq(loginChallenges.id, cid), isNull(loginChallenges.consumedAt)),
+        );
+    } catch {
+      // The attempt stays spent: stricter, never looser.
+    }
+  }
+
+  /** Kills the challenge after its last wrong code. */
+  async burn(cid: string): Promise<void> {
+    await this.db
+      .update(loginChallenges)
+      .set({ consumedAt: sql`now()` })
+      .where(
+        and(eq(loginChallenges.id, cid), isNull(loginChallenges.consumedAt)),
+      );
   }
 
   /** Spends the challenge. False when it was already spent or has expired. */

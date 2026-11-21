@@ -21,6 +21,7 @@ type ConnectingSocket = Parameters<
 
 /** `iat` is whole seconds; the revocation is 10 s after the token was issued. */
 const ISSUED_AT = 1_900_000_000;
+const SID = '11111111-1111-4111-8111-111111111111';
 
 function build(payload: Record<string, unknown>) {
   const verifyAsync = jest.fn().mockResolvedValue(payload);
@@ -69,13 +70,14 @@ describe('AnalyticsEventsGateway.handleConnection', () => {
     expect(fake.userId).toBeUndefined();
   });
 
-  it('accepts a token issued after the revocation', async () => {
+  it('accepts a session token issued after the revocation', async () => {
     findUser.mockResolvedValue({
       sessionsRevokedAt: new Date((ISSUED_AT - 10) * 1000),
     });
     const { gateway, socket, fake, disconnect } = build({
       sub: 'u1',
       iat: ISSUED_AT,
+      sid: SID,
     });
 
     await gateway.handleConnection(socket);
@@ -89,12 +91,26 @@ describe('AnalyticsEventsGateway.handleConnection', () => {
     const { gateway, socket, fake, disconnect } = build({
       sub: 'u1',
       iat: ISSUED_AT,
+      sid: SID,
     });
 
     await gateway.handleConnection(socket);
 
     expect(disconnect).not.toHaveBeenCalled();
     expect(fake.userId).toBe('u1');
+  });
+
+  it('disconnects a sid-less token even when nothing was revoked (review ruling 4)', async () => {
+    findUser.mockResolvedValue({ sessionsRevokedAt: null });
+    const { gateway, socket, fake, disconnect } = build({
+      sub: 'u1',
+      iat: ISSUED_AT,
+    });
+
+    await gateway.handleConnection(socket);
+
+    expect(disconnect).toHaveBeenCalledWith(true);
+    expect(fake.userId).toBeUndefined();
   });
 
   it('disconnects a soft-deleted account (row kept, deleted_at set)', async () => {

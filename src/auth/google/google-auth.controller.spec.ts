@@ -9,6 +9,7 @@ function build(callbackResult?: unknown, issueError?: Error) {
     callback: jest.fn().mockResolvedValue(callbackResult),
     failureUrl: jest.fn().mockReturnValue(FAIL_URL),
     twoStepUrl: jest.fn(),
+    recordSignIn: jest.fn().mockResolvedValue(undefined),
   };
   const issuer = {
     issue: issueError
@@ -107,6 +108,9 @@ describe('GoogleAuthController.callback', () => {
         silentDevice: isNewAccount,
       });
       expect(b.res.redirect).toHaveBeenCalledWith(302, 'https://ok');
+      // Last sign-in only after a session, and not again for a new account.
+      if (isNewAccount) expect(b.google.recordSignIn).not.toHaveBeenCalled();
+      else expect(b.google.recordSignIn).toHaveBeenCalledWith('u1', '1.1.1.1');
     },
   );
 
@@ -150,6 +154,21 @@ describe('GoogleAuthController.callback', () => {
           (c) => c[0] === 'refreshToken',
         ),
       ).toBe(false);
+      // First factor only: last sign-in / IP / region do not move (ruling 7).
+      expect(b.google.recordSignIn).not.toHaveBeenCalled();
     },
   );
+
+  it('a failed mint records no sign-in', async () => {
+    const b = build(
+      {
+        redirectUrl: 'https://ok',
+        session: { userId: 'u1', email: 'a@b.c', isNewAccount: false },
+        mode: 'popup',
+      },
+      new Error('jwt down'),
+    );
+    await b.controller.callback({}, req as never, b.res as never);
+    expect(b.google.recordSignIn).not.toHaveBeenCalled();
+  });
 });

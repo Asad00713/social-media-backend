@@ -86,47 +86,80 @@ describeDb('MfaChallengeService (database)', () => {
     });
   });
 
-  it('five recordFailure calls burn the challenge; open then throws MFA_CHALLENGE_EXPIRED', async () => {
+  it('five reserveAttempt calls take every attempt; a sixth is MFA_CHALLENGE_EXPIRED; a right fifth code can still consume', async () => {
     const result = await withRollbackDb(MIGRATIONS, async (db, client) => {
       const userId = await seedUser(client);
       const service = build(db);
       const token = await service.create(userId, null);
       const { cid } = await service.open(token);
       const left: number[] = [];
-      for (let i = 0; i < 5; i++) left.push(await service.recordFailure(cid));
+      for (let i = 0; i < 5; i++) left.push(await service.reserveAttempt(cid));
       return {
         left,
-        sixth: await codeOf(service.recordFailure(cid)),
-        open: await codeOf(service.open(token)),
+        sixth: await codeOf(service.reserveAttempt(cid)),
+        // The fifth reservation alone does not consume the row.
         consume: await service.consume(cid),
       };
     });
     expect(result.left).toEqual([4, 3, 2, 1, 0]);
     expect(result.sixth).toBe('MFA_CHALLENGE_EXPIRED');
-    expect(result.open).toBe('MFA_CHALLENGE_EXPIRED');
-    expect(result.consume).toBe(false);
+    expect(result.consume).toBe(true);
   });
 
-  it('two concurrent recordFailure calls both count (no lost update)', async () => {
-    // node-postgres queues both calls' statements on the one connection, so
-    // a read-then-write implementation would read 0 twice and write 1: the
-    // atomic `attempts = attempts + 1 ... RETURNING` must give 2.
+  it('burn after the fifth wrong code kills the challenge: open and consume refuse', async () => {
+    const result = await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const userId = await seedUser(client);
+      const service = build(db);
+      const token = await service.create(userId, null);
+      const { cid } = await service.open(token);
+      for (let i = 0; i < 5; i++) await service.reserveAttempt(cid);
+      await service.burn(cid);
+      return {
+        open: await codeOf(service.open(token)),
+        consume: await service.consume(cid),
+      };
+    });
+    expect(result).toEqual({ open: 'MFA_CHALLENGE_EXPIRED', consume: false });
+  });
+
+  it('ten concurrent reservations: exactly five succeed (the cap holds under a burst)', async () => {
+    // node-postgres queues every statement on the one connection, so a
+    // read-then-check implementation would read 0 ten times and let all ten
+    // through; the conditional UPDATE lets exactly five.
     const result = await withRollbackDb(MIGRATIONS, async (db, client) => {
       const userId = await seedUser(client);
       const service = build(db);
       const { cid } = await service.open(await service.create(userId, null));
-      const lefts = await Promise.all([
-        service.recordFailure(cid),
-        service.recordFailure(cid),
-      ]);
+      const settled = await Promise.allSettled(
+        Array.from({ length: 10 }, () => service.reserveAttempt(cid)),
+      );
       const r = await client.query<{ attempts: number }>(
         `SELECT attempts FROM login_challenges WHERE id = $1`,
         [cid],
       );
-      return { lefts: lefts.sort(), attempts: r.rows[0].attempts };
+      return {
+        ok: settled.filter((x) => x.status === 'fulfilled').length,
+        attempts: r.rows[0].attempts,
+      };
     });
-    expect(result.attempts).toBe(2);
-    expect(result.lefts).toEqual([3, 4]);
+    expect(result).toEqual({ ok: 5, attempts: 5 });
+  });
+
+  it('release gives an attempt back, never below zero', async () => {
+    const result = await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const userId = await seedUser(client);
+      const service = build(db);
+      const { cid } = await service.open(await service.create(userId, null));
+      await service.reserveAttempt(cid);
+      await service.release(cid);
+      await service.release(cid);
+      const r = await client.query<{ attempts: number }>(
+        `SELECT attempts FROM login_challenges WHERE id = $1`,
+        [cid],
+      );
+      return r.rows[0].attempts;
+    });
+    expect(result).toBe(0);
   });
 
   it('an expired row cannot be consumed, opened or failed against', async () => {
@@ -142,7 +175,7 @@ describeDb('MfaChallengeService (database)', () => {
       return {
         consume: await service.consume(cid),
         open: await codeOf(service.open(token)),
-        fail: await codeOf(service.recordFailure(cid)),
+        fail: await codeOf(service.reserveAttempt(cid)),
       };
     });
     expect(result).toEqual({

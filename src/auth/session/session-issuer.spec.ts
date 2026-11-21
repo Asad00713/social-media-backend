@@ -465,6 +465,21 @@ describe('SessionIssuer two-step branch (Task 10)', () => {
     expect(b.knownDevices.isMfaTrusted).not.toHaveBeenCalled();
   });
 
+  it('password: a SUPER_ADMIN on a trusted device is still challenged - the ROLE decides, not the via (B5)', async () => {
+    // Super admins sign in through via 'password' until the admin path is
+    // split out, so a check keyed on via === 'admin' would let a trusted
+    // super admin skip TOTP here.
+    const b = build({ user: ADMIN, trusted: true });
+    const result = await b.issuer.issue(
+      'u1',
+      request({ cookies: { sd_device: DEVICE } }),
+      b.res as never,
+      { via: 'password' },
+    );
+    expectNothingMinted(b, result);
+    expect(b.knownDevices.isMfaTrusted).not.toHaveBeenCalled();
+  });
+
   it('register: a user row with totpEnabledAt (impossible today) is still challenged', async () => {
     const b = build({ user: TOTP_USER, trusted: true });
     const result = await b.issuer.issue(
@@ -513,9 +528,40 @@ describe('SessionIssuer two-step branch (Task 10)', () => {
       userAgent: UA,
     });
     expect(b.knownDevices.track).not.toHaveBeenCalled();
-    // The trust write is awaited before the answer (R9).
-    expect(b.calls).toContain('markMfaTrusted');
     expect(b.loginActivity.record).toHaveBeenCalledWith('u1', '203.0.113.7');
+  });
+
+  it('two_factor: issue does not answer until the trust write has finished (R9)', async () => {
+    const b = build({ user: TOTP_USER });
+    let finishTrust!: () => void;
+    b.knownDevices.markMfaTrusted.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishTrust = resolve;
+        }),
+    );
+    let answered = false;
+    const pending = b.issuer
+      .issue(
+        'u1',
+        request({ cookies: { sd_device: DEVICE } }),
+        b.res as never,
+        {
+          via: 'two_factor',
+          trustDeviceHash: sha(DEVICE),
+        },
+      )
+      .then((r) => {
+        answered = true;
+        return r;
+      });
+    // Let every other step run; only the trust write is still open.
+    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+    expect(b.knownDevices.markMfaTrusted).toHaveBeenCalledTimes(1);
+    expect(answered).toBe(false);
+    finishTrust();
+    await expect(pending).resolves.toMatchObject({ kind: 'session' });
+    expect(answered).toBe(true);
   });
 
   it('two_factor with another device (cookie swapped since the challenge) tracks, no trust', async () => {

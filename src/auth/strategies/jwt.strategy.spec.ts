@@ -6,6 +6,7 @@ import { JwtStrategy, assertTokenLive, type JwtPayload } from './jwt.strategy';
 
 /** A SessionCheck that finds every session live (the floor tests below use sid-less tokens). */
 const LIVE = { isLive: jest.fn().mockResolvedValue(true) };
+const LIVE_SID = '22222222-2222-4222-8222-222222222222';
 
 describe('JwtStrategy suspension', () => {
   function make(userOverrides: Record<string, unknown>) {
@@ -44,7 +45,7 @@ describe('JwtStrategy suspension', () => {
       suspendedReason: null,
     });
     await expect(
-      strategy.validate({ sub: 'u1', email: 'a@b.com' }),
+      strategy.validate({ sub: 'u1', email: 'a@b.com', sid: LIVE_SID }),
     ).resolves.toMatchObject({ userId: 'u1', role: 'USER' });
   });
 });
@@ -77,24 +78,39 @@ describe('JwtStrategy session revocation', () => {
       LIVE as never,
     );
 
-  it('jwt strategy rejects a token issued before sessions_revoked_at and accepts one issued in the same second', async () => {
-    const strategy = make(REVOKED_AT);
-    const before = strategy.validate({
+  it('jwt strategy rejects a sid-less token issued before sessions_revoked_at', async () => {
+    const before = make(REVOKED_AT).validate({
       sub: 'u1',
       email: 'a@b.com',
       iat: 1_699_999_999,
     });
     await expect(before).rejects.toBeInstanceOf(UnauthorizedException);
     await expect(before).rejects.toThrow('Session ended');
-
-    await expect(
-      strategy.validate({ sub: 'u1', email: 'a@b.com', iat: 1_700_000_000 }),
-    ).resolves.toMatchObject({ userId: 'u1' });
   });
 
-  it('accepts any token when nothing was ever revoked', async () => {
+  it('a sid-less ACCESS token is refused even in the revocation second or with nothing revoked (review ruling 4)', async () => {
+    // Only the refresh strategy still takes sid-less tokens; an access token
+    // minted outside the issuer has no row and so opens nothing.
+    await expect(
+      make(REVOKED_AT).validate({
+        sub: 'u1',
+        email: 'a@b.com',
+        iat: 1_700_000_000,
+      }),
+    ).rejects.toThrow('Session ended');
     await expect(
       make(null).validate({ sub: 'u1', email: 'a@b.com', iat: 1 }),
+    ).rejects.toThrow('Session ended');
+  });
+
+  it('accepts a sid token when nothing was ever revoked', async () => {
+    await expect(
+      make(null).validate({
+        sub: 'u1',
+        email: 'a@b.com',
+        iat: 1,
+        sid: LIVE_SID,
+      }),
     ).resolves.toMatchObject({ userId: 'u1' });
   });
 
@@ -137,7 +153,12 @@ describe('JwtRefreshStrategy session revocation', () => {
 
 describe('the email the strategies hand on comes from the row, not the claim', () => {
   // The token was minted before the email change; the row has the new address.
-  const STALE = { sub: 'u1', email: 'old@example.test', iat: 1_800_000_000 };
+  const STALE = {
+    sub: 'u1',
+    email: 'old@example.test',
+    iat: 1_800_000_000,
+    sid: LIVE_SID,
+  };
   const users = {
     findOneWithSuspension: jest.fn().mockResolvedValue({
       ...ACTIVE,
@@ -279,9 +300,10 @@ describe('a deleted account', () => {
       }),
     };
     await expect(
-      new JwtStrategy(config as never, live as never, LIVE as never).validate(
-        SAME_SECOND,
-      ),
+      new JwtStrategy(config as never, live as never, LIVE as never).validate({
+        ...SAME_SECOND,
+        sid: LIVE_SID,
+      }),
     ).resolves.toMatchObject({ userId: 'u1' });
   });
 });
@@ -363,15 +385,44 @@ describe('the session behind a token (sid, Task 6)', () => {
     expect(check.isLive).not.toHaveBeenCalled();
   });
 
-  it('a sid-less token gives handlers sid null', async () => {
+  it('a sid-less access token → 401 even with no floor, never sid null (review ruling 4)', async () => {
+    const check = checkWith(true);
     const strategy = new JwtStrategy(
+      config as never,
+      usersWith(null) as never,
+      check as never,
+    );
+    await expect(
+      strategy.validate({ sub: 'u1', email: 'a@b.com', iat: 5 }),
+    ).rejects.toThrow('Session ended');
+    expect(check.isLive).not.toHaveBeenCalled();
+  });
+
+  it('assertTokenLive takes a sid-less token only when the caller opts in (refresh)', async () => {
+    const payload = { sub: 'u1', iat: 5 };
+    await expect(
+      assertTokenLive(payload, { sessionsRevokedAt: null }, checkWith(true)),
+    ).rejects.toThrow('Session ended');
+    await expect(
+      assertTokenLive(payload, { sessionsRevokedAt: null }, checkWith(true), {
+        allowSidless: true,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('refresh strategy: a sid-less (pre-deploy) refresh token still passes with sid null', async () => {
+    const strategy = new JwtRefreshStrategy(
       config as never,
       usersWith(null) as never,
       checkWith(true) as never,
     );
     await expect(
-      strategy.validate({ sub: 'u1', email: 'a@b.com', iat: 5 }),
-    ).resolves.toMatchObject({ sid: null, iat: 5 });
+      strategy.validate({ cookies: { refreshToken: 'rt' } } as never, {
+        sub: 'u1',
+        email: 'a@b.com',
+        iat: 5,
+      }),
+    ).resolves.toMatchObject({ userId: 'u1', sid: null });
   });
 
   it('a malformed sid (not a string) → 401, never the floor path', async () => {
