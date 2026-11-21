@@ -4,7 +4,11 @@ import { PassportStrategy } from '@nestjs/passport';
 import { Request } from 'express';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { UsersService } from '../../users/users.service';
-import { assertNotDeleted, assertSessionLive } from './jwt.strategy';
+import {
+  assertNotDeleted,
+  assertSessionLive,
+  assertSessionTokenShape,
+} from './jwt.strategy';
 
 export interface JwtRefreshPayload {
   sub: string;
@@ -47,6 +51,8 @@ export class JwtRefreshStrategy extends PassportStrategy(
     if (!refreshToken) {
       throw new UnauthorizedException('Refresh token not found');
     }
+
+    assertSessionTokenShape(payload);
 
     // findOneWithSuspension for sessionsRevokedAt; suspension itself is still
     // enforced by the access-token strategy only.

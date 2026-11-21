@@ -19,6 +19,7 @@ import { users } from '../drizzle/schema/users.schema';
 import {
   assertNotDeleted,
   assertSessionLive,
+  assertSessionTokenShape,
 } from '../auth/strategies/jwt.strategy';
 
 interface AuthenticatedSocket extends Socket {
@@ -70,6 +71,8 @@ export class NotificationsGateway
         token as string,
         { secret },
       );
+      // Only a session token opens a socket (not an admin challenge token).
+      assertSessionTokenShape(payload);
       const userId = payload.sub;
 
       // A token from before a password change, reset or "This wasn't me" is

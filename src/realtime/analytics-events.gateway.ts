@@ -15,6 +15,7 @@ import { and, eq } from 'drizzle-orm';
 import {
   assertNotDeleted,
   assertSessionLive,
+  assertSessionTokenShape,
 } from '../auth/strategies/jwt.strategy';
 import { db } from '../drizzle/db';
 import { users } from '../drizzle/schema/users.schema';
@@ -99,6 +100,8 @@ export class AnalyticsEventsGateway
       }>(token, {
         secret: this.config.get<string>('JWT_ACCESS_SECRET'),
       });
+      // Only a session token opens a socket (not an admin challenge token).
+      assertSessionTokenShape(payload);
       const userId = payload.sub ?? payload.userId;
       if (!userId) throw new Error('Token names no user');
 

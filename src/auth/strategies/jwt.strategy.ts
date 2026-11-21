@@ -13,6 +13,26 @@ export interface JwtPayload {
 }
 
 /**
+ * Refuses any token that is not a session token. Several other tokens are
+ * signed with JWT_ACCESS_SECRET (or fall back to it): the super-admin
+ * challenge token (`purpose: 'admin-login'`, issued after the emailed code and
+ * before the password step), the Google state cookie, the TikTok media proxy
+ * token. Session tokens carry a string `sub` and never `purpose` or `aud`.
+ * Shared by both strategies and both socket handshakes; runs before any lookup.
+ */
+export function assertSessionTokenShape(payload: unknown): void {
+  const claims = (payload ?? {}) as Record<string, unknown>;
+  if (
+    typeof claims.sub !== 'string' ||
+    claims.sub.length === 0 ||
+    'purpose' in claims ||
+    'aud' in claims
+  ) {
+    throw new UnauthorizedException('Not a session token');
+  }
+}
+
+/**
  * Refuses a token issued before the user's sessions were revoked (a password
  * change or reset, "This wasn't me"). `iat` has whole seconds only, so a token
  * from the revocation second itself passes: that is the fresh pair the
@@ -77,6 +97,8 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   }
 
   async validate(payload: JwtPayload): Promise<JwtUser> {
+    assertSessionTokenShape(payload);
+
     const user = await this.usersService.findOneWithSuspension(payload.sub);
 
     if (!user) {

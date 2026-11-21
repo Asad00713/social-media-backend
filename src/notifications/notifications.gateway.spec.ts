@@ -121,3 +121,25 @@ describe('NotificationsGateway.disconnectUser', () => {
     expect(disconnectSockets).toHaveBeenCalledWith(true);
   });
 });
+
+describe('NotificationsGateway.handleConnection token shape', () => {
+  beforeEach(() => {
+    jest.spyOn(Logger.prototype, 'error').mockImplementation();
+    jest.spyOn(Logger.prototype, 'log').mockImplementation();
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it('refuses a super-admin challenge token signed with the access secret', async () => {
+    const { gateway, jwt } = setup({ sessionsRevokedAt: null });
+    const challenge = jwt.sign(
+      { sub: 'u1', email: 'a@b.co', purpose: 'admin-login' },
+      { secret: SECRET, expiresIn: '5m' },
+    );
+    const client = socketWith(challenge);
+
+    await gateway.handleConnection(client as never);
+
+    expect(client.disconnect).toHaveBeenCalled();
+    expect(client.join).not.toHaveBeenCalled();
+  });
+});
