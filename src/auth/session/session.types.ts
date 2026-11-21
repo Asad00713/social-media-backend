@@ -27,6 +27,12 @@ export interface ReissueOptions {
   sid?: string | null;
   /** `two_factor` only: the device hash the challenge was made for. */
   trustDeviceHash?: string | null;
+  /**
+   * A sid-less (pre-deploy) token's `iat`, in seconds. The session row made
+   * for it is dated then (else the epoch), never now: the row is not a
+   * sign-in, so it must not pass the Google-only 10-minute re-auth window.
+   */
+  legacyIssuedAt?: number | null;
 }
 
 export interface SessionIssued {

@@ -98,8 +98,10 @@ export class AdminChallengeService {
     // `isNull(consumedAt)` matters as much as the time window. The cooldown
     // exists to protect a code that is still usable — once one has been spent
     // there is nothing left to protect, and holding the user back would trap
-    // them: a wrong password spends the code and returns them here, where a
-    // consumed-code cooldown would refuse the replacement they now need.
+    // them: the right code is spent at verify (exchanged for a single-use
+    // login token, consumed only after the password passes), so someone whose
+    // token then expired or was used comes back here for a new code, which a
+    // consumed-code cooldown would refuse.
     const recent = await this.db.query.adminLoginChallenges.findFirst({
       where: and(
         eq(adminLoginChallenges.userId, user.id),
@@ -210,6 +212,8 @@ export class AdminChallengeService {
           eq(adminLoginChallenges.id, challenge.id),
           isNull(adminLoginChallenges.consumedAt),
           lt(adminLoginChallenges.attempts, MAX_ATTEMPTS),
+          // Again here: a code that expired since the read above is refused.
+          gt(adminLoginChallenges.expiresAt, sql`now()`),
         ),
       )
       .returning({ attempts: adminLoginChallenges.attempts });

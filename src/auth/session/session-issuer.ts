@@ -25,6 +25,7 @@ import { GeoipService } from '../services/geoip.service';
 import { LoginActivityService } from '../services/login-activity.service';
 import { MfaChallengeService } from '../two-factor/mfa-challenge.service';
 import { SessionStore } from './session-store';
+import { assertNotDeleted } from '../strategies/jwt.strategy';
 import type {
   ChallengingOptions,
   IssueResult,
@@ -58,6 +59,8 @@ interface IssuerUser {
   email: string;
   role: string;
   isActive: boolean;
+  deletedAt: Date | null;
+  suspendedReason: string | null;
   totpEnabledAt: Date | null;
 }
 
@@ -142,6 +145,11 @@ export class SessionIssuer {
       if (user.totpEnabledAt) throw sessionEnded();
     }
 
+    // The second factor finishes a sign-in begun up to 5 minutes ago: an
+    // account suspended or deleted since gets nothing, as the strategies
+    // would refuse it on the next request anyway.
+    if (opts.via === 'two_factor') assertSignInAllowed(user);
+
     let sid: string;
     let device: { id: string } | null = null;
     if (reuse) {
@@ -155,6 +163,7 @@ export class SessionIssuer {
         label: deviceLabel(userAgent),
         deviceType: deviceType(userAgent),
         ip,
+        createdAt: legacyStart(opts),
       });
       sid = created.id;
     }
@@ -173,7 +182,13 @@ export class SessionIssuer {
         opts.via === 'two_factor' && 'trustDeviceHash' in opts
           ? opts.trustDeviceHash
           : null;
-      if (trustHash && trustHash === sha256(device.id)) {
+      // Never for a super admin: their trust is never honoured (B5), and a
+      // row would skip TOTP for 30 days if the account were demoted.
+      if (
+        trustHash &&
+        trustHash === sha256(device.id) &&
+        user.role !== 'SUPER_ADMIN'
+      ) {
         // The code was just checked on the browser the challenge was made
         // for: trust it for 30 days. Awaited (R9); this upsert is also the
         // sign-in's device sighting and sends A6 itself (B4), so track()
@@ -255,6 +270,8 @@ export class SessionIssuer {
         email: true,
         role: true,
         isActive: true,
+        deletedAt: true,
+        suspendedReason: true,
         totpEnabledAt: true,
       },
     });
@@ -281,6 +298,35 @@ export class SessionIssuer {
     return this.jwt.sign(payload, {
       secret: secrets.refresh,
       expiresIn: REFRESH_TTL,
+    });
+  }
+}
+
+/**
+ * The date a new row stands for. A sign-in (a challenging via, or the second
+ * factor that completes one) is now: undefined, the database default. Any
+ * other via only gets here without a sid - a pre-deploy token - and is
+ * dated at that token's iat, else the epoch, so it never passes for a fresh
+ * sign-in (batch-3 review finding 1).
+ */
+function legacyStart(
+  opts: ChallengingOptions | ReissueOptions,
+): Date | undefined {
+  if (CHALLENGING.has(opts.via) || opts.via === 'two_factor') return undefined;
+  const iat = 'legacyIssuedAt' in opts ? opts.legacyIssuedAt : null;
+  return new Date(typeof iat === 'number' && iat > 0 ? iat * 1000 : 0);
+}
+
+/** The same refusals as the access strategy, deleted before suspended. */
+function assertSignInAllowed(user: IssuerUser): void {
+  assertNotDeleted(user.deletedAt);
+  if (!user.isActive) {
+    throw new UnauthorizedException({
+      statusCode: 401,
+      error: 'Unauthorized',
+      code: 'ACCOUNT_SUSPENDED',
+      reason: user.suspendedReason ?? 'manual',
+      message: 'Your account has been suspended.',
     });
   }
 }

@@ -498,6 +498,7 @@ describe('the session behind a token (sid, Task 6)', () => {
       email: 'a@b.com',
       refreshToken: 'rt',
       sid: SID,
+      iat: 5,
     });
   });
 });

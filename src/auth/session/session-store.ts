@@ -28,6 +28,12 @@ export interface CreateSessionInput {
   label: string;
   deviceType: DeviceType;
   ip: string | null;
+  /**
+   * When the sign-in this row stands for happened; the database default
+   * (now) when absent. Set for a row made for a pre-deploy token (see
+   * ReissueOptions.legacyIssuedAt).
+   */
+  createdAt?: Date;
 }
 
 // Every sid we sign is a uuid. Anything else (a forged or legacy payload)
@@ -86,6 +92,7 @@ export class SessionStore {
         deviceType: input.deviceType,
         ip: input.ip,
         expiresAt: idleExpiry,
+        ...(input.createdAt ? { createdAt: input.createdAt } : {}),
       })
       .returning({ id: userSessions.id, expiresAt: userSessions.expiresAt });
     return row;

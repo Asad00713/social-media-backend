@@ -194,10 +194,16 @@ describe('AuthController.refreshTokens', () => {
 
   it('a pre-deploy refresh token (no sid) asks the issuer for a new row', async () => {
     const b = build();
-    await b.controller.refreshTokens({ userId: 'u1' }, req, b.res as never);
+    await b.controller.refreshTokens(
+      { userId: 'u1', iat: 1_700_000_000 },
+      req,
+      b.res as never,
+    );
+    // The old token's iat: the new row must not pass for a fresh sign-in.
     expect(b.issuer.issue).toHaveBeenCalledWith('u1', req, b.res, {
       via: 'refresh',
       sid: null,
+      legacyIssuedAt: 1_700_000_000,
     });
   });
 

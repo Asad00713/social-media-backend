@@ -194,18 +194,21 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtRefreshGuard)
   async refreshTokens(
-    @CurrentUser() user: { userId: string; sid?: string | null },
+    @CurrentUser() user: { userId: string; sid?: string | null; iat?: number },
     @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
   ) {
     // Same sid, no rotation: two tabs refreshing at once both succeed. A
     // revoked or idle session is a 401 with no cookie. A pre-deploy token
-    // (no sid) gets a session row here.
+    // (no sid) gets a session row here, dated at that token's iat so it
+    // never counts as a fresh sign-in (the Google-only re-auth window).
     const { accessToken } = await this.issuer.issue(
       user.userId,
       request,
       response,
-      { via: 'refresh', sid: user.sid ?? null },
+      user.sid
+        ? { via: 'refresh', sid: user.sid }
+        : { via: 'refresh', sid: null, legacyIssuedAt: user.iat ?? null },
     );
 
     return {

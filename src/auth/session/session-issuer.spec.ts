@@ -285,10 +285,15 @@ describe('SessionIssuer', () => {
       'u1',
       request({ cookies: { sd_device: DEVICE } }),
       b.res as never,
-      { via: 'refresh', sid: null },
+      { via: 'refresh', sid: null, legacyIssuedAt: 1_700_000_000 },
     );
     expect(b.sessions.touch).not.toHaveBeenCalled();
     expect(b.sessions.create).toHaveBeenCalledTimes(1);
+    // The row "started" when the old token was issued, not now: it never
+    // passes for a fresh sign-in (the Google-only re-auth window).
+    expect(b.sessions.create).toHaveBeenCalledWith(
+      expect.objectContaining({ createdAt: new Date(1_700_000_000_000) }),
+    );
     expect(result.sid).toBe(NEW_SID);
     expect(b.knownDevices.track).toHaveBeenCalledWith(
       'u1',
@@ -296,6 +301,33 @@ describe('SessionIssuer', () => {
       expect.any(Object),
       { silent: true },
     );
+  });
+
+  it.each([
+    ['refresh without an iat', { via: 'refresh' as const, sid: null }],
+    [
+      'a sid-less password change',
+      { via: 'password_change' as const, sid: null },
+    ],
+  ])(
+    '%s: the new row starts at the epoch, never "now"',
+    async (_label, opts) => {
+      const b = build();
+      await b.issuer.issue('u1', request(), b.res as never, opts);
+      expect(b.sessions.create).toHaveBeenCalledWith(
+        expect.objectContaining({ createdAt: new Date(0) }),
+      );
+    },
+  );
+
+  it('a real sign-in row carries no createdAt (the database default, now)', async () => {
+    const b = build();
+    await b.issuer.issue('u1', request(), b.res as never, { via: 'password' });
+    const input = (b.sessions.create.mock.calls[0] as unknown[])[0] as Record<
+      string,
+      unknown
+    >;
+    expect(input.createdAt).toBeUndefined();
   });
 
   it('password_change keeps the same sid and records no sign-in', async () => {
@@ -530,6 +562,53 @@ describe('SessionIssuer two-step branch (Task 10)', () => {
     expect(b.knownDevices.track).not.toHaveBeenCalled();
     expect(b.loginActivity.record).toHaveBeenCalledWith('u1', '203.0.113.7');
   });
+
+  it('two_factor for a SUPER_ADMIN writes no trust (it is never honoured, and would outlive a demotion): the sighting goes through track', async () => {
+    const b = build({ user: { ...TOTP_USER, role: 'SUPER_ADMIN' } });
+    const result = await b.issuer.issue(
+      'u1',
+      request({ cookies: { sd_device: DEVICE } }),
+      b.res as never,
+      { via: 'two_factor', trustDeviceHash: sha(DEVICE) },
+    );
+    expect(result.kind).toBe('session');
+    expect(b.knownDevices.markMfaTrusted).not.toHaveBeenCalled();
+    expect(b.knownDevices.track).toHaveBeenCalledWith(
+      'u1',
+      DEVICE,
+      expect.any(Object),
+      { silent: false },
+    );
+  });
+
+  it.each([
+    [
+      'suspended',
+      { isActive: false, suspendedReason: 'abuse' },
+      { code: 'ACCOUNT_SUSPENDED', reason: 'abuse' },
+    ],
+    [
+      'deleted',
+      { isActive: false, deletedAt: new Date() },
+      { code: 'ACCOUNT_DELETED' },
+    ],
+  ])(
+    'two_factor for an account %s since the challenge: 401, nothing minted',
+    async (_label, over, response) => {
+      const b = build({ user: { ...TOTP_USER, ...over } });
+      await expect(
+        b.issuer.issue(
+          'u1',
+          request({ cookies: { sd_device: DEVICE } }),
+          b.res as never,
+          { via: 'two_factor', trustDeviceHash: sha(DEVICE) },
+        ),
+      ).rejects.toMatchObject({ status: 401, response });
+      expect(b.sessions.create).not.toHaveBeenCalled();
+      expect(b.res.cookie).not.toHaveBeenCalled();
+      expect(b.knownDevices.markMfaTrusted).not.toHaveBeenCalled();
+    },
+  );
 
   it('two_factor: issue does not answer until the trust write has finished (R9)', async () => {
     const b = build({ user: TOTP_USER });

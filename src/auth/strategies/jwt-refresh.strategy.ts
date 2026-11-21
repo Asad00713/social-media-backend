@@ -86,6 +86,8 @@ export class JwtRefreshStrategy extends PassportStrategy(
       email: user.email,
       refreshToken,
       sid: sidOf(payload),
+      // A sid-less token's session row is dated at this (issuer).
+      iat: payload.iat,
     };
   }
 }
