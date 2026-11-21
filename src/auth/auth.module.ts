@@ -20,9 +20,16 @@ import { KnownDevicesService } from './devices/known-devices.service';
 import { WelcomeEmailService } from './welcome-email.service';
 import { EmailSecurityController } from '../email/public/email-security.controller';
 import { SecurityActionsService } from '../email/public/security-actions.service';
+import { SecurityCoreModule } from './security-core.module';
 
 @Module({
-  imports: [UsersModule, PassportModule, JwtModule.register({}), EmailModule],
+  imports: [
+    UsersModule,
+    PassportModule,
+    JwtModule.register({}),
+    EmailModule,
+    SecurityCoreModule,
+  ],
   providers: [
     AuthService,
     AdminChallengeService,
