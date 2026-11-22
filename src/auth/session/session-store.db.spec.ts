@@ -343,6 +343,123 @@ describeDb('SessionStore (database)', () => {
     expect(result.floor).toBeNull();
   });
 
+  it("revoke clears the trust of that session's browser only: not the user's other browsers, not another user's (finding 2)", async () => {
+    const result = await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const userId = await seedUser(client);
+      const bystander = await seedUser(client);
+      const { store, check } = build(db);
+      const trust = (u: string, hash: string) =>
+        client.query(
+          `INSERT INTO known_devices (user_id, device_hash, label, mfa_trusted_until)
+           VALUES ($1, $2, 'Chrome on Linux', now() + interval '30 days')`,
+          [u, hash],
+        );
+      const attacker = await store.create({
+        ...input(userId),
+        deviceHash: 'a'.repeat(64),
+      });
+      await store.create({ ...input(userId), deviceHash: 'b'.repeat(64) });
+      const noDevice = await store.create({
+        ...input(userId),
+        deviceHash: null,
+      });
+      await trust(userId, 'a'.repeat(64));
+      await trust(userId, 'b'.repeat(64));
+      // Another account signed in on the same browser keeps its own trust.
+      await trust(bystander, 'a'.repeat(64));
+
+      const revoked = await store.revoke(userId, attacker.id);
+      const again = await store.revoke(userId, noDevice.id);
+      const rows = await client.query<{
+        user_id: string;
+        device_hash: string;
+        trusted: boolean;
+      }>(
+        `SELECT user_id, device_hash, mfa_trusted_until IS NOT NULL AS trusted
+           FROM known_devices WHERE user_id = ANY($1)`,
+        [[userId, bystander]],
+      );
+      const t = (u: string, h: string) =>
+        rows.rows.find((r) => r.user_id === u && r.device_hash === h)?.trusted;
+      return {
+        revoked,
+        again,
+        row: await rowOf(client, attacker.id),
+        attackerTrusted: t(userId, 'a'.repeat(64)),
+        ownerOtherTrusted: t(userId, 'b'.repeat(64)),
+        bystanderTrusted: t(bystander, 'a'.repeat(64)),
+        forgotten: check.forget.mock.calls.map((c) => c[0]),
+        ids: [attacker.id, noDevice.id],
+      };
+    });
+    expect(result.revoked).toBe(true);
+    expect(result.again).toBe(true);
+    expect(result.row.revoked_at).not.toBeNull();
+    expect(result.attackerTrusted).toBe(false);
+    expect(result.ownerOtherTrusted).toBe(true);
+    expect(result.bystanderTrusted).toBe(true);
+    expect(result.forgotten).toEqual(result.ids);
+  });
+
+  it('revoke of a session that is not live clears no trust', async () => {
+    const result = await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const userId = await seedUser(client);
+      const { store } = build(db);
+      const s = await store.create({
+        ...input(userId),
+        deviceHash: 'a'.repeat(64),
+      });
+      await client.query(
+        `UPDATE user_sessions SET revoked_at = now() - interval '1 day' WHERE id = $1`,
+        [s.id],
+      );
+      // Trusted again since (a later sign-in on that browser passed the code).
+      await client.query(
+        `INSERT INTO known_devices (user_id, device_hash, label, mfa_trusted_until)
+         VALUES ($1, $2, 'Chrome on Linux', now() + interval '30 days')`,
+        [userId, 'a'.repeat(64)],
+      );
+      const revoked = await store.revoke(userId, s.id);
+      const r = await client.query<{ trusted: boolean }>(
+        `SELECT mfa_trusted_until IS NOT NULL AS trusted FROM known_devices WHERE user_id = $1`,
+        [userId],
+      );
+      return { revoked, trusted: r.rows[0].trusted };
+    });
+    expect(result).toEqual({ revoked: false, trusted: true });
+  });
+
+  it('revoke rolls back with a caller transaction, trust clear included', async () => {
+    const result = await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const userId = await seedUser(client);
+      const { store } = build(db);
+      const s = await store.create({
+        ...input(userId),
+        deviceHash: 'a'.repeat(64),
+      });
+      await client.query(
+        `INSERT INTO known_devices (user_id, device_hash, label, mfa_trusted_until)
+         VALUES ($1, $2, 'Chrome on Linux', now() + interval '30 days')`,
+        [userId, 'a'.repeat(64)],
+      );
+      await db
+        .transaction(async (tx) => {
+          await store.revoke(userId, s.id, tx);
+          throw new Error('roll back');
+        })
+        .catch(() => undefined);
+      const r = await client.query<{ trusted: boolean }>(
+        `SELECT mfa_trusted_until IS NOT NULL AS trusted FROM known_devices WHERE user_id = $1`,
+        [userId],
+      );
+      return {
+        revokedAt: (await rowOf(client, s.id)).revoked_at,
+        trusted: r.rows[0].trusted,
+      };
+    });
+    expect(result).toEqual({ revokedAt: null, trusted: true });
+  });
+
   it('revoke and revokeOthers run on a caller transaction (executor)', async () => {
     const result = await withRollbackDb(MIGRATIONS, async (db, client) => {
       const userId = await seedUser(client);

@@ -160,22 +160,42 @@ export class SessionStore {
       .orderBy(desc(userSessions.lastUsedAt));
   }
 
-  /** Revokes one of the user's live sessions. False when there is none to revoke. */
+  /**
+   * Revokes one of the user's live sessions (Sessions -> revoke, and logout)
+   * and stops trusting its browser for two-step sign-in (final review
+   * finding 2): revoking "Chrome on Linux, Romania" is what a person does to
+   * kick an attacker out, and a 30-day trust left behind would let the
+   * password alone sign that browser straight back in. One statement, so
+   * the revoke and the trust clear commit together. Only this user's
+   * known_devices row with the session's device_hash; a row with no
+   * device_hash clears nothing. False when there is no live session to
+   * revoke (and then no trust is touched).
+   */
   async revoke(
     userId: string,
     sid: string,
     executor: SessionExecutor = this.db,
   ): Promise<boolean> {
     if (!isUuid(sid) || !isUuid(userId)) return false;
-    const rows = await executor
-      .update(userSessions)
-      .set({ revokedAt: sql`now()` })
-      .where(
-        and(eq(userSessions.id, sid), eq(userSessions.userId, userId), live()),
+    const result = await executor.execute<{ id: string }>(sql`
+      WITH revoked AS (
+        UPDATE ${userSessions}
+           SET revoked_at = now()
+         WHERE id = ${sid}
+           AND user_id = ${userId}
+           AND revoked_at IS NULL
+           AND expires_at > now()
+        RETURNING id, device_hash
+      ), untrusted AS (
+        UPDATE ${knownDevices}
+           SET mfa_trusted_until = NULL
+         WHERE user_id = ${userId}
+           AND device_hash IN (SELECT device_hash FROM revoked)
       )
-      .returning({ id: userSessions.id });
-    this.forgetAll(rows.map((r) => r.id));
-    return rows.length > 0;
+      SELECT id FROM revoked`);
+    const ids = result.rows.map((r) => r.id);
+    this.forgetAll(ids);
+    return ids.length > 0;
   }
 
   /**
