@@ -127,14 +127,7 @@ export class SessionIssuer {
     if (CHALLENGING.has(opts.via) && user.totpEnabledAt) {
       const cookie = readOrMintDeviceId(deviceCookieOf(req.cookies));
       if (!(await this.isTrusted(user, cookie, opts.via))) {
-        // Set (or mint) the device cookie so /auth/2fa/verify can trust the
-        // same browser it challenged.
-        setDeviceCookie(res, cookie.id);
-        const challengeToken = await this.challenges.create(
-          user.id,
-          sha256(cookie.id),
-        );
-        return { kind: 'mfa', challengeToken };
+        return this.challenge(user.id, res, cookie.id);
       }
     }
 
@@ -157,15 +150,31 @@ export class SessionIssuer {
       sid = reuse;
     } else {
       device = readOrMintDeviceId(deviceCookieOf(req.cookies));
-      const created = await this.sessions.create({
+      const row = {
         userId: user.id,
         deviceHash: sha256(device.id),
         label: deviceLabel(userAgent),
         deviceType: deviceType(userAgent),
         ip,
         createdAt: legacyStart(opts),
-      });
-      sid = created.id;
+      };
+      // Read "2FA off", so not challenged: the row is inserted only if it is
+      // still off (final review finding 6). An enable that committed in
+      // between gets a challenge (a sign-in) or a refusal (a sid-less
+      // reissue, which with 2FA on is refused above) - never a session that
+      // skipped the second factor. The second factor's own via has passed it.
+      if (!user.totpEnabledAt && opts.via !== 'two_factor') {
+        const created = await this.sessions.createIfTwoFactorOff(row);
+        if (!created) {
+          if (CHALLENGING.has(opts.via)) {
+            return this.challenge(user.id, res, device.id);
+          }
+          throw sessionEnded();
+        }
+        sid = created.id;
+      } else {
+        sid = (await this.sessions.create(row)).id;
+      }
     }
 
     const payload: SessionTokenPayload = {
@@ -214,6 +223,23 @@ export class SessionIssuer {
     }
 
     return { kind: 'session', accessToken, sid };
+  }
+
+  /**
+   * Mints nothing: a challenge bound to this browser. The device cookie is
+   * set (or minted) so /auth/2fa/verify can trust the browser it challenged.
+   */
+  private async challenge(
+    userId: string,
+    res: Response,
+    deviceId: string,
+  ): Promise<IssueResult> {
+    setDeviceCookie(res, deviceId);
+    const challengeToken = await this.challenges.create(
+      userId,
+      sha256(deviceId),
+    );
+    return { kind: 'mfa', challengeToken };
   }
 
   /**

@@ -126,6 +126,83 @@ describeDb('SessionStore (database)', () => {
     expect(left.ids).toEqual([left.recent, left.othersOld].sort());
   });
 
+  it('createIfTwoFactorOff inserts the same row as create while 2FA is off, and nothing once it is on (finding 6)', async () => {
+    const result = await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const userId = await seedUser(client);
+      const { store } = build(db);
+      const off = await store.createIfTwoFactorOff(input(userId));
+      const row = await client.query<{
+        user_id: string;
+        device_hash: string;
+        label: string;
+        device_type: string;
+        ip: string;
+        expires_at: Date;
+        created_at: Date;
+        now: Date;
+      }>(
+        `SELECT user_id, device_hash, label, device_type, ip, expires_at,
+                created_at, now() AS now
+           FROM user_sessions WHERE id = $1`,
+        [off!.id],
+      );
+      // A dated row (a pre-deploy token's) keeps its date.
+      const dated = await store.createIfTwoFactorOff({
+        ...input(userId),
+        createdAt: new Date('2026-11-01T08:00:00.123Z'),
+      });
+      const datedRow = await client.query<{ created_at: Date }>(
+        `SELECT created_at FROM user_sessions WHERE id = $1`,
+        [dated!.id],
+      );
+      // An enable commits between the issuer's read and this insert.
+      await client.query(
+        `UPDATE users SET totp_secret_enc = 'enc', totp_enabled_at = now() WHERE id = $1`,
+        [userId],
+      );
+      const on = await store.createIfTwoFactorOff(input(userId));
+      const count = await client.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM user_sessions WHERE user_id = $1`,
+        [userId],
+      );
+      return {
+        userId,
+        off,
+        row: row.rows[0],
+        dated: datedRow.rows[0].created_at.toISOString(),
+        on,
+        count: count.rows[0].n,
+        missing: await store.createIfTwoFactorOff(
+          input('33333333-3333-4333-8333-333333333333'),
+        ),
+      };
+    });
+    const { row } = result;
+    expect(result.off).toEqual({
+      id: expect.any(String) as string,
+      expiresAt: row.expires_at,
+    });
+    expect(row).toMatchObject({
+      user_id: result.userId,
+      device_hash: 'd'.repeat(64),
+      label: 'Chrome on Windows',
+      device_type: 'desktop',
+      ip: '203.0.113.7',
+    });
+    expect(row.created_at.getTime()).toBe(row.now.getTime());
+    expect(
+      Math.abs(
+        row.expires_at.getTime() -
+          row.now.getTime() -
+          SESSION_IDLE_DAYS * DAY_MS,
+      ),
+    ).toBeLessThan(1000);
+    expect(result.dated).toBe('2026-11-01T08:00:00.123Z');
+    expect(result.on).toBeNull();
+    expect(result.count).toBe('2');
+    expect(result.missing).toBeNull();
+  });
+
   it('touch extends a live row and refuses a revoked or idle-expired one', async () => {
     const result = await withRollbackDb(MIGRATIONS, async (db, client) => {
       const userId = await seedUser(client);

@@ -71,18 +71,7 @@ export class SessionStore {
     input: CreateSessionInput,
     executor: SessionExecutor = this.db,
   ): Promise<{ id: string; expiresAt: Date }> {
-    const cutoff = sql`now() - make_interval(days => ${SESSION_RETENTION_DAYS})`;
-    await executor
-      .delete(userSessions)
-      .where(
-        and(
-          eq(userSessions.userId, input.userId),
-          or(
-            lt(userSessions.revokedAt, cutoff),
-            lt(userSessions.expiresAt, cutoff),
-          ),
-        ),
-      );
+    await this.prune(input.userId, executor);
     const [row] = await executor
       .insert(userSessions)
       .values({
@@ -96,6 +85,67 @@ export class SessionStore {
       })
       .returning({ id: userSessions.id, expiresAt: userSessions.expiresAt });
     return row;
+  }
+
+  /**
+   * `create`, but only while the user still has two-step sign-in OFF; null
+   * (and no row) once it is on. For a sign-in that read "2FA off" and so
+   * was not challenged (final review finding 6): a 2FA enable committing in
+   * between would otherwise leave this session alive without ever passing
+   * the second factor, because enable's revokeOthers ran before the row
+   * existed.
+   *
+   * One statement, and the users row is read FOR SHARE: an enable updates
+   * that row (totp_enabled_at) BEFORE its revokeOthers in the same
+   * transaction, so either this insert waits for the enable to commit and
+   * then re-checks the row (READ COMMITTED re-evaluates a locked row: 2FA
+   * is on, nothing is inserted), or it commits first and the enable's
+   * UPDATE waits for it, and the revokeOthers that follows sees and
+   * revokes the new row. A plain SELECT would read the pre-enable row
+   * without waiting and could insert after revokeOthers ran.
+   */
+  async createIfTwoFactorOff(
+    input: CreateSessionInput,
+    executor: SessionExecutor = this.db,
+  ): Promise<{ id: string; expiresAt: Date } | null> {
+    await this.prune(input.userId, executor);
+    const createdAt = input.createdAt
+      ? sql`${input.createdAt.toISOString()}::timestamptz`
+      : sql`now()`;
+    const result = await executor.execute<{
+      id: string;
+      expires_at: Date | string;
+    }>(sql`
+      INSERT INTO ${userSessions}
+        (user_id, device_hash, label, device_type, ip, expires_at, created_at)
+      SELECT u.id, ${input.deviceHash}, ${input.label}, ${input.deviceType},
+             ${input.ip}, ${idleExpiry}, ${createdAt}
+        FROM ${users} u
+       WHERE u.id = ${input.userId}
+         AND u.totp_enabled_at IS NULL
+         FOR SHARE OF u
+      RETURNING id, expires_at`);
+    const row = result.rows[0];
+    return row ? { id: row.id, expiresAt: new Date(row.expires_at) } : null;
+  }
+
+  /** Revoked or expired rows older than 90 days go on the next sign-in (B8). */
+  private async prune(
+    userId: string,
+    executor: SessionExecutor,
+  ): Promise<void> {
+    const cutoff = sql`now() - make_interval(days => ${SESSION_RETENTION_DAYS})`;
+    await executor
+      .delete(userSessions)
+      .where(
+        and(
+          eq(userSessions.userId, userId),
+          or(
+            lt(userSessions.revokedAt, cutoff),
+            lt(userSessions.expiresAt, cutoff),
+          ),
+        ),
+      );
   }
 
   /** The GeoIP country, written just after the row (the lookup is detached). */

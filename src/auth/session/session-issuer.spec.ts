@@ -38,6 +38,8 @@ function build(
     secrets?: Record<string, string | undefined>;
     /** What KnownDevicesService.isMfaTrusted answers. */
     trusted?: boolean;
+    /** 2FA was enabled between the read and the insert. */
+    raced?: boolean;
   } = {},
 ) {
   const calls: string[] = [];
@@ -50,10 +52,20 @@ function build(
       },
     },
   };
-  const sessions = {
-    create: jest.fn(() => {
+  const create = jest.fn<Promise<{ id: string; expiresAt: Date }>, [unknown]>(
+    () => {
       calls.push('create');
       return Promise.resolve({ id: NEW_SID, expiresAt: new Date() });
+    },
+  );
+  const sessions = {
+    create,
+    // The conditional insert a "2FA off" read uses (finding 6). It records
+    // its row on `create` too, so the row assertions hold for both; a
+    // `raced` enable makes it insert nothing.
+    createIfTwoFactorOff: jest.fn((input: unknown) => {
+      calls.push('createIfTwoFactorOff');
+      return over.raced ? Promise.resolve(null) : create(input);
     }),
     touch: jest.fn(() => {
       calls.push('touch');
@@ -470,6 +482,65 @@ describe('SessionIssuer two-step branch (Task 10)', () => {
     expect(result.kind).toBe('session');
     expect(b.challenges.create).not.toHaveBeenCalled();
     expect(b.sessions.create).toHaveBeenCalledTimes(1);
+    // 2FA already on: nothing to re-check, the plain insert.
+    expect(b.sessions.createIfTwoFactorOff).not.toHaveBeenCalled();
+  });
+
+  it.each(['password', 'google', 'admin', 'register'] as const)(
+    '%s: 2FA read as off, but enabled before the insert (finding 6) → a challenge, never a session',
+    async (via) => {
+      const b = build({ user: USER, raced: true });
+      const result = await b.issuer.issue(
+        'u1',
+        request({ cookies: { sd_device: DEVICE } }),
+        b.res as never,
+        { via },
+      );
+      expectNothingMinted(b, result);
+      expect(b.sessions.createIfTwoFactorOff).toHaveBeenCalledTimes(1);
+      expect(b.challenges.create).toHaveBeenCalledWith('u1', sha(DEVICE));
+      expect(deviceCookie(b.res)).toBe(DEVICE);
+    },
+  );
+
+  it('a 2FA-off sign-in inserts its row only while 2FA is still off', async () => {
+    const b = build({ user: USER });
+    const result = await b.issuer.issue(
+      'u1',
+      request({ cookies: { sd_device: DEVICE } }),
+      b.res as never,
+      { via: 'password' },
+    );
+    expect(result.kind).toBe('session');
+    expect(b.sessions.createIfTwoFactorOff).toHaveBeenCalledTimes(1);
+    expect(b.sessions.createIfTwoFactorOff).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'u1', deviceHash: sha(DEVICE) }),
+    );
+  });
+
+  it('a sid-less refresh racing an enable → 401 SESSION_ENDED, nothing minted', async () => {
+    const b = build({ user: USER, raced: true });
+    await expect(
+      b.issuer.issue('u1', request(), b.res as never, {
+        via: 'refresh',
+        sid: null,
+        legacyIssuedAt: 1_700_000_000,
+      }),
+    ).rejects.toMatchObject({ response: { code: 'SESSION_ENDED' } });
+    expect(b.res.cookie).not.toHaveBeenCalled();
+    expect(b.challenges.create).not.toHaveBeenCalled();
+  });
+
+  it('two_factor (the second factor itself) uses the plain insert', async () => {
+    const b = build({ user: TOTP_USER, raced: true });
+    const result = await b.issuer.issue(
+      'u1',
+      request({ cookies: { sd_device: DEVICE } }),
+      b.res as never,
+      { via: 'two_factor', trustDeviceHash: null },
+    );
+    expect(result.kind).toBe('session');
+    expect(b.sessions.createIfTwoFactorOff).not.toHaveBeenCalled();
   });
 
   it('password: no sd_device cookie → never trusted (a minted id is not looked up)', async () => {
