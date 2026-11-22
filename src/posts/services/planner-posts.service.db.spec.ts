@@ -28,6 +28,7 @@ const MIGRATIONS = [
   // The users columns two-step sign-in adds (0099 also alters known_devices).
   '0072_known_devices.sql',
   '0099_two_factor.sql',
+  '0100_mfa_lock_escalation.sql',
 ];
 
 async function seed(db: DbType) {

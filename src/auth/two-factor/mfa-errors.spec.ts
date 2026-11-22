@@ -91,6 +91,23 @@ describe('mfa-errors (R5)', () => {
     );
   });
 
+  it('a longer (escalated) lock is worded in hours, rounded up; retryAfterSeconds stays exact', () => {
+    expect(body(mfaLocked(60 * 60))).toMatchObject({
+      retryAfterSeconds: 3600,
+      message: 'Too many tries. Try again in 60 minutes.',
+    });
+    expect(body(mfaLocked(60 * 60 + 1)).message).toBe(
+      'Too many tries. Try again in 2 hours.',
+    );
+    expect(body(mfaLocked(4 * 3600 - 5))).toMatchObject({
+      retryAfterSeconds: 4 * 3600 - 5,
+      message: 'Too many tries. Try again in 4 hours.',
+    });
+    expect(body(mfaLocked(24 * 3600)).message).toBe(
+      'Too many tries. Try again in 24 hours.',
+    );
+  });
+
   it('mfaCodeOf is undefined for anything else', () => {
     expect(mfaCodeOf(new Error('x'))).toBeUndefined();
   });

@@ -1606,6 +1606,7 @@ describeDb('0096 guest seat recount', () => {
  *         revoked by its `sid`.
  *   0099  two-step sign-in: six users columns, known_devices trust,
  *         user_backup_codes and login_challenges.
+ *   0100  the escalating two-step lock: users.mfa_lock_count.
  */
 const FILE_0098 = '0098_user_sessions.sql';
 
@@ -1912,5 +1913,59 @@ describeDb('0099 two_factor', () => {
     expect(result.index[0].indexdef).toContain('(user_id)');
     expect(result.index[0].indexdef).toContain('WHERE (used_at IS NULL)');
     expect(result.left).toBe(0);
+  });
+});
+
+const FILE_0100 = '0100_mfa_lock_escalation.sql';
+
+describeDb('0100 mfa_lock_escalation', () => {
+  const MIGRATIONS = [FILE_0072, FILE_0098, FILE_0099, FILE_0100];
+
+  it('adds users.mfa_lock_count integer NOT NULL DEFAULT 0; an existing row reads 0', async () => {
+    const result = await withRollbackDb(
+      [FILE_0072, FILE_0098, FILE_0099],
+      async (_db, client) => {
+        // A row from before 0100.
+        const before = await seedUser(client);
+        const sql = readFileSync(
+          join(process.cwd(), 'drizzle', 'migrations', FILE_0100),
+          'utf8',
+        );
+        await client.query(sql);
+        await client.query(sql);
+        const columns = await client.query<{
+          data_type: string;
+          is_nullable: string;
+          column_default: string | null;
+        }>(
+          `SELECT data_type, is_nullable, column_default
+             FROM information_schema.columns
+            WHERE table_name = 'users' AND column_name = 'mfa_lock_count'`,
+        );
+        const row = await client.query<{ mfa_lock_count: number }>(
+          `SELECT mfa_lock_count FROM users WHERE id = $1`,
+          [before],
+        );
+        return {
+          columns: columns.rows,
+          count: row.rows[0].mfa_lock_count,
+        };
+      },
+    );
+    expect(result.columns).toEqual([
+      { data_type: 'integer', is_nullable: 'NO', column_default: '0' },
+    ]);
+    expect(result.count).toBe(0);
+  });
+
+  it('refuses NULL', async () => {
+    await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const userId = await seedUser(client);
+      await expectPgError(client, '23502', () =>
+        client.query(`UPDATE users SET mfa_lock_count = NULL WHERE id = $1`, [
+          userId,
+        ]),
+      );
+    });
   });
 });

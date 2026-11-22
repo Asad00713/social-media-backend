@@ -350,6 +350,7 @@ export class AccountDeletionService {
         totpLastStep: null,
         mfaFailures: 0,
         mfaLockedUntil: null,
+        mfaLockCount: 0,
         isActive: false,
         deletedAt: now,
         // Every token minted before now is refused; the strategies also

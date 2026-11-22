@@ -32,6 +32,7 @@ const MIGRATIONS = [
   '0072_known_devices.sql',
   '0098_user_sessions.sql',
   '0099_two_factor.sql',
+  '0100_mfa_lock_escalation.sql',
 ];
 /** The squatter cases also seed a known_devices row. */
 const SQUAT_MIGRATIONS = [...MIGRATIONS, '0072_known_devices.sql'];

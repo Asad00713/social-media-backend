@@ -39,6 +39,7 @@ const MIGRATIONS = [
   '0095_users_fk_set_null.sql',
   '0098_user_sessions.sql',
   '0099_two_factor.sql',
+  '0100_mfa_lock_escalation.sql',
 ];
 
 const rand = () => Math.random().toString(36).slice(2, 10);

@@ -26,7 +26,24 @@ import { matchTotp } from './totp';
 
 /** Consecutive wrong second factors that lock further attempts (B3). */
 export const MFA_MAX_FAILURES = 10;
-export const MFA_LOCK_MINUTES = 15;
+/**
+ * How long each lock lasts, by `mfa_lock_count` (locks since the last
+ * correct second factor); the last value is the cap (final review finding
+ * 4). A slow attacker paying 10 guesses per lock gets ~40 in the first day
+ * and 10 a day after that, instead of ~960 a day forever.
+ */
+export const MFA_LOCK_MINUTES_BY_COUNT = [15, 60, 240, 1440] as const;
+
+/** The lock interval for the current `mfa_lock_count`, in SQL (old row values). */
+const nextLockInterval = sql`CASE LEAST(${users.mfaLockCount}, ${sql.raw(String(MFA_LOCK_MINUTES_BY_COUNT.length - 1))})
+  ${sql.join(
+    MFA_LOCK_MINUTES_BY_COUNT.map(
+      (mins, i) =>
+        sql`WHEN ${sql.raw(String(i))} THEN make_interval(mins => ${sql.raw(String(mins))})`,
+    ),
+    sql` `,
+  )}
+END`;
 
 export interface SecondFactorInput {
   code?: string;
@@ -48,6 +65,7 @@ const CLEARED_TWO_FACTOR = {
   totpLastStep: null,
   mfaFailures: 0,
   mfaLockedUntil: null,
+  mfaLockCount: 0,
 };
 
 const present = (v: unknown): v is string =>
@@ -81,8 +99,10 @@ export function requireOneFactor(input: SecondFactorInput): void {
  *     moves `totp_last_step` only forward, so a code is good once;
  *   - backup: the active secret only, normalised, HMAC-peppered, spent by
  *     one UPDATE;
- *   - success resets `mfa_failures`; a failure keeps the reserved count and
- *     the 10th locks for 15 minutes and resets the count (B3).
+ *   - success resets `mfa_failures` and `mfa_lock_count`; a failure keeps
+ *     the reserved count and the 10th locks and resets the count (B3). Each
+ *     lock lasts longer than the last (15 min, 1 h, 4 h, then 24 h) until a
+ *     correct second factor (finding 4), decided in the same UPDATE.
  * The pepper is resolved in the constructor, so every process that builds
  * SecurityCoreModule (web and worker) refuses to boot without one in
  * production.
@@ -134,7 +154,7 @@ export class SecondFactorService {
 
     await this.db
       .update(users)
-      .set({ mfaFailures: 0 })
+      .set({ mfaFailures: 0, mfaLockCount: 0 })
       .where(eq(users.id, userId));
     return {
       method,
@@ -307,7 +327,7 @@ export class SecondFactorService {
 
   /**
    * The code was wrong; the failure was already counted by the reservation.
-   * The 10th consecutive one locks for 15 minutes. Always throws: MFA_LOCKED
+   * The 10th consecutive one locks (lockNow). Always throws: MFA_LOCKED
    * when the account is (now) locked, else MFA_CODE_INVALID.
    */
   private async fail(userId: string, failures: number): Promise<never> {
@@ -317,12 +337,20 @@ export class SecondFactorService {
     throw mfaCodeInvalid();
   }
 
-  /** Sets the 15-minute lock (keeping a later one) and resets the count. */
+  /**
+   * Sets the lock and resets the failure count, in one UPDATE. A lock still
+   * running (a parallel guess set it) is kept and NOT counted again, so a
+   * burst escalates once. Otherwise the lock lasts by `mfa_lock_count` (15
+   * min, 1 h, 4 h, then 24 h) and the count goes up; the SET reads the old
+   * row, so both CASEs judge the same lock.
+   */
   private async lockNow(userId: string): Promise<never> {
+    const running = sql`${users.mfaLockedUntil} > now()`;
     const [row] = await this.db
       .update(users)
       .set({
-        mfaLockedUntil: sql`CASE WHEN ${users.mfaLockedUntil} > now() THEN ${users.mfaLockedUntil} ELSE now() + make_interval(mins => ${MFA_LOCK_MINUTES}) END`,
+        mfaLockedUntil: sql`CASE WHEN ${running} THEN ${users.mfaLockedUntil} ELSE now() + ${nextLockInterval} END`,
+        mfaLockCount: sql`CASE WHEN ${running} THEN ${users.mfaLockCount} ELSE ${users.mfaLockCount} + 1 END`,
         mfaFailures: 0,
       })
       .where(eq(users.id, userId))
@@ -330,7 +358,7 @@ export class SecondFactorService {
         lockedFor: sql<number>`extract(epoch FROM (${users.mfaLockedUntil} - now()))::float`,
       });
     throw mfaLocked(
-      Math.max(1, Number(row?.lockedFor ?? MFA_LOCK_MINUTES * 60)),
+      Math.max(1, Number(row?.lockedFor ?? MFA_LOCK_MINUTES_BY_COUNT[0] * 60)),
     );
   }
 

@@ -19,6 +19,7 @@ const MIGRATIONS = [
   '0092_user_account_settings.sql',
   '0098_user_sessions.sql',
   '0099_two_factor.sql',
+  '0100_mfa_lock_escalation.sql',
 ];
 const SECRETS: Record<string, string> = {
   JWT_ACCESS_SECRET: 'access-secret',

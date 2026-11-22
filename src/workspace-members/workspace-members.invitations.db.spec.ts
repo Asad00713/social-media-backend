@@ -23,6 +23,7 @@ const MIGRATIONS = [
   // The users columns two-step sign-in adds (0099 also alters known_devices).
   '0072_known_devices.sql',
   '0099_two_factor.sql',
+  '0100_mfa_lock_escalation.sql',
   // user_sessions: "Last active" is the newest session use (R14).
   '0098_user_sessions.sql',
 ];

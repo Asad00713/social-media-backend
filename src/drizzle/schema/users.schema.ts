@@ -157,6 +157,9 @@ export const users = pgTable('users', {
   // Consecutive wrong second factors; the 10th sets mfaLockedUntil.
   mfaFailures: integer('mfa_failures').notNull().default(0),
   mfaLockedUntil: timestamp('mfa_locked_until', { withTimezone: true }),
+  // Locks set since the last correct second factor (migration 0100); each
+  // lock lasts longer: 15 min, 1 h, 4 h, then 24 h.
+  mfaLockCount: integer('mfa_lock_count').notNull().default(0),
 
   // How Maestro should pitch its replies to THIS user. Per-user, not
   // per-workspace: one workspace holds people of very different technical

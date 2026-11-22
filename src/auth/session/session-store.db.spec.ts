@@ -11,6 +11,7 @@ const MIGRATIONS = [
   '0072_known_devices.sql',
   '0098_user_sessions.sql',
   '0099_two_factor.sql',
+  '0100_mfa_lock_escalation.sql',
 ];
 const DAY_MS = 24 * 60 * 60 * 1000;
 const rand = () => Math.random().toString(36).slice(2, 10);

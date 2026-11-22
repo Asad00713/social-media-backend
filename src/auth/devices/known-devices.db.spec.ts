@@ -150,6 +150,7 @@ describeDb('KnownDevicesService two-step trust (database)', () => {
     '0072_known_devices.sql',
     '0098_user_sessions.sql',
     '0099_two_factor.sql',
+    '0100_mfa_lock_escalation.sql',
   ];
   const flush = () => new Promise((r) => setTimeout(r, 20));
   /** Waits for the detached sighting to settle (it does a few queries). */

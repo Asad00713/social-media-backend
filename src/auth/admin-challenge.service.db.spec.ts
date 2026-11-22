@@ -18,6 +18,7 @@ const MIGRATIONS = [
   '0072_known_devices.sql',
   '0098_user_sessions.sql',
   '0099_two_factor.sql',
+  '0100_mfa_lock_escalation.sql',
 ];
 const CODE = '246810';
 const rand = () => Math.random().toString(36).slice(2, 10);

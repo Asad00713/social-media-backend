@@ -44,10 +44,16 @@ export function mfaChallengeExpired(): HttpException {
 export function mfaLocked(retryAfterSeconds: number): HttpException {
   const seconds = Math.max(1, Math.ceil(retryAfterSeconds));
   const minutes = Math.max(1, Math.ceil(seconds / 60));
+  // An escalated lock (1 h, 4 h, 24 h) reads in hours, not "1440 minutes".
+  const hours = Math.ceil(minutes / 60);
+  const wait =
+    minutes <= 60
+      ? `${minutes} minute${minutes === 1 ? '' : 's'}`
+      : `${hours} hours`;
   return mfaError(
     HttpStatus.TOO_MANY_REQUESTS,
     'MFA_LOCKED',
-    `Too many tries. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`,
+    `Too many tries. Try again in ${wait}.`,
     { retryAfterSeconds: seconds },
   );
 }

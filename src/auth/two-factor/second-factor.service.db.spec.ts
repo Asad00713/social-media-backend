@@ -12,6 +12,7 @@ const MIGRATIONS = [
   '0072_known_devices.sql',
   '0098_user_sessions.sql',
   '0099_two_factor.sql',
+  '0100_mfa_lock_escalation.sql',
 ];
 const SECRET = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
 const rand = () => Math.random().toString(36).slice(2, 10);
@@ -56,15 +57,50 @@ const codeOf = async (p: Promise<unknown>) => {
 async function failures(client: PoolClient, userId: string) {
   const r = await client.query<{
     mfa_failures: number;
+    mfa_lock_count: number;
     locked_for: number | null;
   }>(
-    `SELECT mfa_failures,
+    `SELECT mfa_failures, mfa_lock_count,
             extract(epoch FROM (mfa_locked_until - now()))::float AS locked_for
        FROM users WHERE id = $1`,
     [userId],
   );
   return r.rows[0];
 }
+
+/**
+ * The harness runs in one transaction, so now() stands still: a lock ends
+ * by moving it into the past, never by waiting.
+ */
+async function endLock(client: PoolClient, userId: string) {
+  await client.query(
+    `UPDATE users SET mfa_locked_until = now() - interval '1 second' WHERE id = $1`,
+    [userId],
+  );
+}
+
+/** Ten wrong codes in a row; the MFA_LOCKED body of the tenth. */
+async function lockOut(
+  s: SecondFactorService,
+  userId: string,
+): Promise<{ code: string; retryAfterSeconds: number }> {
+  for (let i = 0; i < 9; i++) {
+    expect(await codeOf(s.check(userId, { code: '000000' }))).toBe(
+      'MFA_CODE_INVALID',
+    );
+  }
+  try {
+    await s.check(userId, { code: '000000' });
+  } catch (e) {
+    return (
+      e as { getResponse(): { code: string; retryAfterSeconds: number } }
+    ).getResponse();
+  }
+  throw new Error('the tenth wrong code did not lock');
+}
+
+const MIN = 60;
+const HOUR = 60 * MIN;
 
 describeDb('SecondFactorService (database)', () => {
   const build = (db: DbType) => new SecondFactorService(db);
@@ -281,6 +317,95 @@ describeDb('SecondFactorService (database)', () => {
     expect(r).toEqual({ before: 3, after: 0 });
   });
 
+  it('each lock lasts longer: 15 min, 1 h, 4 h, then 24 h and no more; MFA_LOCKED carries the real wait (finding 4)', async () => {
+    const r = await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const userId = await seedUser(client);
+      const s = build(db);
+      const rounds: Array<{
+        retry: number;
+        lockedFor: number;
+        count: number;
+        failures: number;
+        during: string;
+      }> = [];
+      for (let round = 0; round < 6; round++) {
+        const locked = await lockOut(s, userId);
+        expect(locked.code).toBe('MFA_LOCKED');
+        const state = await failures(client, userId);
+        // A guess during the lock is refused unjudged and uncounted.
+        const during = await codeOf(s.check(userId, { code: '000000' }));
+        rounds.push({
+          retry: locked.retryAfterSeconds,
+          lockedFor: Math.round(state.locked_for ?? 0),
+          count: state.mfa_lock_count,
+          failures: (await failures(client, userId)).mfa_failures,
+          during,
+        });
+        await endLock(client, userId);
+      }
+      return rounds;
+    });
+    const waits = [15 * MIN, HOUR, 4 * HOUR, 24 * HOUR, 24 * HOUR, 24 * HOUR];
+    expect(r.map((x) => x.retry)).toEqual(waits);
+    expect(r.map((x) => x.lockedFor)).toEqual(waits);
+    expect(r.map((x) => x.count)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(new Set(r.map((x) => x.failures))).toEqual(new Set([0]));
+    expect(new Set(r.map((x) => x.during))).toEqual(new Set(['MFA_LOCKED']));
+  });
+
+  it('a correct second factor resets the escalation: the next lock is 15 minutes again', async () => {
+    const r = await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const userId = await seedUser(client);
+      const s = build(db);
+      await lockOut(s, userId);
+      await endLock(client, userId);
+      await lockOut(s, userId);
+      await endLock(client, userId);
+      const beforeSuccess = await failures(client, userId);
+      // Three wrong, then the right code.
+      for (let i = 0; i < 3; i++)
+        await codeOf(s.check(userId, { code: '000000' }));
+      await s.check(userId, { code: codeAt(Date.now()) });
+      const afterSuccess = await failures(client, userId);
+      const next = await lockOut(s, userId);
+      return { beforeSuccess, afterSuccess, next };
+    });
+    expect(r.beforeSuccess.mfa_lock_count).toBe(2);
+    expect(r.afterSuccess).toMatchObject({
+      mfa_failures: 0,
+      mfa_lock_count: 0,
+    });
+    expect(r.next.retryAfterSeconds).toBe(15 * MIN);
+  });
+
+  it('a backup code resets the escalation too', async () => {
+    const r = await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const userId = await seedUser(client);
+      const s = build(db);
+      const [backup] = await s.replaceBackupCodes(userId);
+      await lockOut(s, userId);
+      await endLock(client, userId);
+      await s.check(userId, { backupCode: backup });
+      return failures(client, userId);
+    });
+    expect(r).toMatchObject({ mfa_failures: 0, mfa_lock_count: 0 });
+  });
+
+  it('a burst that overruns the cap escalates once, not once per extra guess', async () => {
+    const r = await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const userId = await seedUser(client);
+      const s = build(db);
+      await Promise.all(
+        Array.from({ length: 25 }, () =>
+          codeOf(s.check(userId, { code: '000000' })),
+        ),
+      );
+      return failures(client, userId);
+    });
+    expect(r.mfa_lock_count).toBe(1);
+    expect(Math.round(r.locked_for ?? 0)).toBe(15 * MIN);
+  });
+
   it('a plaintext totp_secret_enc never verifies (decryptStrict)', async () => {
     const r = await withRollbackDb(MIGRATIONS, async (db, client) => {
       const userId = await seedUser(client, { plaintext: true });
@@ -332,13 +457,13 @@ describeDb('SecondFactorService (database)', () => {
         [userId, 'e'.repeat(64)],
       );
       await client.query(
-        `UPDATE users SET mfa_failures = 4, totp_last_step = 99 WHERE id = $1`,
+        `UPDATE users SET mfa_failures = 4, mfa_lock_count = 3, totp_last_step = 99 WHERE id = $1`,
         [userId],
       );
       await s.clear(userId);
       const u = await client.query<Record<string, unknown>>(
         `SELECT totp_secret_enc, totp_pending_secret_enc, totp_enabled_at,
-                totp_last_step, mfa_failures, mfa_locked_until
+                totp_last_step, mfa_failures, mfa_locked_until, mfa_lock_count
            FROM users WHERE id = $1`,
         [userId],
       );
@@ -367,6 +492,7 @@ describeDb('SecondFactorService (database)', () => {
       totp_last_step: null,
       mfa_failures: 0,
       mfa_locked_until: null,
+      mfa_lock_count: 0,
     });
     expect(r.counts).toEqual({
       codes: '0',
