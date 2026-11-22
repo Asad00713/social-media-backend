@@ -71,6 +71,10 @@ function build(
       calls.push('touch');
       return Promise.resolve(over.touch ?? true);
     }),
+    isLive: jest.fn(() => {
+      calls.push('isLive');
+      return Promise.resolve(over.touch ?? true);
+    }),
     setCountry: jest.fn(() => {
       calls.push('setCountry');
       return Promise.resolve();
@@ -278,6 +282,58 @@ describe('SessionIssuer', () => {
     expect(b.res.cookie).not.toHaveBeenCalled();
     expect(b.sessions.create).not.toHaveBeenCalled();
     expect(b.loginActivity.record).not.toHaveBeenCalled();
+  });
+
+  describe('a suspended account (finding 9)', () => {
+    const SUSPENDED = { ...USER, isActive: false, suspendedReason: 'manual' };
+
+    it('refresh with a live sid: the access token comes back (consumers answer ACCOUNT_SUSPENDED), but the row is not touched and no last-seen is written', async () => {
+      const b = build({ user: SUSPENDED });
+      const result = await b.issuer.issue('u1', request(), b.res as never, {
+        via: 'refresh',
+        sid: SID,
+      });
+      expect(result).toMatchObject({ kind: 'session', sid: SID });
+      expect(b.sessions.isLive).toHaveBeenCalledWith(SID, 'u1');
+      expect(b.sessions.touch).not.toHaveBeenCalled();
+      expect(b.loginActivity.record).not.toHaveBeenCalled();
+    });
+
+    it('refresh with a revoked sid: still 401 SESSION_ENDED', async () => {
+      const b = build({ user: SUSPENDED, touch: false });
+      await expect(
+        b.issuer.issue('u1', request(), b.res as never, {
+          via: 'refresh',
+          sid: SID,
+        }),
+      ).rejects.toMatchObject({ response: { code: 'SESSION_ENDED' } });
+      expect(b.res.cookie).not.toHaveBeenCalled();
+    });
+
+    it('a sid-less refresh: 401 ACCOUNT_SUSPENDED, no row, no cookie', async () => {
+      const b = build({ user: SUSPENDED });
+      await expect(
+        b.issuer.issue('u1', request(), b.res as never, {
+          via: 'refresh',
+          sid: null,
+          legacyIssuedAt: 1_700_000_000,
+        }),
+      ).rejects.toMatchObject({
+        response: { code: 'ACCOUNT_SUSPENDED', reason: 'manual' },
+      });
+      expect(b.sessions.create).not.toHaveBeenCalled();
+      expect(b.sessions.createIfTwoFactorOff).not.toHaveBeenCalled();
+      expect(b.res.cookie).not.toHaveBeenCalled();
+    });
+
+    it('password_change of a suspended account is not this branch: it still touches', async () => {
+      const b = build({ user: SUSPENDED });
+      await b.issuer.issue('u1', request(), b.res as never, {
+        via: 'password_change',
+        sid: SID,
+      });
+      expect(b.sessions.touch).toHaveBeenCalledWith(SID, 'u1');
+    });
   });
 
   it('password_change with a revoked sid is refused the same way', async () => {

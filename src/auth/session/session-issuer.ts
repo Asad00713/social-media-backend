@@ -143,10 +143,24 @@ export class SessionIssuer {
     // would refuse it on the next request anyway.
     if (opts.via === 'two_factor') assertSignInAllowed(user);
 
+    // A suspended account's refresh (final review finding 9, ruled): it must
+    // not look active - no `touch` (last_used_at, idle expiry) and no
+    // last-seen - so "Last active" and the admin's last use stay frozen at
+    // the suspension. A live sid still gets its access token back, which
+    // every consumer refuses with ACCOUNT_SUSPENDED: that 401 is what sends
+    // the FE to its suspension screen (a refused refresh would show "session
+    // expired" instead). A sid-less refresh would need a NEW row, so it is
+    // refused outright (assertSignInAllowed: ACCOUNT_SUSPENDED, no row).
+    const suspendedRefresh = opts.via === 'refresh' && !user.isActive;
+    if (suspendedRefresh && !reuse) assertSignInAllowed(user);
+
     let sid: string;
     let device: { id: string } | null = null;
     if (reuse) {
-      if (!(await this.sessions.touch(reuse, user.id))) throw sessionEnded();
+      const live = suspendedRefresh
+        ? await this.sessions.isLive(reuse, user.id)
+        : await this.sessions.touch(reuse, user.id);
+      if (!live) throw sessionEnded();
       sid = reuse;
     } else {
       device = readOrMintDeviceId(deviceCookieOf(req.cookies));
@@ -217,7 +231,7 @@ export class SessionIssuer {
       this.resolveCountry(sid, ip);
     }
 
-    if (RECORDS_ACTIVITY.has(opts.via)) {
+    if (RECORDS_ACTIVITY.has(opts.via) && !suspendedRefresh) {
       // Awaits the local write only; never throws.
       await this.loginActivity.record(user.id, ip);
     }
