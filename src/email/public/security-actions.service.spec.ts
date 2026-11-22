@@ -1,4 +1,5 @@
 import type { AuthService } from '../../auth/auth.service';
+import type { SecondFactorService } from '../../auth/two-factor/second-factor.service';
 import type { AccountSecurityService } from '../../users/account-security.service';
 import { AppLinks } from '../links/app-links';
 import type {
@@ -122,6 +123,7 @@ function setup(
     uniqueViolation?: boolean;
     resetSent?: boolean;
     refs?: { tbl: string; col: string }[];
+    cleared?: boolean;
   } = {},
 ) {
   const { db, writes, update, deleted } = fakeDb(row, opts);
@@ -134,14 +136,30 @@ function setup(
     get: (key: string) =>
       key === 'SUPPORT_EMAIL' ? 'help@schedura.test' : undefined,
   } as never);
+  // The conditional 2FA clear itself is proven on a real database
+  // (not-me-two-factor.db.spec.ts); here only who asks for it.
+  const secondFactor = {
+    clearIfEnabledAt: jest.fn().mockResolvedValue(opts.cleared ?? false),
+  };
   const service = new SecurityActionsService(
     db as never,
     tokens as unknown as EmailTokensService,
     security as unknown as AccountSecurityService,
     auth as unknown as AuthService,
     links,
+    secondFactor as unknown as SecondFactorService,
   );
-  return { service, db, writes, update, deleted, security, auth, tokens };
+  return {
+    service,
+    db,
+    writes,
+    update,
+    deleted,
+    security,
+    auth,
+    tokens,
+    secondFactor,
+  };
 }
 
 const NOT_ME: SecurityClaims = { uid: UID, act: 'not_me' };
@@ -188,6 +206,48 @@ describe('SecurityActionsService.describe (GET)', () => {
       id: UID,
       email: NEW,
     });
+  });
+
+  it('POST not_me never touches two-step sign-in', async () => {
+    const { service, secondFactor } = setup(NOT_ME, { id: UID, email: NEW });
+    await service.perform('tok');
+    expect(secondFactor.clearIfEnabledAt).not.toHaveBeenCalled();
+  });
+
+  it('POST not_me_2fa asks for the clear of exactly the enable it names, then secures like not_me', async () => {
+    const at = Date.UTC(2026, 10, 21, 9, 30, 15, 123);
+    const { service, secondFactor, security, auth } = setup(
+      { uid: UID, act: 'not_me_2fa', enabledAt: at },
+      { id: UID, email: NEW },
+      { cleared: true },
+    );
+    await expect(service.perform('tok')).resolves.toEqual({
+      title: 'Your account is secured',
+      body: 'We turned off two-step sign-in, signed you out everywhere and sent a reset link to r•••@lumiere.cafe.',
+    });
+    expect(secondFactor.clearIfEnabledAt).toHaveBeenCalledWith(
+      UID,
+      new Date(at),
+      expect.anything(),
+    );
+    expect(security.revokeSessions).toHaveBeenCalledWith(UID);
+    expect(auth.issuePasswordReset).toHaveBeenCalledWith({
+      id: UID,
+      email: NEW,
+    });
+  });
+
+  it('POST not_me_2fa whose enable is gone secures and says nothing about two-step', async () => {
+    const { service, security } = setup(
+      { uid: UID, act: 'not_me_2fa', enabledAt: 1 },
+      { id: UID, email: NEW },
+      { cleared: false },
+    );
+    await expect(service.perform('tok')).resolves.toEqual({
+      title: 'Your account is secured',
+      body: 'We signed you out everywhere and sent a reset link to r•••@lumiere.cafe.',
+    });
+    expect(security.revokeSessions).toHaveBeenCalledWith(UID);
   });
 
   it('a revert link asks before switching back, naming the old address', async () => {

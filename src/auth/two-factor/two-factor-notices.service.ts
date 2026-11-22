@@ -11,7 +11,10 @@ import {
 import { twoStepEnabledTemplate } from '../../email/templates/security/two-step-enabled';
 import { twoStepFailedTemplate } from '../../email/templates/security/two-step-failed';
 import type { EmailTemplateDef } from '../../email/templates/types';
-import { EmailTokensService } from '../../email/tokens/email-tokens.service';
+import {
+  EmailTokensService,
+  type SecurityClaims,
+} from '../../email/tokens/email-tokens.service';
 import { NotifyService } from '../../notifications/notify.service';
 import { RecipientsService } from '../../notifications/recipients.service';
 import type { RequestContext } from '../../users/account-security.service';
@@ -40,13 +43,22 @@ export class TwoFactorNotices {
     private readonly geoip: GeoipService,
   ) {}
 
-  enabled(userId: string, ctx: RequestContext): Promise<void> {
+  /**
+   * "Two-step sign-in is on". Its "This wasn't me" link is `not_me_2fa`
+   * carrying `enabledAt` (final review finding 1): besides securing the
+   * account it turns off THIS two-step sign-in - the one an attacker with
+   * the password may have just set up with their own app - and never one
+   * turned on later.
+   */
+  enabled(userId: string, ctx: RequestContext, enabledAt: Date): Promise<void> {
     return this.send(
       userId,
       ctx,
       twoStepEnabledTemplate,
       {},
       `two-step-enabled.${userId}.${Date.now()}`,
+      undefined,
+      { act: 'not_me_2fa', enabledAt: enabledAt.getTime() },
     );
   }
 
@@ -122,13 +134,14 @@ export class TwoFactorNotices {
     extra: Omit<P, keyof TwoStepNoticeProps>,
     idempotencyKey: string,
     device?: string,
+    notMe: Omit<SecurityClaims, 'uid'> = { act: 'not_me' },
   ): Promise<void> {
     try {
       const [timeZone, geo] = await Promise.all([
         this.recipients.userTimezone(userId),
         device ? null : this.geoip.lookup(ctx.ip),
       ]);
-      const token = this.tokens.securityToken({ uid: userId, act: 'not_me' });
+      const token = this.tokens.securityToken({ uid: userId, ...notMe });
       const props = {
         when: formatWhen(new Date(), timeZone),
         device: device ?? deviceLabel(ctx.userAgent),

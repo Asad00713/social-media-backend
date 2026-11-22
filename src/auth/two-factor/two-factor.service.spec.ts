@@ -295,10 +295,12 @@ describe('TwoFactorService.enable', () => {
     });
     expect(r.backupCodes).toHaveLength(10);
     expect(r.accessToken).toBe('access');
-    expect(b.notices.enabled).toHaveBeenCalledWith(USER_ID, {
-      ip: '203.0.113.9',
-      userAgent: 'UA',
-    });
+    // The email's not_me_2fa link names the very enabledAt written (finding 1).
+    expect(b.notices.enabled).toHaveBeenCalledWith(
+      USER_ID,
+      { ip: '203.0.113.9', userAgent: 'UA' },
+      b.writes[0].totpEnabledAt,
+    );
   });
 
   it('without setup → 400 MFA_SETUP_MISSING, the code is never checked', async () => {

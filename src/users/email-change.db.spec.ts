@@ -20,6 +20,7 @@ import {
 import { AccountSecurityService } from './account-security.service';
 import { EmailChangeService } from './email-change.service';
 import { SessionStore } from '../auth/session/session-store';
+import { SecondFactorService } from '../auth/two-factor/second-factor.service';
 
 const MIGRATIONS = [
   '0070_users_sessions_revoked_at.sql',
@@ -112,6 +113,7 @@ function build(db: DbType) {
     security,
     auth as unknown as AuthService,
     links,
+    new SecondFactorService(db),
   );
   /** The code the last A3 carried. */
   const lastCode = () => {

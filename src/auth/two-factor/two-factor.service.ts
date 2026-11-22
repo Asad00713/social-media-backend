@@ -125,13 +125,16 @@ export class TwoFactorService {
 
     await this.secondFactor.check(user.id, { code }, { secret: 'pending' });
 
+    // Whole milliseconds, so the "two-step sign-in is on" email's
+    // not_me_2fa link names exactly this enable (finding 1).
+    const enabledAt = new Date();
     const backupCodes = await this.db.transaction(async (tx) => {
       const promoted = await tx
         .update(users)
         .set({
           totpSecretEnc: pending,
           totpPendingSecretEnc: null,
-          totpEnabledAt: new Date(),
+          totpEnabledAt: enabledAt,
         })
         .where(
           and(
@@ -153,7 +156,7 @@ export class TwoFactorService {
       via: 'two_factor_enable',
       sid: caller.sid,
     });
-    void this.notices.enabled(user.id, contextOf(req));
+    void this.notices.enabled(user.id, contextOf(req), enabledAt);
     return { backupCodes, accessToken };
   }
 

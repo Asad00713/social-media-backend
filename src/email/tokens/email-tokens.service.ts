@@ -21,13 +21,25 @@ export interface UnsubscribeClaims {
   ev: PreferenceEventKey;
 }
 
-export type SecurityAction = 'revert_email' | 'not_me';
+export type SecurityAction = 'revert_email' | 'not_me' | 'not_me_2fa';
+
+const SECURITY_ACTIONS: ReadonlySet<unknown> = new Set<SecurityAction>([
+  'revert_email',
+  'not_me',
+  'not_me_2fa',
+]);
 
 export interface SecurityClaims {
   uid: string;
   act: SecurityAction;
   from?: string;
   to?: string;
+  /**
+   * `not_me_2fa` only: `users.totp_enabled_at` (epoch ms) of the two-step
+   * sign-in the "two-step sign-in is on" email reported. The link turns off
+   * that one and never a later one.
+   */
+  enabledAt?: number;
   /** When the link was minted (seconds): a revert ignores a later squatter. */
   iat?: number;
 }
@@ -93,6 +105,7 @@ export class EmailTokensService {
         act: p.act,
         ...(p.from !== undefined ? { from: p.from } : {}),
         ...(p.to !== undefined ? { to: p.to } : {}),
+        ...(p.enabledAt !== undefined ? { enabledAt: p.enabledAt } : {}),
       },
       {
         secret: this.requireKey(SECURITY_LABEL),
@@ -108,17 +121,23 @@ export class EmailTokensService {
       !p ||
       typeof p.uid !== 'string' ||
       !UUID.test(p.uid) ||
-      (p.act !== 'revert_email' && p.act !== 'not_me') ||
+      !SECURITY_ACTIONS.has(p.act) ||
       (p.from !== undefined && typeof p.from !== 'string') ||
-      (p.to !== undefined && typeof p.to !== 'string')
+      (p.to !== undefined && typeof p.to !== 'string') ||
+      // A not_me_2fa link must name the two-step sign-in it may turn off;
+      // no other link carries one.
+      (p.act === 'not_me_2fa'
+        ? !isEpochMs(p.enabledAt)
+        : p.enabledAt !== undefined)
     ) {
       return null;
     }
     return {
       uid: p.uid,
-      act: p.act,
+      act: p.act as SecurityAction,
       ...(p.from !== undefined ? { from: p.from } : {}),
       ...(p.to !== undefined ? { to: p.to } : {}),
+      ...(isEpochMs(p.enabledAt) ? { enabledAt: p.enabledAt } : {}),
       ...(typeof p.iat === 'number' ? { iat: p.iat } : {}),
     };
   }
@@ -160,4 +179,9 @@ export class EmailTokensService {
       return null;
     }
   }
+}
+
+/** A positive whole number of milliseconds: what `Date.getTime()` gives. */
+function isEpochMs(v: unknown): v is number {
+  return typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
 }

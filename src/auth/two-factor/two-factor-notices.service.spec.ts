@@ -75,11 +75,11 @@ describe('TwoFactorNotices', () => {
 
   it('builds the shared props: time, device, country and the not-me link', async () => {
     const { notices, tokens, call } = build();
-    await notices.enabled('u1', CTX);
+    await notices.regenerated('u1', CTX);
     const c = call();
     expect(c.userId).toBe('u1');
     expect(c.event).toBe('security_alert');
-    expect(c.email.template.id).toBe('two-step-enabled');
+    expect(c.email.template.id).toBe('backup-codes-regenerated');
     expect(c.email.props).toMatchObject({
       device: 'Chrome on Windows',
       location: 'Pakistan',
@@ -90,6 +90,34 @@ describe('TwoFactorNotices', () => {
       uid: 'u1',
       act: 'not_me',
     });
+  });
+
+  it('enabled(): its not-me link is not_me_2fa naming the enable to the millisecond (finding 1)', async () => {
+    const { notices, tokens, call } = build();
+    const enabledAt = new Date(Date.UTC(2026, 10, 21, 9, 30, 15, 123));
+    await notices.enabled('u1', CTX, enabledAt);
+    expect(call().email.template.id).toBe('two-step-enabled');
+    expect(call().email.props).toMatchObject({
+      notMeUrl: 'https://api.test/email/security/tok',
+    });
+    expect(tokens.securityToken).toHaveBeenCalledWith({
+      uid: 'u1',
+      act: 'not_me_2fa',
+      enabledAt: enabledAt.getTime(),
+    });
+  });
+
+  it('every other notice keeps the plain not_me link', async () => {
+    const { notices, tokens } = build();
+    await notices.disabled('u1', CTX, 'you');
+    await notices.disabledBySupport('u1');
+    await notices.backupCodeUsed('u1', CTX, 3);
+    await notices.failed('u1', CTX, 'c');
+    await notices.regenerated('u1', CTX);
+    for (const [claims] of tokens.securityToken.mock.calls as [unknown][]) {
+      expect(claims).toEqual({ uid: 'u1', act: 'not_me' });
+    }
+    expect(tokens.securityToken).toHaveBeenCalledTimes(5);
   });
 
   it.each([
@@ -127,7 +155,9 @@ describe('TwoFactorNotices', () => {
   it('a throwing notify does not reject', async () => {
     const { notices } = build({ notifyError: new Error('outbox down') });
     await expect(notices.failed('u1', CTX, 'c')).resolves.toBeUndefined();
-    await expect(notices.enabled('u1', CTX)).resolves.toBeUndefined();
+    await expect(
+      notices.enabled('u1', CTX, new Date()),
+    ).resolves.toBeUndefined();
   });
 
   it('a throwing GeoIP lookup does not reject either', async () => {

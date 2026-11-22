@@ -40,6 +40,16 @@ export type SecondFactorExecutor = Pick<
   'select' | 'insert' | 'update' | 'delete' | 'execute'
 >;
 
+/** Every users column of two-step sign-in, as it is with it off. */
+const CLEARED_TWO_FACTOR = {
+  totpSecretEnc: null,
+  totpPendingSecretEnc: null,
+  totpEnabledAt: null,
+  totpLastStep: null,
+  mfaFailures: 0,
+  mfaLockedUntil: null,
+};
+
 const present = (v: unknown): v is string =>
   typeof v === 'string' && v.trim().length > 0;
 
@@ -178,15 +188,44 @@ export class SecondFactorService {
   ): Promise<void> {
     await executor
       .update(users)
-      .set({
-        totpSecretEnc: null,
-        totpPendingSecretEnc: null,
-        totpEnabledAt: null,
-        totpLastStep: null,
-        mfaFailures: 0,
-        mfaLockedUntil: null,
-      })
+      .set(CLEARED_TWO_FACTOR)
       .where(eq(users.id, userId));
+    await this.clearRest(userId, executor);
+  }
+
+  /**
+   * `clear`, but only while two-step sign-in is still the one turned on at
+   * `enabledAt` (compared to the millisecond, which is what was written).
+   * The "two-step sign-in is on" email's "This wasn't me" link (finding 1):
+   * an old link must never turn off a two-step sign-in set up after it. The
+   * condition is in the users UPDATE itself; the rest runs only when it
+   * matched. Run it in a transaction so a partial clear never commits.
+   */
+  async clearIfEnabledAt(
+    userId: string,
+    enabledAt: Date,
+    executor: SecondFactorExecutor = this.db,
+  ): Promise<boolean> {
+    const cleared = await executor
+      .update(users)
+      .set(CLEARED_TWO_FACTOR)
+      .where(
+        and(
+          eq(users.id, userId),
+          sql`date_trunc('milliseconds', ${users.totpEnabledAt}) = ${enabledAt.toISOString()}::timestamptz`,
+        ),
+      )
+      .returning({ id: users.id });
+    if (cleared.length === 0) return false;
+    await this.clearRest(userId, executor);
+    return true;
+  }
+
+  /** Backup codes, open mfa challenges and trusted devices of a cleared user. */
+  private async clearRest(
+    userId: string,
+    executor: SecondFactorExecutor,
+  ): Promise<void> {
     await executor
       .delete(userBackupCodes)
       .where(eq(userBackupCodes.userId, userId));
