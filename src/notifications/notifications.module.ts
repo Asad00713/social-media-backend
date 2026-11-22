@@ -13,6 +13,7 @@ import { EmailModule } from '../email/email.module';
 import { NotificationPreferencesModule } from '../notification-preferences/notification-preferences.module';
 import { NotifyService } from './notify.service';
 import { RecipientsService } from './recipients.service';
+import { SecurityCoreModule } from '../auth/security-core.module';
 
 @Global() // Make this module global so other services can inject NotificationsService
 @Module({
@@ -21,6 +22,8 @@ import { RecipientsService } from './recipients.service';
   // imports this module — Channels -> Billing -> Notifications -> Channels.
   // Both sides of that cycle must be forwardRef'd or Nest cannot build it.
   imports: [
+    // SessionCheck for the socket handshake (a revoked session cannot open one).
+    SecurityCoreModule,
     WorkspaceRoleModule,
     EmailModule,
     NotificationPreferencesModule,

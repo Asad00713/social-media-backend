@@ -52,3 +52,5 @@ export * from './channel-connect-links.schema';
 export * from './platform-status.schema';
 export * from './billing-payment-alerts.schema';
 export * from './labels.schema';
+export * from './user-sessions.schema';
+export * from './two-factor.schema';

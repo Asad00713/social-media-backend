@@ -9,7 +9,17 @@ import type { DbType } from '../drizzle/db';
 import type { SubscriptionService } from '../billing/services/subscription.service';
 import type { UsageService } from '../billing/services/usage.service';
 import type { CloudflareR2Service } from '../media/cloudflare-r2.service';
+import { mfaCodeInvalid } from '../auth/two-factor/mfa-errors';
+import {
+  requireOneFactor,
+  type SecondFactorInput,
+  type SecondFactorService,
+} from '../auth/two-factor/second-factor.service';
 import { AccountDeletionService } from './account-deletion.service';
+
+/** The one TOTP and the one backup code the fake second factor accepts. */
+const GOOD_TOTP = '123456';
+const GOOD_BACKUP = 'abcd-efgh';
 
 /**
  * The checks that run BEFORE anything is written, with a fake db: each
@@ -24,6 +34,7 @@ function setup(opts: {
   avatarUrl?: string | null;
   ownAvatar?: boolean;
   deleteObject?: () => Promise<void>;
+  twoFactor?: boolean;
 }) {
   const queue: unknown[][] = [
     opts.user === null
@@ -68,6 +79,20 @@ function setup(opts: {
     ),
     deleteObject: jest.fn(opts.deleteObject ?? (() => Promise.resolve())),
   };
+  // The real "exactly one" rule; a right answer is GOOD_TOTP / GOOD_BACKUP.
+  const secondFactor = {
+    isEnabled: jest.fn(() => Promise.resolve(opts.twoFactor ?? false)),
+    check: jest.fn((_userId: string, input: SecondFactorInput) => {
+      requireOneFactor(input);
+      if (input.code === GOOD_TOTP || input.backupCode === GOOD_BACKUP) {
+        return Promise.resolve({
+          method: input.code ? 'totp' : 'backup',
+          backupCodesRemaining: 9,
+        });
+      }
+      return Promise.reject(mfaCodeInvalid());
+    }),
+  };
   const notifications = { disconnectUser: jest.fn() };
   const realtime = { disconnectUser: jest.fn() };
   const service = new AccountDeletionService(
@@ -75,16 +100,142 @@ function setup(opts: {
     subscriptions as unknown as SubscriptionService,
     usage as unknown as UsageService,
     r2 as unknown as CloudflareR2Service,
+    secondFactor as unknown as SecondFactorService,
     notifications as never,
     realtime as never,
   );
-  return { service, db, subscriptions, usage, r2, notifications, realtime };
+  return {
+    service,
+    db,
+    subscriptions,
+    usage,
+    r2,
+    secondFactor,
+    notifications,
+    realtime,
+  };
 }
 
 const SELF = (confirmEmail?: string) => ({
   confirmEmail,
   actor: 'self' as const,
   actorId: 'u1',
+});
+
+describe('AccountDeletionService.deleteAccount, two-step on', () => {
+  const withFactor = (factor: { code?: string; backupCode?: string }) => ({
+    ...SELF('old@example.com'),
+    ...factor,
+  });
+
+  it('no code: 400 MFA_CODE_REQUIRED, nothing deleted, billing untouched', async () => {
+    const { service, db, subscriptions } = setup({ twoFactor: true });
+
+    await expect(
+      service.deleteAccount('u1', withFactor({})),
+    ).rejects.toMatchObject({
+      status: 400,
+      response: { code: 'MFA_CODE_REQUIRED' },
+    });
+    expect(subscriptions.cancelForAccount).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('a wrong code: 400 MFA_CODE_INVALID, nothing deleted, billing untouched', async () => {
+    const { service, db, subscriptions } = setup({ twoFactor: true });
+
+    await expect(
+      service.deleteAccount('u1', withFactor({ code: '000000' })),
+    ).rejects.toMatchObject({
+      status: 400,
+      response: { code: 'MFA_CODE_INVALID' },
+    });
+    expect(subscriptions.cancelForAccount).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('a 6-digit `code` is checked as a TOTP and deletes', async () => {
+    const { service, db, secondFactor } = setup({ twoFactor: true });
+
+    await service.deleteAccount('u1', withFactor({ code: GOOD_TOTP }));
+
+    expect(secondFactor.check).toHaveBeenCalledWith('u1', { code: GOOD_TOTP });
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('a backup code sent in the `code` field ("abcd-efgh") is checked as a backup code and deletes', async () => {
+    const { service, db, secondFactor } = setup({ twoFactor: true });
+
+    await service.deleteAccount('u1', withFactor({ code: GOOD_BACKUP }));
+
+    expect(secondFactor.check).toHaveBeenCalledWith('u1', {
+      backupCode: GOOD_BACKUP,
+    });
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('`backupCode` is accepted too; `code` and `backupCode` together are refused', async () => {
+    const ok = setup({ twoFactor: true });
+    await ok.service.deleteAccount(
+      'u1',
+      withFactor({ backupCode: GOOD_BACKUP }),
+    );
+    expect(ok.db.transaction).toHaveBeenCalledTimes(1);
+
+    const both = setup({ twoFactor: true });
+    await expect(
+      both.service.deleteAccount(
+        'u1',
+        withFactor({ code: GOOD_TOTP, backupCode: GOOD_BACKUP }),
+      ),
+    ).rejects.toMatchObject({ response: { code: 'MFA_CODE_REQUIRED' } });
+    expect(both.db.transaction).not.toHaveBeenCalled();
+  });
+
+  it('a wrong email is EMAIL_MISMATCH before any code is judged', async () => {
+    const { service, secondFactor } = setup({ twoFactor: true });
+
+    await expect(
+      service.deleteAccount('u1', {
+        ...SELF('other@x.com'),
+        code: GOOD_TOTP,
+      }),
+    ).rejects.toMatchObject({ response: { code: 'EMAIL_MISMATCH' } });
+    expect(secondFactor.check).not.toHaveBeenCalled();
+  });
+
+  it('an owner gets 409 OWNS_WORKSPACES without spending a code', async () => {
+    const { service, secondFactor } = setup({
+      twoFactor: true,
+      owned: [{ id: 'w1', name: 'Mine' }],
+    });
+
+    await expect(
+      service.deleteAccount('u1', withFactor({ code: GOOD_BACKUP })),
+    ).rejects.toMatchObject({ response: { code: 'OWNS_WORKSPACES' } });
+    expect(secondFactor.check).not.toHaveBeenCalled();
+  });
+
+  it('two-step off: no code is asked for', async () => {
+    const { service, db, secondFactor } = setup({ twoFactor: false });
+
+    await service.deleteAccount('u1', withFactor({}));
+
+    expect(secondFactor.check).not.toHaveBeenCalled();
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('an admin delete of a 2FA user needs no code', async () => {
+    const { service, db, secondFactor } = setup({ twoFactor: true });
+
+    await service.deleteAccount('u1', {
+      actor: 'super_admin',
+      actorId: 'admin-1',
+    });
+
+    expect(secondFactor.check).not.toHaveBeenCalled();
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('AccountDeletionService.deleteAccount', () => {

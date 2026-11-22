@@ -28,6 +28,7 @@ import { NotificationEmitterService } from '../notifications/notification-emitte
 import { NotifyService } from '../notifications/notify.service';
 import { RecipientsService } from '../notifications/recipients.service';
 import { toPublicUser, type PublicUser } from './users.service';
+import { SessionStore } from '../auth/session/session-store';
 
 /** Where the request came from, for the A5 Device and Location rows. */
 export interface RequestContext {
@@ -85,20 +86,25 @@ export class AccountSecurityService {
     private readonly links: AppLinks,
     private readonly geoip: GeoipService,
     private readonly emitter: NotificationEmitterService,
+    private readonly sessions: SessionStore,
   ) {}
 
   /**
    * A Google-only account (no password) is refused: a stolen access token must
    * not be able to add a password. It uses "Forgot password" instead.
-   * On success every other session ends; the caller hands this device a fresh
-   * token pair, minted after the revocation. `revokeOtherSessions: false` keeps
-   * the other sessions (the password still changes and is dated).
+   * On success every other session ends (rows by sid, legacy tokens by the
+   * floor, both through SessionStore.revokeOthers) and `revokedSessions` is
+   * how many rows that revoked; the caller's own session (`callerSid`) is
+   * kept and reissued by the controller. `revokeOtherSessions: false` keeps
+   * the other sessions (the password still changes and is dated) and the
+   * answer carries no `revokedSessions`.
    */
   async changePassword(
     userId: string,
     body: ChangePasswordInput,
     ctx: RequestContext,
-  ): Promise<void> {
+    callerSid: string | null = null,
+  ): Promise<{ revokedSessions?: number }> {
     const user = await this.db.query.users.findFirst({
       where: eq(users.id, userId),
       columns: { id: true, password: true },
@@ -119,25 +125,29 @@ export class AccountSecurityService {
     }
 
     const password = await bcrypt.hash(body.newPassword, BCRYPT_ROUNDS);
-    // One write: there is no moment where the new password works but the old
-    // sessions still do. Only an explicit false keeps them.
+    // One transaction: there is no moment where the new password works but
+    // the old sessions still do. Only an explicit false keeps them.
     const now = new Date();
-    await this.db
-      .update(users)
-      .set({
-        password,
-        passwordChangedAt: now,
-        ...(body.revokeOtherSessions !== false
-          ? { sessionsRevokedAt: now }
-          : {}),
-        updatedAt: now,
-      })
-      .where(eq(users.id, userId));
+    const revokedSessions = await this.db.transaction(async (tx) => {
+      await tx
+        .update(users)
+        .set({ password, passwordChangedAt: now, updatedAt: now })
+        .where(eq(users.id, userId));
+      if (body.revokeOtherSessions !== false) {
+        return this.sessions.revokeOthers(userId, callerSid, tx);
+      }
+      // Sessions kept, but a leaked password must not keep skipping the
+      // second factor on 30-day trusted browsers (spec §7.2; revokeOthers
+      // clears trust itself on the other branch).
+      await this.sessions.clearTrust(userId, tx);
+      return undefined;
+    });
 
     // Detached: the caller mints this device's fresh tokens next, and the old
     // sessions are already refused, so GeoIP, the bell and A5 must not hold
     // up that response. sendPasswordChanged never throws.
     void this.sendPasswordChanged(userId, ctx, 'settings');
+    return revokedSessions === undefined ? {} : { revokedSessions };
   }
 
   /**
@@ -198,17 +208,11 @@ export class AccountSecurityService {
   }
 
   /**
-   * Ends every session: both JWT strategies refuse a token issued before this
-   * second. The app clock, not the database's, because the tokens' `iat` comes
-   * from the app clock: a database clock running ahead would otherwise refuse
-   * the fresh token handed out right after.
+   * Ends every session ("This wasn't me"): every session row is revoked and
+   * the floor moves, so legacy sid-less tokens die too (SessionStore).
    */
   async revokeSessions(userId: string): Promise<void> {
-    const now = new Date();
-    await this.db
-      .update(users)
-      .set({ sessionsRevokedAt: now, updatedAt: now })
-      .where(eq(users.id, userId));
+    await this.sessions.revokeAll(userId);
   }
 
   /**

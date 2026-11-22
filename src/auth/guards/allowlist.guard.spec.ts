@@ -2,6 +2,8 @@ import { ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { AllowlistGuard } from './allowlist.guard';
 
+const SID = '11111111-1111-4111-8111-111111111111';
+
 function ctx(headers: Record<string, string | undefined>): ExecutionContext {
   return {
     switchToHttp: () => ({ getRequest: () => ({ headers }) }),
@@ -16,7 +18,9 @@ const reflector = (skip: boolean) =>
 
 function make(opts: {
   skip?: boolean;
-  verify?: (t: string) => { sub: string; email: string };
+  verify?: (t: string) => { sub: string; email: string; sid?: string };
+  /** What SessionCheck answers for a sid (default: live). */
+  live?: boolean;
   role?: string;
   /** The address on the users row; the claim's email is never read. */
   email?: string;
@@ -29,7 +33,7 @@ function make(opts: {
 }) {
   const jwtService = {
     verify: jest.fn((t: string) =>
-      opts.verify ? opts.verify(t) : { sub: 'u1', email: 'x@x.com' },
+      opts.verify ? opts.verify(t) : { sub: 'u1', email: 'x@x.com', sid: SID },
     ),
   };
   const config = { get: jest.fn().mockReturnValue('secret') };
@@ -52,6 +56,7 @@ function make(opts: {
     jwtService as never,
     config as never,
     usersService as never,
+    { isLive: jest.fn().mockResolvedValue(opts.live ?? true) } as never,
   );
 }
 
@@ -90,7 +95,7 @@ describe('AllowlistGuard', () => {
   it('blocks an unlisted user with 403 NOT_LAUNCHED', async () => {
     process.env.ALLOWLIST_EMAILS = 'a@x.com';
     const g = make({
-      verify: () => ({ sub: 'u1', email: 'c@z.com' }),
+      verify: () => ({ sub: 'u1', email: 'c@z.com', sid: SID }),
       role: 'USER',
     });
     await expect(
@@ -107,7 +112,7 @@ describe('AllowlistGuard', () => {
     // @SkipLaunchGate instead.
     process.env.ALLOWLIST_EMAILS = 'a@x.com';
     const g = make({
-      verify: () => ({ sub: 'u1', email: 'c@z.com' }),
+      verify: () => ({ sub: 'u1', email: 'c@z.com', sid: SID }),
       role: 'USER',
       onboardingCompletedAt: null,
     });
@@ -119,7 +124,7 @@ describe('AllowlistGuard', () => {
   it('blocks an unlisted user once onboarding is complete', async () => {
     process.env.ALLOWLIST_EMAILS = 'a@x.com';
     const g = make({
-      verify: () => ({ sub: 'u1', email: 'c@z.com' }),
+      verify: () => ({ sub: 'u1', email: 'c@z.com', sid: SID }),
       role: 'USER',
       onboardingCompletedAt: new Date('2026-02-01T00:00:00Z'),
     });
@@ -132,7 +137,7 @@ describe('AllowlistGuard', () => {
     process.env.ALLOWLIST_EMAILS = 'a@x.com';
     // Lookup returns nothing → onboardingCompletedAt undefined → must NOT open.
     const g = make({
-      verify: () => ({ sub: 'u1', email: 'c@z.com' }),
+      verify: () => ({ sub: 'u1', email: 'c@z.com', sid: SID }),
       user: undefined,
     });
     await expect(
@@ -143,7 +148,7 @@ describe('AllowlistGuard', () => {
   it('passes a listed user', async () => {
     process.env.ALLOWLIST_EMAILS = 'a@x.com';
     const g = make({
-      verify: () => ({ sub: 'u1', email: 'a@x.com' }),
+      verify: () => ({ sub: 'u1', email: 'a@x.com', sid: SID }),
       role: 'USER',
       email: 'a@x.com',
     });
@@ -155,7 +160,7 @@ describe('AllowlistGuard', () => {
   it('passes a super admin even if unlisted', async () => {
     process.env.ALLOWLIST_EMAILS = 'a@x.com';
     const g = make({
-      verify: () => ({ sub: 'u1', email: 'c@z.com' }),
+      verify: () => ({ sub: 'u1', email: 'c@z.com', sid: SID }),
       role: 'SUPER_ADMIN',
     });
     await expect(
@@ -167,7 +172,7 @@ describe('AllowlistGuard', () => {
     process.env.ALLOWLIST_EMAILS = 'a@x.com';
     // The token still says a@x.com; the account moved to c@z.com since.
     const moved = make({
-      verify: () => ({ sub: 'u1', email: 'a@x.com' }),
+      verify: () => ({ sub: 'u1', email: 'a@x.com', sid: SID }),
       role: 'USER',
       email: 'c@z.com',
     });
@@ -177,12 +182,55 @@ describe('AllowlistGuard', () => {
 
     // And the other way round: a listed address on the row is enough.
     const listed = make({
-      verify: () => ({ sub: 'u1', email: 'c@z.com' }),
+      verify: () => ({ sub: 'u1', email: 'c@z.com', sid: SID }),
       role: 'USER',
       email: 'a@x.com',
     });
     await expect(
       listed.canActivate(ctx({ authorization: 'Bearer t' })),
+    ).resolves.toBe(true);
+  });
+
+  it('a revoked sid → 401 Session ended (never the 403 NOT_LAUNCHED or a pass)', async () => {
+    process.env.ALLOWLIST_EMAILS = 'a@x.com';
+    for (const email of ['a@x.com', 'c@z.com']) {
+      const g = make({
+        verify: () => ({
+          sub: 'u1',
+          email,
+          sid: '11111111-1111-4111-8111-111111111111',
+        }),
+        email,
+        live: false,
+      });
+      await expect(
+        g.canActivate(ctx({ authorization: 'Bearer t' })),
+      ).rejects.toMatchObject({ status: 401, message: 'Session ended' });
+    }
+  });
+
+  it('a sid-less access token → 401 Session ended, even for a listed user (review ruling 4)', async () => {
+    process.env.ALLOWLIST_EMAILS = 'a@x.com';
+    for (const email of ['a@x.com', 'c@z.com']) {
+      const g = make({ verify: () => ({ sub: 'u1', email }), email });
+      await expect(
+        g.canActivate(ctx({ authorization: 'Bearer t' })),
+      ).rejects.toMatchObject({ status: 401, message: 'Session ended' });
+    }
+  });
+
+  it('a live sid on an allowlisted user passes', async () => {
+    process.env.ALLOWLIST_EMAILS = 'a@x.com';
+    const g = make({
+      verify: () => ({
+        sub: 'u1',
+        email: 'a@x.com',
+        sid: '11111111-1111-4111-8111-111111111111',
+      }),
+      email: 'a@x.com',
+    });
+    await expect(
+      g.canActivate(ctx({ authorization: 'Bearer t' })),
     ).resolves.toBe(true);
   });
 });

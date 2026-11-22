@@ -2,30 +2,13 @@ import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import type { ExecutionContext } from '@nestjs/common';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import type { ThrottlerLimitDetail } from '@nestjs/throttler';
-
-type HeaderValue = string | string[] | undefined;
+import { requestClientIp } from '../utils/request-client-ip';
 
 /** "in 45s" / "in 3 minutes" — a wait a person can act on. */
 function humanWait(seconds: number): string {
   if (seconds <= 90) return `${Math.max(1, Math.ceil(seconds))}s`;
   const minutes = Math.ceil(seconds / 60);
   return `${minutes} minute${minutes === 1 ? '' : 's'}`;
-}
-
-/** First non-blank value of a header that may arrive as a string or an array. */
-function singleValue(header: HeaderValue): string | undefined {
-  const raw = Array.isArray(header) ? header[0] : header;
-  return raw?.trim() || undefined;
-}
-
-/** The last non-blank entry of a comma separated list (X-Forwarded-For). */
-function lastEntry(header: HeaderValue): string | undefined {
-  const raw = Array.isArray(header) ? header.join(',') : header;
-  const entries = (raw ?? '')
-    .split(',')
-    .map((e) => e.trim())
-    .filter(Boolean);
-  return entries[entries.length - 1];
 }
 
 /**
@@ -69,12 +52,11 @@ function lastEntry(header: HeaderValue): string | undefined {
 @Injectable()
 export class ClientIpThrottlerGuard extends ThrottlerGuard {
   protected getTracker(req: Record<string, any>): Promise<string> {
-    const headers = (req.headers ?? {}) as Record<string, HeaderValue>;
-    return Promise.resolve(
-      singleValue(headers['x-real-ip']) ??
-        lastEntry(headers['x-forwarded-for']) ??
-        (req.ip as string),
-    );
+    // The address order (X-Real-IP, rightmost X-Forwarded-For, req.ip) lives
+    // in requestClientIp, shared with the session issuer.
+    // An unusable header falls back to the raw req.ip as the bucket key, as
+    // before (the key only needs to be stable, not a valid address).
+    return Promise.resolve(requestClientIp(req) ?? (req.ip as string));
   }
 
   /**

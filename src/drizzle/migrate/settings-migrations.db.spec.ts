@@ -1598,3 +1598,374 @@ describeDb('0096 guest seat recount', () => {
     expect(result.secondRun).toEqual({ members_count: 3, updated: false });
   });
 });
+
+/*
+ * Settings redesign, Part B.
+ *
+ *   0098  user_sessions: one row per sign-in, so a session can be listed and
+ *         revoked by its `sid`.
+ *   0099  two-step sign-in: six users columns, known_devices trust,
+ *         user_backup_codes and login_challenges.
+ *   0100  the escalating two-step lock: users.mfa_lock_count.
+ */
+const FILE_0098 = '0098_user_sessions.sql';
+
+describeDb('0098 user_sessions', () => {
+  it('creates the table, the CHECK and the partial live index', async () => {
+    const result = await withRollbackDb([FILE_0098], async (_db, client) => {
+      const columns = await client.query<{
+        column_name: string;
+        data_type: string;
+        is_nullable: string;
+      }>(
+        `SELECT column_name, data_type, is_nullable
+           FROM information_schema.columns
+          WHERE table_name = 'user_sessions'
+          ORDER BY ordinal_position`,
+      );
+      const userId = await seedUser(client);
+      await expectPgError(client, '23514', () =>
+        client.query(
+          `INSERT INTO user_sessions (user_id, label, device_type, expires_at)
+           VALUES ($1, 'Chrome on Windows', 'phone', now() + interval '30 days')`,
+          [userId],
+        ),
+      );
+      const ok = await client.query<{ id: string; created_at: Date }>(
+        `INSERT INTO user_sessions (user_id, label, device_type, expires_at)
+         VALUES ($1, 'Chrome on Windows', 'desktop', now() + interval '30 days')
+         RETURNING id, created_at`,
+        [userId],
+      );
+      const index = await client.query<{ indexdef: string }>(
+        `SELECT indexdef FROM pg_indexes
+          WHERE tablename = 'user_sessions'
+            AND indexname = 'user_sessions_user_live_idx'`,
+      );
+      // ON DELETE CASCADE: deleting the user removes the row.
+      await client.query(`DELETE FROM users WHERE id = $1`, [userId]);
+      const left = await client.query(
+        `SELECT 1 FROM user_sessions WHERE id = $1`,
+        [ok.rows[0].id],
+      );
+      return {
+        columns: columns.rows,
+        inserted: ok.rows[0],
+        index: index.rows,
+        left: left.rowCount,
+      };
+    });
+
+    expect(result.columns).toEqual([
+      { column_name: 'id', data_type: 'uuid', is_nullable: 'NO' },
+      { column_name: 'user_id', data_type: 'uuid', is_nullable: 'NO' },
+      {
+        column_name: 'device_hash',
+        data_type: 'character',
+        is_nullable: 'YES',
+      },
+      {
+        column_name: 'label',
+        data_type: 'character varying',
+        is_nullable: 'NO',
+      },
+      { column_name: 'device_type', data_type: 'text', is_nullable: 'NO' },
+      { column_name: 'ip', data_type: 'character varying', is_nullable: 'YES' },
+      {
+        column_name: 'country',
+        data_type: 'character varying',
+        is_nullable: 'YES',
+      },
+      {
+        column_name: 'created_at',
+        data_type: 'timestamp with time zone',
+        is_nullable: 'NO',
+      },
+      {
+        column_name: 'last_used_at',
+        data_type: 'timestamp with time zone',
+        is_nullable: 'NO',
+      },
+      {
+        column_name: 'expires_at',
+        data_type: 'timestamp with time zone',
+        is_nullable: 'NO',
+      },
+      {
+        column_name: 'revoked_at',
+        data_type: 'timestamp with time zone',
+        is_nullable: 'YES',
+      },
+    ]);
+    expect(result.inserted.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(result.index).toHaveLength(1);
+    expect(result.index[0].indexdef).toContain('(user_id)');
+    expect(result.index[0].indexdef).toContain('WHERE (revoked_at IS NULL)');
+    expect(result.left).toBe(0);
+  });
+
+  it('applies twice without error (idempotent)', async () => {
+    // The harness has already applied the file twice; run it a third time.
+    const indexes = await withRollbackDb([FILE_0098], async (_db, client) => {
+      await client.query(readFileSync(join(MIGRATIONS_DIR, FILE_0098), 'utf8'));
+      const r = await client.query<{ indexname: string }>(
+        `SELECT indexname FROM pg_indexes WHERE tablename = 'user_sessions'
+          ORDER BY indexname`,
+      );
+      return r.rows.map((x) => x.indexname);
+    });
+    expect(indexes).toEqual([
+      'user_sessions_pkey',
+      'user_sessions_user_idx',
+      'user_sessions_user_live_idx',
+    ]);
+  });
+
+  it('has a plain (user_id) index for the prune and the user cascade', async () => {
+    const defs = await withRollbackDb([FILE_0098], async (_db, client) => {
+      const r = await client.query<{ indexdef: string }>(
+        `SELECT indexdef FROM pg_indexes
+          WHERE tablename = 'user_sessions' AND indexname = 'user_sessions_user_idx'`,
+      );
+      return r.rows.map((x) => x.indexdef);
+    });
+    expect(defs).toHaveLength(1);
+    expect(defs[0]).toContain('(user_id)');
+    expect(defs[0]).not.toContain('WHERE');
+  });
+});
+
+const FILE_0099 = '0099_two_factor.sql';
+/** known_devices, which 0099 alters. */
+const FILE_0072 = '0072_known_devices.sql';
+
+describeDb('0099 two_factor', () => {
+  const MIGRATIONS = [FILE_0072, FILE_0098, FILE_0099];
+
+  it('adds six users columns with mfa_failures NOT NULL DEFAULT 0', async () => {
+    const result = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const columns = await client.query<{
+        column_name: string;
+        data_type: string;
+        is_nullable: string;
+        column_default: string | null;
+      }>(
+        `SELECT column_name, data_type, is_nullable, column_default
+           FROM information_schema.columns
+          WHERE table_name = 'users'
+            AND column_name IN ('totp_secret_enc', 'totp_pending_secret_enc',
+                                'totp_enabled_at', 'totp_last_step',
+                                'mfa_failures', 'mfa_locked_until')
+          ORDER BY column_name`,
+      );
+      const userId = await seedUser(client);
+      const row = await client.query<{ mfa_failures: number }>(
+        `SELECT mfa_failures FROM users WHERE id = $1`,
+        [userId],
+      );
+      return { columns: columns.rows, failures: row.rows[0].mfa_failures };
+    });
+
+    const col = (
+      column_name: string,
+      data_type: string,
+      is_nullable: string,
+      column_default: string | null = null,
+    ) => ({ column_name, data_type, is_nullable, column_default });
+    expect(result.columns).toEqual([
+      col('mfa_failures', 'integer', 'NO', '0'),
+      col('mfa_locked_until', 'timestamp with time zone', 'YES'),
+      col('totp_enabled_at', 'timestamp with time zone', 'YES'),
+      col('totp_last_step', 'bigint', 'YES'),
+      col('totp_pending_secret_enc', 'text', 'YES'),
+      col('totp_secret_enc', 'text', 'YES'),
+    ]);
+    expect(result.failures).toBe(0);
+  });
+
+  it('adds known_devices.mfa_trusted_until', async () => {
+    const columns = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const r = await client.query<{ data_type: string; is_nullable: string }>(
+        `SELECT data_type, is_nullable FROM information_schema.columns
+          WHERE table_name = 'known_devices' AND column_name = 'mfa_trusted_until'`,
+      );
+      return r.rows;
+    });
+    expect(columns).toEqual([
+      { data_type: 'timestamp with time zone', is_nullable: 'YES' },
+    ]);
+  });
+
+  it('login_challenges.purpose accepts mfa and admin_email and rejects anything else', async () => {
+    const result = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const userId = await seedUser(client);
+      const insert = (purpose: string) =>
+        client.query<{ attempts: number; device_hash: string | null }>(
+          `INSERT INTO login_challenges (user_id, purpose, expires_at)
+           VALUES ($1, $2, now() + interval '5 minutes')
+           RETURNING attempts, device_hash`,
+          [userId, purpose],
+        );
+      const mfa = await insert('mfa');
+      const admin = await insert('admin_email');
+      await expectPgError(client, '23514', () => insert('x'));
+      const columns = await client.query<{
+        column_name: string;
+        data_type: string;
+        is_nullable: string;
+      }>(
+        `SELECT column_name, data_type, is_nullable FROM information_schema.columns
+          WHERE table_name = 'login_challenges' ORDER BY ordinal_position`,
+      );
+      const index = await client.query<{ indexdef: string }>(
+        `SELECT indexdef FROM pg_indexes
+          WHERE tablename = 'login_challenges'
+            AND indexname = 'login_challenges_user_idx'`,
+      );
+      return {
+        mfa: mfa.rows[0],
+        admin: admin.rowCount,
+        columns: columns.rows,
+        index: index.rows,
+      };
+    });
+
+    expect(result.mfa).toEqual({ attempts: 0, device_hash: null });
+    expect(result.admin).toBe(1);
+    const col = (
+      column_name: string,
+      data_type: string,
+      is_nullable: string,
+    ) => ({
+      column_name,
+      data_type,
+      is_nullable,
+    });
+    expect(result.columns).toEqual([
+      col('id', 'uuid', 'NO'),
+      col('user_id', 'uuid', 'NO'),
+      col('purpose', 'text', 'NO'),
+      col('attempts', 'integer', 'NO'),
+      col('device_hash', 'character', 'YES'),
+      col('expires_at', 'timestamp with time zone', 'NO'),
+      col('consumed_at', 'timestamp with time zone', 'YES'),
+      col('created_at', 'timestamp with time zone', 'NO'),
+    ]);
+    expect(result.index).toHaveLength(1);
+    expect(result.index[0].indexdef).toContain('(user_id)');
+  });
+
+  it('user_backup_codes has the partial index WHERE used_at IS NULL', async () => {
+    const result = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const userId = await seedUser(client);
+      await client.query(
+        `INSERT INTO user_backup_codes (user_id, code_hash) VALUES ($1, $2)`,
+        [userId, 'a'.repeat(64)],
+      );
+      const columns = await client.query<{
+        column_name: string;
+        data_type: string;
+        is_nullable: string;
+      }>(
+        `SELECT column_name, data_type, is_nullable FROM information_schema.columns
+          WHERE table_name = 'user_backup_codes' ORDER BY ordinal_position`,
+      );
+      const index = await client.query<{ indexdef: string }>(
+        `SELECT indexdef FROM pg_indexes
+          WHERE tablename = 'user_backup_codes' AND indexdef LIKE '%WHERE%'`,
+      );
+      // Both new tables cascade with the user.
+      await client.query(
+        `INSERT INTO login_challenges (user_id, purpose, expires_at)
+         VALUES ($1, 'mfa', now() + interval '5 minutes')`,
+        [userId],
+      );
+      await client.query(`DELETE FROM users WHERE id = $1`, [userId]);
+      const left = await client.query<{ n: string }>(
+        `SELECT (SELECT count(*) FROM user_backup_codes WHERE user_id = $1)
+              + (SELECT count(*) FROM login_challenges WHERE user_id = $1) AS n`,
+        [userId],
+      );
+      return {
+        columns: columns.rows,
+        index: index.rows,
+        left: Number(left.rows[0].n),
+      };
+    });
+
+    const col = (
+      column_name: string,
+      data_type: string,
+      is_nullable: string,
+    ) => ({
+      column_name,
+      data_type,
+      is_nullable,
+    });
+    expect(result.columns).toEqual([
+      col('id', 'uuid', 'NO'),
+      col('user_id', 'uuid', 'NO'),
+      col('code_hash', 'character', 'NO'),
+      col('used_at', 'timestamp with time zone', 'YES'),
+      col('created_at', 'timestamp with time zone', 'NO'),
+    ]);
+    expect(result.index).toHaveLength(1);
+    expect(result.index[0].indexdef).toContain('(user_id)');
+    expect(result.index[0].indexdef).toContain('WHERE (used_at IS NULL)');
+    expect(result.left).toBe(0);
+  });
+});
+
+const FILE_0100 = '0100_mfa_lock_escalation.sql';
+
+describeDb('0100 mfa_lock_escalation', () => {
+  const MIGRATIONS = [FILE_0072, FILE_0098, FILE_0099, FILE_0100];
+
+  it('adds users.mfa_lock_count integer NOT NULL DEFAULT 0; an existing row reads 0', async () => {
+    const result = await withRollbackDb(
+      [FILE_0072, FILE_0098, FILE_0099],
+      async (_db, client) => {
+        // A row from before 0100.
+        const before = await seedUser(client);
+        const sql = readFileSync(
+          join(process.cwd(), 'drizzle', 'migrations', FILE_0100),
+          'utf8',
+        );
+        await client.query(sql);
+        await client.query(sql);
+        const columns = await client.query<{
+          data_type: string;
+          is_nullable: string;
+          column_default: string | null;
+        }>(
+          `SELECT data_type, is_nullable, column_default
+             FROM information_schema.columns
+            WHERE table_name = 'users' AND column_name = 'mfa_lock_count'`,
+        );
+        const row = await client.query<{ mfa_lock_count: number }>(
+          `SELECT mfa_lock_count FROM users WHERE id = $1`,
+          [before],
+        );
+        return {
+          columns: columns.rows,
+          count: row.rows[0].mfa_lock_count,
+        };
+      },
+    );
+    expect(result.columns).toEqual([
+      { data_type: 'integer', is_nullable: 'NO', column_default: '0' },
+    ]);
+    expect(result.count).toBe(0);
+  });
+
+  it('refuses NULL', async () => {
+    await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const userId = await seedUser(client);
+      await expectPgError(client, '23502', () =>
+        client.query(`UPDATE users SET mfa_lock_count = NULL WHERE id = $1`, [
+          userId,
+        ]),
+      );
+    });
+  });
+});

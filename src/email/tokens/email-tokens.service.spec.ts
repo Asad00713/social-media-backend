@@ -165,6 +165,33 @@ describe('EmailTokensService', () => {
       });
     });
 
+    it('not_me_2fa round-trips with the enable it names; without one, or a bad one, it is refused', () => {
+      const { service, jwt } = build();
+      const enabledAt = Date.UTC(2026, 10, 21, 9, 30, 15, 123);
+      const claims = { uid: UID, act: 'not_me_2fa', enabledAt } as const;
+      expect(service.verifySecurity(service.securityToken(claims))).toEqual({
+        ...claims,
+        iat: expect.any(Number) as number,
+      });
+      const sign = (payload: Record<string, unknown>) =>
+        jwt.sign(payload, {
+          secret: SECURITY_KEY,
+          audience: 'email-security',
+          expiresIn: 60,
+        });
+      for (const bad of [undefined, 0, -5, 1.5, '1763717415123', null]) {
+        expect(
+          service.verifySecurity(
+            sign({ uid: UID, act: 'not_me_2fa', enabledAt: bad }),
+          ),
+        ).toBeNull();
+      }
+      // No other link carries one.
+      expect(
+        service.verifySecurity(sign({ uid: UID, act: 'not_me', enabledAt })),
+      ).toBeNull();
+    });
+
     it('keeps iat and exp: it is never a header of queued mail', () => {
       const { service, jwt } = build();
       const decoded: unknown = jwt.decode(

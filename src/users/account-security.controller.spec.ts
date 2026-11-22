@@ -11,70 +11,107 @@ import {
   ThrottlerStorageService,
 } from '@nestjs/throttler';
 import type { Response } from 'express';
-import type { AuthService } from '../auth/auth.service';
+import type { SessionIssuer } from '../auth/session/session-issuer';
 import { AccountSecurityController } from './account-security.controller';
 import type { AccountSecurityService } from './account-security.service';
 import type { EmailChangeService } from './email-change.service';
 
 describe('AccountSecurityController.changePassword', () => {
-  function setup(refusal?: Error) {
+  const SID = '11111111-1111-4111-8111-111111111111';
+
+  function setup(refusal?: Error, outcome: { revokedSessions?: number } = {}) {
     const calls: string[] = [];
     const security = {
       changePassword: jest.fn(() => {
         calls.push('change');
-        return refusal ? Promise.reject(refusal) : Promise.resolve();
+        return refusal ? Promise.reject(refusal) : Promise.resolve(outcome);
       }),
     };
-    const auth = {
-      generateAccessToken: jest.fn(() => {
-        calls.push('access');
-        return Promise.resolve('access-token');
-      }),
-      generateRefreshToken: jest.fn(() => {
-        calls.push('refresh');
-        return Promise.resolve('refresh-token');
+    const issuer = {
+      issue: jest.fn(() => {
+        calls.push('issue');
+        return Promise.resolve({
+          kind: 'session',
+          accessToken: 'access-token',
+          sid: SID,
+        });
       }),
     };
     const response = { cookie: jest.fn() };
+    const request = { cookies: {}, headers: {} };
     const controller = new AccountSecurityController(
       security as unknown as AccountSecurityService,
-      auth as unknown as AuthService,
+      issuer as unknown as SessionIssuer,
       {} as EmailChangeService,
     );
-    return { controller, security, auth, response, calls };
+    return { controller, security, issuer, response, request, calls };
   }
 
-  const caller = { userId: 'u1', email: 'a@b.co' };
+  const caller = { userId: 'u1', email: 'a@b.co', sid: SID };
   const dto = { currentPassword: 'OldPass123', newPassword: 'NewPass456' };
 
-  it('changes the password first, then returns a fresh access token and sets the refresh cookie', async () => {
-    const { controller, security, response, calls } = setup();
+  it('changes the password first, then reissues THIS session through the issuer', async () => {
+    const { controller, security, issuer, response, request, calls } = setup();
 
     const result = await controller.changePassword(
       caller,
       dto,
       '39.48.12.201',
       'UA',
+      request as never,
       response as unknown as Response,
     );
 
     expect(result).toEqual({ accessToken: 'access-token' });
-    expect(security.changePassword).toHaveBeenCalledWith('u1', dto, {
-      ip: '39.48.12.201',
-      userAgent: 'UA',
-    });
-    // Minted after the revocation, so the new pair is not refused.
-    expect(calls).toEqual(['change', 'access', 'refresh']);
-    expect(response.cookie).toHaveBeenCalledWith(
-      'refreshToken',
-      'refresh-token',
-      expect.objectContaining({ httpOnly: true }),
+    expect(security.changePassword).toHaveBeenCalledWith(
+      'u1',
+      dto,
+      { ip: '39.48.12.201', userAgent: 'UA' },
+      SID,
     );
+    // Minted after the revocation, so the new pair is not refused.
+    expect(calls).toEqual(['change', 'issue']);
+    expect(issuer.issue).toHaveBeenCalledWith('u1', request, response, {
+      via: 'password_change',
+      sid: SID,
+    });
+  });
+
+  it('POST /users/me/password returns {accessToken, revokedSessions: 2} after revoking two other sessions', async () => {
+    const { controller, response, request } = setup(undefined, {
+      revokedSessions: 2,
+    });
+    await expect(
+      controller.changePassword(
+        caller,
+        dto,
+        undefined,
+        undefined,
+        request as never,
+        response as unknown as Response,
+      ),
+    ).resolves.toEqual({ accessToken: 'access-token', revokedSessions: 2 });
+  });
+
+  it('a pre-deploy caller (no sid) asks the issuer for a new row', async () => {
+    const { controller, issuer, response, request } = setup();
+    await controller.changePassword(
+      { userId: 'u1', email: 'a@b.co' },
+      dto,
+      undefined,
+      undefined,
+      request as never,
+      response as unknown as Response,
+    );
+    expect(issuer.issue).toHaveBeenCalledWith('u1', request, response, {
+      via: 'password_change',
+      sid: null,
+    });
   });
 
   it('mints nothing when the change is refused', async () => {
     const refused = new Error('CURRENT_PASSWORD_INCORRECT');
-    const { controller, auth, response } = setup(refused);
+    const { controller, issuer, response, request } = setup(refused);
 
     await expect(
       controller.changePassword(
@@ -82,10 +119,11 @@ describe('AccountSecurityController.changePassword', () => {
         dto,
         undefined,
         undefined,
+        request as never,
         response as unknown as Response,
       ),
     ).rejects.toBe(refused);
-    expect(auth.generateAccessToken).not.toHaveBeenCalled();
+    expect(issuer.issue).not.toHaveBeenCalled();
     expect(response.cookie).not.toHaveBeenCalled();
   });
 });
@@ -205,7 +243,7 @@ describe('AccountSecurityController.disconnectGoogle', () => {
     };
     const controller = new AccountSecurityController(
       security as unknown as AccountSecurityService,
-      {} as AuthService,
+      {} as SessionIssuer,
       {} as EmailChangeService,
     );
     return { controller, security };

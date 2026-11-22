@@ -30,6 +30,10 @@ export const knownDevices = pgTable(
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true })
       .notNull()
       .defaultNow(),
+    // Two-step sign-in skips the code on this browser until then (migration
+    // 0099). Set after a successful code; cleared by revoke-others, a
+    // password change and turning 2FA off or on again.
+    mfaTrustedUntil: timestamp('mfa_trusted_until', { withTimezone: true }),
   },
   (t) => [primaryKey({ columns: [t.userId, t.deviceHash] })],
 );

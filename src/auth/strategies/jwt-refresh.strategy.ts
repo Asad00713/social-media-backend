@@ -4,16 +4,20 @@ import { PassportStrategy } from '@nestjs/passport';
 import { Request } from 'express';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { UsersService } from '../../users/users.service';
+import { SessionCheck } from '../session/session-check';
 import {
   assertNotDeleted,
-  assertSessionLive,
   assertSessionTokenShape,
+  assertTokenLive,
+  sidOf,
 } from './jwt.strategy';
 
 export interface JwtRefreshPayload {
   sub: string;
   email: string;
   iat?: number;
+  /** The session row; absent on pre-deploy tokens (refresh then makes one). */
+  sid?: string;
 }
 
 @Injectable()
@@ -24,6 +28,7 @@ export class JwtRefreshStrategy extends PassportStrategy(
   constructor(
     private configService: ConfigService,
     private usersService: UsersService,
+    private sessionCheck: SessionCheck,
   ) {
     const secret = configService.get<string>('JWT_REFRESH_SECRET');
 
@@ -65,10 +70,24 @@ export class JwtRefreshStrategy extends PassportStrategy(
     // A deleted account's refresh token never mints a new pair, whatever its
     // iat (the delete also sets sessions_revoked_at; this does not rely on it).
     assertNotDeleted(user.deletedAt);
-    assertSessionLive(payload.iat, user.sessionsRevokedAt);
+    // A revoked or idle sid is refused here; the issuer's touch refuses it
+    // again (uncached) before minting, so the 30 s cache cannot mint around
+    // a revoke made on another instance.
+    // The only consumer that still takes a sid-less (pre-deploy) token: the
+    // issuer gives it a session row, or refuses it when 2FA is on.
+    await assertTokenLive(payload, user, this.sessionCheck, {
+      allowSidless: true,
+    });
 
     // The current address, not the claim: /auth/refresh re-mints both tokens
     // from this, so a stale claim would otherwise live on after an email change.
-    return { userId: payload.sub, email: user.email, refreshToken };
+    return {
+      userId: payload.sub,
+      email: user.email,
+      refreshToken,
+      sid: sidOf(payload),
+      // A sid-less token's session row is dated at this (issuer).
+      iat: payload.iat,
+    };
   }
 }

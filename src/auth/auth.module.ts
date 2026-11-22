@@ -20,9 +20,23 @@ import { KnownDevicesService } from './devices/known-devices.service';
 import { WelcomeEmailService } from './welcome-email.service';
 import { EmailSecurityController } from '../email/public/email-security.controller';
 import { SecurityActionsService } from '../email/public/security-actions.service';
+import { SecurityCoreModule } from './security-core.module';
+import { SessionIssuer } from './session/session-issuer';
+import { TwoFactorNotices } from './two-factor/two-factor-notices.service';
+import { MfaChallengeService } from './two-factor/mfa-challenge.service';
+import { TwoFactorAuthController } from './two-factor/two-factor-auth.controller';
+import { SessionsController } from './session/sessions.controller';
+import { TwoFactorSettingsController } from './two-factor/two-factor-settings.controller';
+import { TwoFactorService } from './two-factor/two-factor.service';
 
 @Module({
-  imports: [UsersModule, PassportModule, JwtModule.register({}), EmailModule],
+  imports: [
+    UsersModule,
+    PassportModule,
+    JwtModule.register({}),
+    EmailModule,
+    SecurityCoreModule,
+  ],
   providers: [
     AuthService,
     AdminChallengeService,
@@ -31,6 +45,13 @@ import { SecurityActionsService } from '../email/public/security-actions.service
     GoogleOAuthClient,
     GoogleAuthService,
     KnownDevicesService,
+    // The only session minter (see session-issuer.guard.spec.ts).
+    SessionIssuer,
+    // Two-step sign-in security emails.
+    TwoFactorNotices,
+    MfaChallengeService,
+    // Settings -> Security -> Two-step sign-in (setup, enable, codes, off).
+    TwoFactorService,
     WelcomeEmailService,
     JwtStrategy,
     JwtRefreshStrategy,
@@ -46,13 +67,19 @@ import { SecurityActionsService } from '../email/public/security-actions.service
     SecurityActionsService,
   ],
   // AccountSecurityController (POST /users/me/password) mints tokens through
-  // AuthService, so it is registered here: UsersModule cannot import AuthModule
+  // SessionIssuer, so it is registered here: UsersModule cannot import AuthModule
   // back without a module cycle.
   controllers: [
     AuthController,
     GoogleAuthController,
     AccountSecurityController,
     EmailSecurityController,
+    // POST /auth/2fa/verify: the second step of a two-step sign-in.
+    TwoFactorAuthController,
+    // GET/DELETE /users/me/sessions: list and end the user's sessions.
+    SessionsController,
+    // /users/me/2fa: status, setup, enable, regenerate, disable.
+    TwoFactorSettingsController,
   ],
 })
 export class AuthModule {}

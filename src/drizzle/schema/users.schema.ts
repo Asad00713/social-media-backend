@@ -8,6 +8,7 @@ import {
   boolean,
   integer,
   jsonb,
+  bigint,
 } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 import { workspace } from './workspace.schema';
@@ -141,6 +142,24 @@ export const users = pgTable('users', {
   }),
   // Account soft delete: set when the account is deleted and anonymised.
   deletedAt: timestamp('deleted_at', { withTimezone: true }),
+
+  // Two-step sign-in (migration 0099). SECRET columns: never add them to
+  // PUBLIC_USER_COLUMNS or any response. The seeds are AES-256-GCM
+  // (`iv:tag:ct`) and are read only through decryptStrict.
+  // The active TOTP seed; null while two-step sign-in is off.
+  totpSecretEnc: text('totp_secret_enc'),
+  // The seed shown during setup, promoted once a code proves it.
+  totpPendingSecretEnc: text('totp_pending_secret_enc'),
+  // When two-step sign-in was turned on; null means off.
+  totpEnabledAt: timestamp('totp_enabled_at', { withTimezone: true }),
+  // The last accepted 30 s time step: a code at or below it is a replay.
+  totpLastStep: bigint('totp_last_step', { mode: 'number' }),
+  // Consecutive wrong second factors; the 10th sets mfaLockedUntil.
+  mfaFailures: integer('mfa_failures').notNull().default(0),
+  mfaLockedUntil: timestamp('mfa_locked_until', { withTimezone: true }),
+  // Locks set since the last correct second factor (migration 0100); each
+  // lock lasts longer: 15 min, 1 h, 4 h, then 24 h.
+  mfaLockCount: integer('mfa_lock_count').notNull().default(0),
 
   // How Maestro should pitch its replies to THIS user. Per-user, not
   // per-workspace: one workspace holds people of very different technical

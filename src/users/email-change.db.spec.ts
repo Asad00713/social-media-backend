@@ -19,11 +19,20 @@ import {
 } from '../planner/testing/rollback-db';
 import { AccountSecurityService } from './account-security.service';
 import { EmailChangeService } from './email-change.service';
+import { SessionStore } from '../auth/session/session-store';
+import { SecondFactorService } from '../auth/two-factor/second-factor.service';
 
 const MIGRATIONS = [
   '0070_users_sessions_revoked_at.sql',
   '0071_users_pending_email.sql',
   '0073_users_email_changed_at.sql',
+  // users.preferences etc., which every full users row now names.
+  '0092_user_account_settings.sql',
+  // The users columns two-step sign-in adds (0099 also alters known_devices).
+  '0072_known_devices.sql',
+  '0098_user_sessions.sql',
+  '0099_two_factor.sql',
+  '0100_mfa_lock_escalation.sql',
 ];
 /** The squatter cases also seed a known_devices row. */
 const SQUAT_MIGRATIONS = [...MIGRATIONS, '0072_known_devices.sql'];
@@ -74,6 +83,8 @@ function build(db: DbType) {
     links,
     none,
     none,
+    // The real store: "sign out everywhere" revokes rows and moves the floor.
+    new SessionStore(db, { forget: () => undefined } as never),
   );
   const minted: SecurityClaims[] = [];
   const tokens = {
@@ -103,6 +114,7 @@ function build(db: DbType) {
     security,
     auth as unknown as AuthService,
     links,
+    new SecondFactorService(db),
   );
   /** The code the last A3 carried. */
   const lastCode = () => {

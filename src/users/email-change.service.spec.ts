@@ -183,6 +183,7 @@ function setup(
     none,
     none,
     none,
+    {} as never,
   );
   const service = new EmailChangeService(
     db as never,

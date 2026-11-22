@@ -1,3 +1,4 @@
+import { isUUID } from 'class-validator';
 import {
   Injectable,
   Inject,
@@ -52,6 +53,10 @@ import {
 } from '../drizzle/schema';
 import { POST_STATUSES, type PostStatus } from '../drizzle/schema';
 import { AdminAuditService } from './admin-audit.service';
+import { SessionStore } from '../auth/session/session-store';
+import { mfaNotEnabled } from '../auth/two-factor/mfa-errors';
+import { SecondFactorService } from '../auth/two-factor/second-factor.service';
+import { TwoFactorNotices } from '../auth/two-factor/two-factor-notices.service';
 import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 // Suspension reasons
@@ -216,7 +221,58 @@ export class AdminService {
   constructor(
     @Inject(DRIZZLE) private db: DbType,
     private readonly auditService: AdminAuditService,
+    private readonly secondFactor: SecondFactorService,
+    private readonly sessions: SessionStore,
+    private readonly twoFactorNotices: TwoFactorNotices,
   ) {}
+
+  /**
+   * Support turns off a person's two-step sign-in at their request (lost
+   * phone and backup codes). One transaction clears every TOTP column, the
+   * backup codes, open mfa challenges and device trust, and revokes every
+   * session (rows and the sid-less floor). Then, after commit: the audit row
+   * (`user.2fa_reset`) and the two-step-disabled email `by: 'support'` (R15).
+   * 404 for an unknown user, 409 MFA_NOT_ENABLED when it is already off.
+   */
+  async resetTwoFactor(
+    adminId: string,
+    userId: string,
+  ): Promise<{ success: true; message: string }> {
+    // Not a uuid: a 404 rather than Postgres refusing the cast (a 500).
+    if (!isUUID(userId)) throw new NotFoundException('User not found');
+    const [user] = await this.db
+      .select({
+        id: users.id,
+        email: users.email,
+        totpEnabledAt: users.totpEnabledAt,
+      })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    if (!user) throw new NotFoundException('User not found');
+    if (!user.totpEnabledAt) throw mfaNotEnabled();
+
+    await this.db.transaction(async (tx) => {
+      await this.secondFactor.clear(userId, tx);
+      await this.sessions.revokeAll(userId, tx);
+    });
+
+    await this.auditService.record({
+      action: 'user.2fa_reset',
+      actorId: adminId,
+      targetType: 'user',
+      targetId: userId,
+      targetLabel: user.email,
+    });
+    // Never throws (the notice swallows its own failure).
+    await this.twoFactorNotices.disabledBySupport(userId);
+
+    return {
+      success: true,
+      message:
+        'Two-step sign-in was turned off and every session was signed out.',
+    };
+  }
 
   // ==========================================================================
   // Dashboard Overview Stats

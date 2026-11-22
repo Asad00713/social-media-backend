@@ -2,6 +2,9 @@ import { Reflector } from '@nestjs/core';
 import { AuthController } from './auth.controller';
 import { SKIP_LAUNCH_GATE } from './decorators/skip-launch-gate.decorator';
 import { GoogleAuthController } from './google/google-auth.controller';
+import { TwoFactorAuthController } from './two-factor/two-factor-auth.controller';
+import { SessionsController } from './session/sessions.controller';
+import { TwoFactorSettingsController } from './two-factor/two-factor-settings.controller';
 import { WorkspaceMembersController } from '../workspace-members/workspace-members.controller';
 
 /**
@@ -76,6 +79,54 @@ describe('launch gate route exemptions', () => {
         reflector.get<boolean>(SKIP_LAUNCH_GATE, GoogleAuthController),
       ).toBe(true);
     });
+  });
+
+  describe('two-step sign-in stays reachable', () => {
+    it('verify skips the gate - a sign-in started on /auth/login must be able to finish', () => {
+      // Unauthenticated, so the guard passes it today anyway; the decorator
+      // keeps it working if a token is ever attached. Login stays gated.
+      expect(
+        reflector.get<boolean>(
+          SKIP_LAUNCH_GATE,
+          Reflect.get(
+            TwoFactorAuthController.prototype,
+            'verify',
+          ) as () => unknown,
+        ),
+      ).toBe(true);
+    });
+  });
+
+  describe('the sessions page stays reachable', () => {
+    // Securing an account must work before launch access.
+    it.each(['list', 'revoke', 'revokeOthers'] as const)(
+      'SessionsController.%s skips the gate (class-level)',
+      (method) => {
+        expect(
+          reflector.getAllAndOverride<boolean>(SKIP_LAUNCH_GATE, [
+            SessionsController.prototype[method] as unknown as () => unknown,
+            SessionsController,
+          ]),
+        ).toBe(true);
+      },
+    );
+  });
+
+  describe('the two-step settings stay reachable', () => {
+    it.each(['status', 'setup', 'enable', 'regenerate', 'disable'] as const)(
+      'TwoFactorSettingsController.%s skips the gate (class-level)',
+      (method) => {
+        expect(
+          reflector.getAllAndOverride<boolean>(SKIP_LAUNCH_GATE, [
+            Reflect.get(
+              TwoFactorSettingsController.prototype,
+              method,
+            ) as () => unknown,
+            TwoFactorSettingsController,
+          ]),
+        ).toBe(true);
+      },
+    );
   });
 
   describe('invitations', () => {

@@ -10,6 +10,8 @@ import { ConfigService } from '@nestjs/config';
 import { UsersService } from '../../users/users.service';
 import { isEmailAllowlisted, parseAllowlist } from '../allowlist';
 import { SKIP_LAUNCH_GATE } from '../decorators/skip-launch-gate.decorator';
+import { SessionCheck } from '../session/session-check';
+import { assertTokenLive } from '../strategies/jwt.strategy';
 
 /**
  * Global launch gate. Before public launch, only allowlisted emails (and super
@@ -36,6 +38,7 @@ export class AllowlistGuard implements CanActivate {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly usersService: UsersService,
+    private readonly sessionCheck: SessionCheck,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -54,7 +57,7 @@ export class AllowlistGuard implements CanActivate {
     const auth = req.headers?.authorization;
     if (!auth || !auth.startsWith('Bearer ')) return true; // unauthenticated → not our job
 
-    let payload: { sub?: string };
+    let payload: { sub?: string; sid?: string; iat?: number };
     try {
       payload = this.jwtService.verify(auth.slice(7), {
         secret: this.configService.get<string>('JWT_ACCESS_SECRET'),
@@ -70,16 +73,23 @@ export class AllowlistGuard implements CanActivate {
     // lookup fails SAFE (no role, no email → blocked below).
     let role: string | undefined;
     let email: string | undefined;
+    let sessionsRevokedAt: Date | null = null;
     try {
       const user = await this.usersService.findOneWithSuspension(
         payload.sub as string,
       );
       role = user?.role;
       email = user?.email;
+      sessionsRevokedAt = user?.sessionsRevokedAt ?? null;
     } catch {
       role = undefined;
       email = undefined;
     }
+
+    // An ended session is a 401, decided here: this guard runs before
+    // JwtAuthGuard, and a revoked session must not be told "not launched"
+    // (a 403 the client would show instead of signing out).
+    await assertTokenLive(payload, { sessionsRevokedAt }, this.sessionCheck);
 
     if (isEmailAllowlisted(email, role)) return true;
 

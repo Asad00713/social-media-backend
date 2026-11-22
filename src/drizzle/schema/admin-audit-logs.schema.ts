@@ -21,6 +21,9 @@ export const AUDIT_ACTIONS = [
   // for a self delete; no PII is stored beyond the ids.
   'user.self_delete',
   'user.admin_delete',
+  // Support turned off a person's two-step sign-in at their request
+  // (POST /admin/users/:userId/2fa/reset); every session is signed out.
+  'user.2fa_reset',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 

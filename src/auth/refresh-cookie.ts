@@ -12,12 +12,19 @@ export const CROSS_SITE_COOKIE = {
 } as const;
 
 /**
- * The refresh cookie exactly as AuthController sets it on login and register.
+ * Refresh JWT and cookie lifetime (spec §7.1). The session row enforces the
+ * real limit: 30 days without use, pushed out on every refresh.
+ */
+export const REFRESH_TTL_DAYS = 30;
+
+/**
+ * The refresh cookie. Set only by SessionIssuer (the guard spec fails on any
+ * other `cookie('refreshToken', ...)`), so every sign-in shares one lifetime.
  */
 export function setRefreshCookie(response: Response, token: string): void {
   response.cookie('refreshToken', token, {
     ...CROSS_SITE_COOKIE,
-    maxAge: 7 * 24 * 60 * 60 * 1000,
+    maxAge: REFRESH_TTL_DAYS * 24 * 60 * 60 * 1000,
   });
 }
 

@@ -14,6 +14,7 @@
  * | `verify-email` | the same token shape |
  * | `refresh` / `logout` / `me` / `onboarding` | a JWT guard |
  * | `admin/challenge` / `admin/verify` | their own `@Throttle`, plus a per-address cooldown |
+ * | `2fa/verify` | `TWO_FACTOR_VERIFY_THROTTLE` below, plus 5 wrong codes per challenge and the 10-failure account lock |
  *
  * Adding a limit to any of those would be decoration: it would pass its tests
  * and protect nothing, which is the mistake BE #247 made with a sweeper guard
@@ -104,4 +105,19 @@ export const FORGOT_PASSWORD_THROTTLE = {
  */
 export const RESEND_CODE_THROTTLE = {
   default: { limit: 15, ttl: FIFTEEN_MIN_MS },
+} as const;
+
+/**
+ * Second-factor guesses per visitor (`POST /auth/2fa/verify`).
+ *
+ * The real limits are in the database: five wrong codes burn a challenge and
+ * ten consecutive failures lock the account for 15 minutes, both atomic, so
+ * they hold across instances. This per-IP ceiling is the cheap outer fence
+ * that keeps one caller from cycling fresh challenges (each needs the
+ * password, which `login` already throttles) or flooding the verify step.
+ * Ten in fifteen minutes matches `login`: a person typing a six-digit code
+ * needs two or three tries, never ten.
+ */
+export const TWO_FACTOR_VERIFY_THROTTLE = {
+  default: { limit: 10, ttl: FIFTEEN_MIN_MS },
 } as const;

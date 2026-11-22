@@ -88,7 +88,8 @@ export class AccountSettingsController {
    * the access token is already refused with ACCOUNT_DELETED.
    *
    * 400 EMAIL_MISMATCH, 409 OWNS_WORKSPACES {workspaces: [{id, name}]},
-   * 502 BILLING_CANCEL_FAILED.
+   * 502 BILLING_CANCEL_FAILED. With two-step sign-in on: 400
+   * MFA_CODE_REQUIRED / MFA_CODE_INVALID, 429 MFA_LOCKED.
    *
    * Exempt from the launch gate: a waitlisted sign-up holds a valid token and
    * must be able to erase their own account. It still needs the JWT, and it
@@ -108,6 +109,8 @@ export class AccountSettingsController {
   ): Promise<void> {
     await this.accountDeletion.deleteAccount(caller.userId, {
       confirmEmail: dto.confirmEmail,
+      code: dto.code,
+      backupCode: dto.backupCode,
       actor: 'self',
       actorId: caller.userId,
     });

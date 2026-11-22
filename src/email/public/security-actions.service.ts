@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, eq, ne, sql } from 'drizzle-orm';
 import { AuthService } from '../../auth/auth.service';
+import { SecondFactorService } from '../../auth/two-factor/second-factor.service';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import { users } from '../../drizzle/schema/users.schema';
@@ -44,10 +45,15 @@ type RevertResult =
 
 /**
  * Tables whose rows a bare sign-up leaves behind and nobody would miss: the
- * device a registration signs in from. Any other row pointing at a squatter
- * means it holds data, and it is never deleted.
+ * device a registration signs in from, its session rows and its sign-in
+ * challenges. Any other row pointing at a squatter means it holds data, and
+ * it is never deleted.
  */
-const SIGN_IN_TRACE_TABLES = new Set(['known_devices']);
+const SIGN_IN_TRACE_TABLES = new Set([
+  'known_devices',
+  'user_sessions',
+  'login_challenges',
+]);
 
 const SECURE_BUTTON = 'Secure my account';
 const SECURED_TITLE = 'Your account is secured';
@@ -77,7 +83,9 @@ function isUniqueViolation(error: unknown): boolean {
 
 /**
  * The security links in A4 ("Secure my account", `revert_email`), A5 ("Reset
- * password") and A6 ("This wasn't me"), both `not_me` (spec §7.3).
+ * password") and A6 ("This wasn't me"), both `not_me` (spec §7.3), and the
+ * "This wasn't me" of the "two-step sign-in is on" email, `not_me_2fa`, which
+ * also turns that two-step sign-in off (final review finding 1).
  *
  * `describe` backs the GET and only reads, because mail scanners open every
  * link in a message. `perform` backs the POST. Both answer null for a bad,
@@ -97,6 +105,7 @@ export class SecurityActionsService {
     private readonly security: AccountSecurityService,
     private readonly auth: AuthService,
     private readonly links: AppLinks,
+    private readonly secondFactor: SecondFactorService,
   ) {}
 
   async describe(token: string): Promise<SecurityAsk | null> {
@@ -104,6 +113,16 @@ export class SecurityActionsService {
     if (!claims) return null;
     const account = await this.account(claims.uid);
     if (!account) return null;
+    if (
+      claims.act === 'not_me_2fa' &&
+      (await this.twoStepStillFrom(claims.uid, claims.enabledAt))
+    ) {
+      return {
+        title: 'Secure your account?',
+        body: `We'll turn off the two-step sign-in that was just set up, sign you out everywhere and send a password reset link to ${maskEmail(account.email)}.`,
+        button: SECURE_BUTTON,
+      };
+    }
     if (claims.act === 'revert_email') {
       if (!isRevert(claims)) return null;
       return {
@@ -137,10 +156,33 @@ export class SecurityActionsService {
     const claims = this.tokens.verifySecurity(token);
     if (!claims) return null;
 
-    if (claims.act === 'not_me') {
+    if (claims.act === 'not_me' || claims.act === 'not_me_2fa') {
       const account = await this.account(claims.uid);
       if (!account) return null;
+      // The "two-step sign-in is on" email (finding 1): an attacker with the
+      // password may have set it up with their own app, and a password reset
+      // alone would leave the owner challenged by it. Turned off only while
+      // it is still the one that email reported, so an old link never strips
+      // a two-step sign-in set up later; past that it secures like not_me.
+      const turnedOff =
+        claims.act === 'not_me_2fa' &&
+        claims.enabledAt !== undefined &&
+        (await this.db.transaction((tx) =>
+          this.secondFactor.clearIfEnabledAt(
+            account.id,
+            new Date(claims.enabledAt!),
+            tx,
+          ),
+        ));
       const sent = await this.secure(account);
+      if (turnedOff) {
+        return {
+          title: SECURED_TITLE,
+          body: sent
+            ? `We turned off two-step sign-in, signed you out everywhere and sent a reset link to ${maskEmail(account.email)}.`
+            : `We turned off two-step sign-in. ${RESET_NOT_SENT}`,
+        };
+      }
       return {
         title: SECURED_TITLE,
         body: sent
@@ -295,6 +337,19 @@ export class SecurityActionsService {
         pendingEmailAttempts: 0,
       })
       .where(eq(users.id, userId));
+  }
+
+  /** Read only: is two-step sign-in still the one turned on at `enabledAt`? */
+  private async twoStepStillFrom(
+    uid: string,
+    enabledAt: number | undefined,
+  ): Promise<boolean> {
+    if (enabledAt === undefined) return false;
+    const row = await this.db.query.users.findFirst({
+      where: eq(users.id, uid),
+      columns: { totpEnabledAt: true },
+    });
+    return row?.totpEnabledAt?.getTime() === enabledAt;
   }
 
   private async account(uid: string): Promise<Account | null> {

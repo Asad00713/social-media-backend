@@ -20,6 +20,8 @@ import * as bcrypt from 'bcrypt';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { pickAvatarColor } from './avatar-colors';
 import { normalizeEmail } from './normalize-email';
+import { SessionStore } from '../auth/session/session-store';
+import { SecondFactorService } from '../auth/two-factor/second-factor.service';
 
 // Public user type that excludes sensitive fields
 export type PublicUser = Pick<
@@ -43,6 +45,8 @@ export type PublicUser = Pick<
   hasPassword: boolean;
   /** True when a Google account is linked; the Google id itself never leaves the server. */
   hasGoogle: boolean;
+  /** Two-step sign-in is on. The secret and its columns never leave the server. */
+  twoFactorEnabled: boolean;
 };
 
 /**
@@ -72,15 +76,19 @@ const PUBLIC_USER_COLUMNS = {
 } as const;
 
 /**
- * `hasPassword` and `hasGoogle`, computed in SQL next to PUBLIC_USER_COLUMNS,
+ * `hasPassword`, `hasGoogle` and `twoFactorEnabled`, computed in SQL next to PUBLIC_USER_COLUMNS,
  * so a public read never loads the password hash or the Google id at all.
  */
 const PUBLIC_USER_EXTRAS = (fields: {
   password: typeof users.password;
   googleSub: typeof users.googleSub;
+  totpEnabledAt: typeof users.totpEnabledAt;
 }) => ({
   hasPassword: sql<boolean>`${fields.password} is not null`.as('has_password'),
   hasGoogle: sql<boolean>`${fields.googleSub} is not null`.as('has_google'),
+  twoFactorEnabled: sql<boolean>`${fields.totpEnabledAt} is not null`.as(
+    'two_factor_enabled',
+  ),
 });
 
 /** Narrow a full row to the public shape. Counterpart to PUBLIC_USER_COLUMNS
@@ -89,6 +97,7 @@ export function toPublicUser(row: User): PublicUser {
   return {
     hasPassword: row.password !== null,
     hasGoogle: row.googleSub !== null,
+    twoFactorEnabled: row.totpEnabledAt != null,
     id: row.id,
     email: row.email,
     name: row.name,
@@ -108,7 +117,11 @@ export function toPublicUser(row: User): PublicUser {
 
 @Injectable()
 export class UsersService {
-  constructor(@Inject(DRIZZLE) private db: DbType) {}
+  constructor(
+    @Inject(DRIZZLE) private db: DbType,
+    private readonly sessions: SessionStore,
+    private readonly secondFactor: SecondFactorService,
+  ) {}
 
   async create(
     createUserDto: CreateUserDto,
@@ -310,8 +323,11 @@ export class UsersService {
   async resetPassword(userId: string, newPassword: string): Promise<void> {
     const hashedPassword = await bcrypt.hash(newPassword, 10);
     const now = new Date();
-    // Use raw SQL to avoid Drizzle timestamp null mapping issues
-    await this.db.execute(sql`
+    // One transaction: the new password and the end of every session (rows
+    // and the legacy floor, through SessionStore) land together.
+    await this.db.transaction(async (tx) => {
+      // Use raw SQL to avoid Drizzle timestamp null mapping issues
+      await tx.execute(sql`
             UPDATE users
             SET
                 password = ${hashedPassword},
@@ -319,11 +335,11 @@ export class UsersService {
                 password_reset_token_expires_at = NULL,
                 -- When the password last changed, shown in Settings (migration 0092).
                 password_changed_at = ${now},
-                -- Ends every session in the same write (migration 0070).
-                sessions_revoked_at = ${now},
                 updated_at = ${now}
             WHERE id = ${userId}
         `);
+      await this.sessions.revokeAll(userId, tx);
+    });
   }
 
   async findByEmail(email: string): Promise<User | undefined> {
@@ -500,8 +516,8 @@ export class UsersService {
    *
    * `clearPassword` (pre-hijack) also ends every session in the same write:
    * whoever registered the address before its owner loses the sessions they
-   * opened. The clock is read before the UPDATE, so the session Google
-   * sign-in mints right after is issued in or after the revocation second.
+   * opened. The session Google sign-in mints right after carries its own
+   * `sid`, which the floor does not judge (B1), so it is not caught by it.
    */
   async applyGoogleSignIn(
     userId: string,
@@ -512,17 +528,28 @@ export class UsersService {
     },
   ): Promise<void> {
     const now = new Date();
-    await this.db.execute(sql`
+    await this.db.transaction(async (tx) => {
+      await tx.execute(sql`
       UPDATE users
       SET
         is_email_verified = true,
         google_sub = COALESCE(google_sub, ${input.googleSub}),
         name = COALESCE(name, ${input.name}),
         password = CASE WHEN ${input.clearPassword} THEN NULL ELSE password END,
-        sessions_revoked_at = CASE WHEN ${input.clearPassword} THEN ${now} ELSE sessions_revoked_at END,
         updated_at = ${now}
       WHERE id = ${userId}
     `);
+      // Every session the squatter opened ends with the password (rows and
+      // the legacy floor), in the same transaction.
+      if (input.clearPassword) {
+        await this.sessions.revokeAll(userId, tx);
+        // ...and so does any two-step sign-in the squatter set up: its
+        // secret, backup codes, challenges and trusted devices. Otherwise the
+        // real owner would be challenged with the squatter's authenticator
+        // (batch-2 review ruling 2).
+        await this.secondFactor.clear(userId, tx);
+      }
+    });
   }
 }
 

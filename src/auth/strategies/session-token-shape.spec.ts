@@ -7,6 +7,9 @@ import {
   type JwtPayload,
 } from './jwt.strategy';
 
+/** A SessionCheck that finds every session live (the floor tests below use sid-less tokens). */
+const LIVE = { isLive: jest.fn().mockResolvedValue(true) };
+
 /**
  * Several non-session tokens are signed with JWT_ACCESS_SECRET (or fall back
  * to it): the super-admin challenge token, the Google state cookie, the TikTok
@@ -65,7 +68,11 @@ describe('JwtStrategy refuses non-session tokens', () => {
     const payload = jwt.verify<JwtPayload>(token, { secret: 'test-secret' });
 
     const usersService = users();
-    const strategy = new JwtStrategy(config as never, usersService as never);
+    const strategy = new JwtStrategy(
+      config as never,
+      usersService as never,
+      LIVE as never,
+    );
 
     await expect(strategy.validate(payload)).rejects.toBeInstanceOf(
       UnauthorizedException,
@@ -75,9 +82,18 @@ describe('JwtStrategy refuses non-session tokens', () => {
   });
 
   it('still accepts a normal access token payload', async () => {
-    const strategy = new JwtStrategy(config as never, users() as never);
+    const strategy = new JwtStrategy(
+      config as never,
+      users() as never,
+      LIVE as never,
+    );
     await expect(
-      strategy.validate({ sub: 'u1', email: 'a@b.com', iat: 1 }),
+      strategy.validate({
+        sub: 'u1',
+        email: 'a@b.com',
+        iat: 1,
+        sid: '11111111-1111-4111-8111-111111111111',
+      }),
     ).resolves.toMatchObject({ userId: 'u1' });
   });
 });
@@ -88,6 +104,7 @@ describe('JwtRefreshStrategy refuses non-session tokens', () => {
     const strategy = new JwtRefreshStrategy(
       config as never,
       usersService as never,
+      LIVE as never,
     );
     const req = { cookies: { refreshToken: 'x' } };
 

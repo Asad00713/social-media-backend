@@ -21,9 +21,13 @@ describe('UsersService email matching', () => {
     // exists on prod. An exact match would lock that person out the moment
     // they type their address in lowercase.
     const findFirst = jest.fn().mockResolvedValue(undefined);
-    const service = new UsersService({
-      query: { users: { findFirst } },
-    } as never);
+    const service = new UsersService(
+      {
+        query: { users: { findFirst } },
+      } as never,
+      {} as never,
+      {} as never,
+    );
 
     await service.findByEmail('  Sara@Daybreak.CO ');
 
@@ -39,10 +43,14 @@ describe('UsersService email matching', () => {
       .mockResolvedValue([{ id: 'u1', email: 'sara@daybreak.co' }]);
     const values = jest.fn().mockReturnValue({ returning });
     const insert = jest.fn().mockReturnValue({ values });
-    const service = new UsersService({
-      query: { users: { findFirst } },
-      insert,
-    } as never);
+    const service = new UsersService(
+      {
+        query: { users: { findFirst } },
+        insert,
+      } as never,
+      {} as never,
+      {} as never,
+    );
 
     await service.create({
       email: 'Sara@Daybreak.co',
@@ -64,10 +72,14 @@ describe('UsersService.createFromGoogle', () => {
     const insert = jest.fn().mockReturnValue({
       values: jest.fn().mockReturnValue({ returning }),
     });
-    return new UsersService({
-      query: { users: { findFirst } },
-      insert,
-    } as never);
+    return new UsersService(
+      {
+        query: { users: { findFirst } },
+        insert,
+      } as never,
+      {} as never,
+      {} as never,
+    );
   };
 
   it('returns the row a racing callback created (unique violation by sub)', async () => {
@@ -122,10 +134,14 @@ describe('UsersService public user shape', () => {
     const where = jest.fn().mockReturnValue({ returning });
     const set = jest.fn().mockReturnValue({ where });
     const update = jest.fn().mockReturnValue({ set });
-    const service = new UsersService({
-      query: { users: { findFirst: jest.fn().mockResolvedValue(row) } },
-      update,
-    } as never);
+    const service = new UsersService(
+      {
+        query: { users: { findFirst: jest.fn().mockResolvedValue(row) } },
+        update,
+      } as never,
+      {} as never,
+      {} as never,
+    );
 
     const result = await service.update('u1', { useCase: 'clients' });
 
@@ -135,9 +151,13 @@ describe('UsersService public user shape', () => {
 
   it('selects useCase for every public read', async () => {
     const findFirst = jest.fn().mockResolvedValue({ id: 'u1' });
-    const service = new UsersService({
-      query: { users: { findFirst } },
-    } as never);
+    const service = new UsersService(
+      {
+        query: { users: { findFirst } },
+      } as never,
+      {} as never,
+      {} as never,
+    );
 
     await service.findOne('u1');
 
@@ -151,10 +171,14 @@ describe('UsersService public user shape', () => {
     const returning = jest.fn().mockResolvedValue([row]);
     const where = jest.fn().mockReturnValue({ returning });
     const set = jest.fn().mockReturnValue({ where });
-    const service = new UsersService({
-      query: { users: { findFirst: jest.fn().mockResolvedValue(row) } },
-      update: jest.fn().mockReturnValue({ set }),
-    } as never);
+    const service = new UsersService(
+      {
+        query: { users: { findFirst: jest.fn().mockResolvedValue(row) } },
+        update: jest.fn().mockReturnValue({ set }),
+      } as never,
+      {} as never,
+      {} as never,
+    );
 
     await service.update('u1', { name: 'Sara' });
 
@@ -166,10 +190,14 @@ describe('UsersService public user shape', () => {
     const returning = jest.fn().mockResolvedValue([row]);
     const where = jest.fn().mockReturnValue({ returning });
     const set = jest.fn().mockReturnValue({ where });
-    const service = new UsersService({
-      query: { users: { findFirst: jest.fn().mockResolvedValue(row) } },
-      update: jest.fn().mockReturnValue({ set }),
-    } as never);
+    const service = new UsersService(
+      {
+        query: { users: { findFirst: jest.fn().mockResolvedValue(row) } },
+        update: jest.fn().mockReturnValue({ set }),
+      } as never,
+      {} as never,
+      {} as never,
+    );
 
     const result = await service.update('u1', { name: 'Sara' });
 
@@ -184,10 +212,14 @@ describe('UsersService.update refuses the email and password fields', () => {
     const where = jest.fn().mockReturnValue({ returning });
     const set = jest.fn().mockReturnValue({ where });
     const update = jest.fn().mockReturnValue({ set });
-    const service = new UsersService({
-      query: { users: { findFirst: jest.fn().mockResolvedValue(row) } },
-      update,
-    } as never);
+    const service = new UsersService(
+      {
+        query: { users: { findFirst: jest.fn().mockResolvedValue(row) } },
+        update,
+      } as never,
+      {} as never,
+      {} as never,
+    );
     return { service, update, set };
   }
 
@@ -265,9 +297,13 @@ describe('UsersService hasPassword', () => {
 
   it('every public read derives hasPassword in SQL and never selects the hash', async () => {
     const findFirst = jest.fn().mockResolvedValue({ id: 'u1' });
-    const service = new UsersService({
-      query: { users: { findFirst } },
-    } as never);
+    const service = new UsersService(
+      {
+        query: { users: { findFirst } },
+      } as never,
+      {} as never,
+      {} as never,
+    );
 
     await service.findOne('u1');
 
@@ -284,9 +320,13 @@ describe('UsersService hasPassword', () => {
 
   it('findOneWithSuspension also reads sessionsRevokedAt for the JWT strategies', async () => {
     const findFirst = jest.fn().mockResolvedValue({ id: 'u1' });
-    const service = new UsersService({
-      query: { users: { findFirst } },
-    } as never);
+    const service = new UsersService(
+      {
+        query: { users: { findFirst } },
+      } as never,
+      {} as never,
+      {} as never,
+    );
 
     await service.findOneWithSuspension('u1');
 
@@ -338,9 +378,13 @@ describe('toPublicUser hasGoogle and passwordChangedAt', () => {
 
   it('every public read derives hasGoogle in SQL, selects passwordChangedAt, and never selects google_sub itself', async () => {
     const findFirst = jest.fn().mockResolvedValue({ id: 'u1' });
-    const service = new UsersService({
-      query: { users: { findFirst } },
-    } as never);
+    const service = new UsersService(
+      {
+        query: { users: { findFirst } },
+      } as never,
+      {} as never,
+      {} as never,
+    );
 
     await service.findOne('u1');
 
@@ -356,61 +400,121 @@ describe('toPublicUser hasGoogle and passwordChangedAt', () => {
   });
 });
 
+describe('PublicUser.twoFactorEnabled (Task 14)', () => {
+  const full = {
+    id: 'u1',
+    email: 'sara@daybreak.co',
+    name: 'Sara',
+    role: 'USER',
+    isEmailVerified: true,
+    password: 'hash',
+    googleSub: null,
+    totpSecretEnc: 'iv:tag:ct',
+    totpPendingSecretEnc: 'iv:tag:ct2',
+    totpEnabledAt: new Date('2026-11-01T00:00:00Z'),
+    totpLastStep: 123,
+    mfaFailures: 3,
+    mfaLockedUntil: null,
+  } as unknown as User;
+
+  it('findOne and toPublicUser expose twoFactorEnabled and no totp_* / mfa_* column', async () => {
+    const out = toPublicUser(full);
+    expect(out.twoFactorEnabled).toBe(true);
+    expect(
+      toPublicUser({ ...full, totpEnabledAt: null }).twoFactorEnabled,
+    ).toBe(false);
+    const leaked = Object.keys(out).filter(
+      (k) => /totp|mfa/i.test(k) && k !== 'twoFactorEnabled',
+    );
+    expect(leaked).toEqual([]);
+
+    const findFirst = jest.fn().mockResolvedValue({ id: 'u1' });
+    const service = new UsersService(
+      { query: { users: { findFirst } } } as never,
+      {} as never,
+      {} as never,
+    );
+    await service.findOne('u1');
+    const real = drizzle({ client: {} as Pool, schema });
+    const { sql } = real.query.users
+      .findFirst(
+        firstArg<Parameters<typeof real.query.users.findFirst>[0]>(findFirst),
+      )
+      .toSQL();
+    expect(sql).toMatch(/"totp_enabled_at" is not null/i);
+    expect(sql).not.toMatch(/totp_secret_enc|totp_pending_secret_enc/i);
+    expect(sql).not.toMatch(/"totp_enabled_at"(?! is not null)/i);
+  });
+});
+
+/** A db whose transaction hands `tx` (with the same execute) to the callback. */
+function txDb() {
+  const execute = jest.fn().mockResolvedValue(undefined);
+  const tx = { execute };
+  const transaction = jest.fn((fn: (t: typeof tx) => unknown) => fn(tx));
+  const sessions = { revokeAll: jest.fn().mockResolvedValue(2) };
+  const secondFactor = { clear: jest.fn().mockResolvedValue(undefined) };
+  const service = new UsersService(
+    { execute, transaction } as never,
+    sessions as never,
+    secondFactor as never,
+  );
+  return { service, execute, tx, transaction, sessions, secondFactor };
+}
+
 describe('UsersService.resetPassword', () => {
   it('stamps password_changed_at in the same write as the new password', async () => {
-    const execute = jest.fn().mockResolvedValue(undefined);
-    const service = new UsersService({ execute } as never);
+    const { service, execute } = txDb();
 
     await service.resetPassword('u1', 'Secret123');
 
     const { sql } = render(firstArg<SQL>(execute));
     expect(sql).toMatch(/password_changed_at = \$\d+/);
+    expect(sql).toMatch(/password_reset_token = NULL/);
   });
 
-  it('ends every session in the same write as the new password', async () => {
-    const execute = jest.fn().mockResolvedValue(undefined);
-    const service = new UsersService({ execute } as never);
+  it('ends every session through SessionStore.revokeAll, in the same transaction', async () => {
+    const { service, execute, tx, transaction, sessions } = txDb();
 
     await service.resetPassword('u1', 'Secret123');
 
-    const { sql } = render(firstArg<SQL>(execute));
-    expect(sql).toMatch(/sessions_revoked_at = \$\d+/);
-    expect(sql).toMatch(/password_reset_token = NULL/);
+    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(sessions.revokeAll).toHaveBeenCalledWith('u1', tx);
+    // The floor is SessionStore's to write, not this UPDATE's.
+    expect(render(firstArg<SQL>(execute)).sql).not.toMatch(
+      /sessions_revoked_at/,
+    );
   });
 });
 
 describe('UsersService.applyGoogleSignIn', () => {
   async function run(clearPassword: boolean) {
-    const execute = jest.fn().mockResolvedValue(undefined);
-    const service = new UsersService({ execute } as never);
-    const before = Date.now();
-    await service.applyGoogleSignIn('u1', {
+    const built = txDb();
+    await built.service.applyGoogleSignIn('u1', {
       googleSub: 'g-1',
       name: 'Sara',
       clearPassword,
     });
-    return { ...render(firstArg<SQL>(execute)), before };
+    return { ...render(firstArg<SQL>(built.execute)), ...built };
   }
 
-  it('pre-hijack clear ends the squatter sessions in the same UPDATE as the password', async () => {
-    const { sql, params, before } = await run(true);
-    const m =
-      /sessions_revoked_at = CASE WHEN \$(\d+) THEN \$(\d+) ELSE sessions_revoked_at END/.exec(
-        sql,
-      );
-    expect(m).not.toBeNull();
-    expect(params[Number(m![1]) - 1]).toBe(true);
-    const revokedAt = params[Number(m![2]) - 1] as Date;
-    expect(revokedAt).toBeInstanceOf(Date);
-    expect(revokedAt.getTime()).toBeGreaterThanOrEqual(before);
+  it('pre-hijack clear ends the squatter sessions in the same transaction as the password', async () => {
+    const { sql, sessions, tx } = await run(true);
+    expect(sessions.revokeAll).toHaveBeenCalledWith('u1', tx);
+    expect(sql).not.toMatch(/sessions_revoked_at/);
     expect(sql).toMatch(
       /password = CASE WHEN \$\d+ THEN NULL ELSE password END/,
     );
   });
 
-  it('a verified link keeps the sessions (the CASE flag is false)', async () => {
-    const { sql, params } = await run(false);
-    const m = /sessions_revoked_at = CASE WHEN \$(\d+) THEN/.exec(sql);
-    expect(params[Number(m![1]) - 1]).toBe(false);
+  it('pre-hijack clear also wipes the squatter two-step setup, in the same transaction', async () => {
+    const { secondFactor, tx } = await run(true);
+    expect(secondFactor.clear).toHaveBeenCalledWith('u1', tx);
+  });
+
+  it('a verified link keeps the sessions and the two-step setup', async () => {
+    const { sessions, secondFactor } = await run(false);
+    expect(sessions.revokeAll).not.toHaveBeenCalled();
+    expect(secondFactor.clear).not.toHaveBeenCalled();
   });
 });

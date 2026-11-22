@@ -376,13 +376,11 @@ describe('WorkspaceMembersService.batchInvite seat gate', () => {
       }),
     });
     const usageService: any = {
-      getWorkspaceUsage: jest
-        .fn()
-        .mockResolvedValue({
-          membersLimit: 2,
-          membersCount: 1,
-          membersAvailable: 1,
-        }),
+      getWorkspaceUsage: jest.fn().mockResolvedValue({
+        membersLimit: 2,
+        membersCount: 1,
+        membersAvailable: 1,
+      }),
     };
     const usersService: any = {};
     const svc = build(db, usageService, usersService, noRole);
@@ -399,6 +397,20 @@ describe('WorkspaceMembersService.batchInvite seat gate', () => {
     ).rejects.toThrow(/SEAT_LIMIT_EXCEEDED/);
   });
 });
+
+/**
+ * `db.select(...).from(user_sessions).where(...).groupBy(...)`: the newest
+ * session use per user that getMembers reads (R14).
+ */
+function sessionUseSelect(rows: { userId: string; lastUsedAt: Date }[] = []) {
+  return jest.fn(() => {
+    const b: Record<string, unknown> = {};
+    b.from = () => b;
+    b.where = () => b;
+    b.groupBy = () => Promise.resolve(rows);
+    return b;
+  });
+}
 
 describe('WorkspaceMembersService.getMembers last seen', () => {
   it('returns lastLoginAt for the owner and every member', async () => {
@@ -418,6 +430,7 @@ describe('WorkspaceMembersService.getMembers last seen', () => {
       },
     ]);
     const db: any = {
+      select: sessionUseSelect(),
       query: {
         workspace: {
           findFirst: jest
@@ -447,8 +460,13 @@ describe('WorkspaceMembersService.getMembers last seen', () => {
 });
 
 describe('WorkspaceMembersService.getMembers lastActiveAt', () => {
-  function membersDb(ownerLogin: Date | null, memberLogin: Date | null) {
+  function membersDb(
+    ownerLogin: Date | null,
+    memberLogin: Date | null,
+    sessions: { userId: string; lastUsedAt: Date }[] = [],
+  ) {
     return {
+      select: sessionUseSelect(sessions),
       query: {
         workspace: {
           findFirst: jest
@@ -501,6 +519,24 @@ describe('WorkspaceMembersService.getMembers lastActiveAt', () => {
     expect(res.members[0].user?.lastLoginAt).toEqual(memberLogin);
     expect(res.members[0].role).toBe('MEMBER');
     expect(res.totalMembers).toBe(2);
+  });
+
+  it('the newest session use wins over the last sign-in; no session falls back to it', async () => {
+    const ownerLogin = new Date('2026-11-16T08:30:00Z');
+    const memberLogin = new Date('2026-11-01T12:00:00Z');
+    const service = build(
+      membersDb(ownerLogin, memberLogin, [
+        { userId: 'u2', lastUsedAt: new Date('2026-11-20T07:00:00Z') },
+      ]),
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+    const res = await service.getMembers('ws1', 'owner1');
+
+    expect(res.members[0].lastActiveAt).toBe('2026-11-20T07:00:00.000Z');
+    expect(res.owner?.lastActiveAt).toBe('2026-11-16T08:30:00.000Z');
   });
 
   it('is null for someone who never signed in', async () => {

@@ -4,12 +4,15 @@ import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { UsersService } from '../../users/users.service';
 import type { UserRole } from '../../drizzle/schema';
+import { SessionCheck } from '../session/session-check';
 
 export interface JwtPayload {
   sub: string;
   email: string;
   /** Issued-at, whole seconds. Set on every token we sign. */
   iat?: number;
+  /** The session row (user_sessions.id); absent on pre-deploy tokens. */
+  sid?: string;
 }
 
 /**
@@ -69,10 +72,65 @@ export function assertNotDeleted(deletedAt: Date | null | undefined): void {
   });
 }
 
+/**
+ * Is this token still a live session? The one check every token consumer
+ * runs (both strategies, AllowlistGuard, both socket handshakes; none of them
+ * mint). Throws 401 'Session ended' when:
+ *   - it is not a session token at all (`purpose` / `aud` claims, no string
+ *     `sub`): the admin and MFA challenge tokens open nothing but their own
+ *     verify step (Review Focus 1);
+ *   - it carries a `sid` whose row is revoked, idle-expired or someone
+ *     else's (30 s cache, SessionCheck);
+ *   - it carries no `sid` and the caller did not opt into sid-less tokens:
+ *     every ACCESS consumer (JwtStrategy, AllowlistGuard, both sockets)
+ *     requires a sid, so a token minted outside SessionIssuer - even by an
+ *     allow-listed signer holding JWT_ACCESS_SECRET - opens nothing without a
+ *     real session row (batch-2 review ruling 4). Pre-deploy access tokens
+ *     live at most 15 minutes; the client refreshes once on the 401;
+ *   - it carries no `sid` (a pre-deploy REFRESH token, `allowSidless`) and
+ *     predates the user's `sessions_revoked_at` floor. The refresh path is
+ *     the only one that still accepts sid-less tokens: the issuer gives them
+ *     a session row (or refuses them when 2FA is on).
+ * A token WITH a sid is judged by its row only (B1): the floor moves on
+ * "log out of other sessions" to kill legacy tokens, and must not take the
+ * caller's own session with it.
+ */
+export async function assertTokenLive(
+  payload: { sub?: unknown; sid?: unknown; iat?: number },
+  user: { sessionsRevokedAt: Date | null },
+  check: Pick<SessionCheck, 'isLive'>,
+  opts: { allowSidless?: boolean } = {},
+): Promise<void> {
+  assertSessionTokenShape(payload);
+  const sub = payload.sub as string;
+  if (!('sid' in payload) || payload.sid === undefined) {
+    if (!opts.allowSidless) throw new UnauthorizedException('Session ended');
+  } else {
+    const sid = sidOf(payload);
+    if (!sid || !(await check.isLive(sid, sub))) {
+      throw new UnauthorizedException('Session ended');
+    }
+    return;
+  }
+  assertSessionLive(payload.iat, user.sessionsRevokedAt);
+}
+
+/** The token's session id, or null when it carries none (pre-deploy). */
+export function sidOf(payload: { sid?: unknown }): string | null {
+  return typeof payload.sid === 'string' && payload.sid ? payload.sid : null;
+}
+
 export interface JwtUser {
   userId: string;
   email: string;
   role: UserRole;
+  /**
+   * The session this token belongs to, null for a pre-deploy token. Passed
+   * through so a reissue (password change) keeps the caller's session row.
+   */
+  sid: string | null;
+  /** The access token's issued-at (whole seconds). Not the sign-in time. */
+  iat: number;
 }
 
 @Injectable()
@@ -80,6 +138,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   constructor(
     private configService: ConfigService,
     private usersService: UsersService,
+    private sessionCheck: SessionCheck,
   ) {
     const secret = configService.get<string>('JWT_ACCESS_SECRET');
 
@@ -120,10 +179,16 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       });
     }
 
-    assertSessionLive(payload.iat, user.sessionsRevokedAt);
+    await assertTokenLive(payload, user, this.sessionCheck);
 
     // The address from the row, not the claim: the claim is frozen at sign-in
     // and goes stale after an email change.
-    return { userId: payload.sub, email: user.email, role: user.role };
+    return {
+      userId: payload.sub,
+      email: user.email,
+      role: user.role,
+      sid: sidOf(payload),
+      iat: payload.iat ?? 0,
+    };
   }
 }

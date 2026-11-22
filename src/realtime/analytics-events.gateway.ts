@@ -14,9 +14,10 @@ import { ConfigService } from '@nestjs/config';
 import { and, eq } from 'drizzle-orm';
 import {
   assertNotDeleted,
-  assertSessionLive,
   assertSessionTokenShape,
+  assertTokenLive,
 } from '../auth/strategies/jwt.strategy';
+import { SessionCheck } from '../auth/session/session-check';
 import { db } from '../drizzle/db';
 import { users } from '../drizzle/schema/users.schema';
 import { WorkspaceRoleService } from '../workspace-members/workspace-role.service';
@@ -80,6 +81,7 @@ export class AnalyticsEventsGateway
     private readonly jwtService: JwtService,
     private readonly config: ConfigService,
     private readonly roles: WorkspaceRoleService,
+    private readonly sessionCheck: SessionCheck,
   ) {}
 
   async handleConnection(socket: AuthedSocket): Promise<void> {
@@ -97,6 +99,7 @@ export class AnalyticsEventsGateway
         sub?: string;
         userId?: string;
         iat?: number;
+        sid?: string;
       }>(token, {
         secret: this.config.get<string>('JWT_ACCESS_SECRET'),
       });
@@ -115,7 +118,12 @@ export class AnalyticsEventsGateway
       if (!account) throw new Error(`User ${userId} not found`);
       // A deleted account is refused outright, as the HTTP strategies do.
       assertNotDeleted(account.deletedAt);
-      assertSessionLive(payload.iat, account.sessionsRevokedAt);
+      // A revoked session (its sid) or, for a pre-deploy token, the floor.
+      await assertTokenLive(
+        { ...payload, sub: userId },
+        account,
+        this.sessionCheck,
+      );
 
       socket.userId = userId;
       // Per-user events (billing) go to this room. Joined from the verified

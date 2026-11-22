@@ -203,7 +203,8 @@ describe('GoogleAuthService.callback', () => {
       name: 'Sara',
       clearPassword: false,
     });
-    expect(b.loginActivity.record).toHaveBeenCalledWith('u1', undefined);
+    // Recorded by the controller once a session exists (review ruling 7).
+    expect(b.loginActivity.record).not.toHaveBeenCalled();
     expect(r.session).toEqual({
       userId: 'u1',
       email: 'Sara@Gmail.com',
@@ -282,6 +283,39 @@ describe('GoogleAuthService.callback', () => {
       name: 'Sara',
       clearPassword: true,
     });
+    expect(b.loginActivity.record).not.toHaveBeenCalled();
+  });
+
+  it('recordSignIn writes last sign-in for the controller', async () => {
+    const b = build();
+    await b.service.recordSignIn('u3', '9.9.9.9');
     expect(b.loginActivity.record).toHaveBeenCalledWith('u3', '9.9.9.9');
+  });
+});
+
+describe('GoogleAuthService.twoStepUrl (R6)', () => {
+  it('redirect mode lands on /auth/two-step with the challenge', () => {
+    const { service } = build();
+    expect(service.twoStepUrl('redirect', 'a.b.c')).toBe(
+      `${FRONTEND}/auth/two-step?challenge=a.b.c`,
+    );
+  });
+
+  it('popup mode lands on the done page with status=mfa_required', () => {
+    const { service } = build();
+    const url = new URL(service.twoStepUrl('popup', 'a.b.c'));
+    expect(`${url.origin}${url.pathname}`).toBe(`${FRONTEND}/auth/google/done`);
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      status: 'mfa_required',
+      challenge: 'a.b.c',
+      mode: 'popup',
+    });
+  });
+
+  it('the challenge is URL-encoded', () => {
+    const { service } = build();
+    expect(service.twoStepUrl('redirect', 'a+b/c=')).toBe(
+      `${FRONTEND}/auth/two-step?challenge=a%2Bb%2Fc%3D`,
+    );
   });
 });

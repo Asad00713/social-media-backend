@@ -1,24 +1,9 @@
-import {
-  Controller,
-  Get,
-  Headers,
-  Ip,
-  Query,
-  Req,
-  Res,
-  UseGuards,
-} from '@nestjs/common';
+import { Controller, Get, Query, Req, Res, UseGuards } from '@nestjs/common';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
-import { AuthService } from '../auth.service';
+import { requestClientIp } from '../../common/utils/request-client-ip';
 import { SkipLaunchGate } from '../decorators/skip-launch-gate.decorator';
-import {
-  deviceCookieOf,
-  readOrMintDeviceId,
-  setDeviceCookie,
-} from '../devices/device-cookie';
-import { KnownDevicesService } from '../devices/known-devices.service';
-import { setRefreshCookie } from '../refresh-cookie';
+import { SessionIssuer } from '../session/session-issuer';
 import { GOOGLE_STATE_COOKIE, GoogleAuthService } from './google-auth.service';
 import type { GoogleAuthMode } from './google-sign-in.decision';
 
@@ -41,8 +26,7 @@ const STATE_COOKIE_OPTIONS = {
 export class GoogleAuthController {
   constructor(
     private readonly google: GoogleAuthService,
-    private readonly auth: AuthService,
-    private readonly knownDevices: KnownDevicesService,
+    private readonly issuer: SessionIssuer,
   ) {}
 
   @Get('start')
@@ -66,9 +50,7 @@ export class GoogleAuthController {
   async callback(
     @Query() query: { code?: string; state?: string; error?: string },
     @Req() req: Request,
-    @Ip() ip: string,
     @Res() res: Response,
-    @Headers('user-agent') userAgent?: string,
   ) {
     const stateCookie = (req.cookies as Record<string, string> | undefined)?.[
       GOOGLE_STATE_COOKIE
@@ -77,30 +59,42 @@ export class GoogleAuthController {
     // state to match.
     res.clearCookie(GOOGLE_STATE_COOKIE, STATE_COOKIE_OPTIONS);
 
+    // The visitor's address (X-Real-IP behind Railway's edge), the same one
+    // the issuer stores on the session, not the proxy's (@Ip()).
     const { redirectUrl, session, mode } = await this.google.callback(
       query,
       stateCookie,
-      ip,
+      requestClientIp(req) ?? undefined,
     );
     if (session) {
+      // The issuer writes the session, sets the refresh cookie and records
+      // the browser: a new account's first one silently, a known account's
+      // new one with A6.
       try {
-        setRefreshCookie(
-          res,
-          await this.auth.generateRefreshToken(session.userId, session.email),
-        );
+        const issued = await this.issuer.issue(session.userId, req, res, {
+          via: 'google',
+          silentDevice: session.isNewAccount,
+        });
+        // Two-step sign-in on: no session and no refresh cookie, only the
+        // challenge, carried to the two-step page (R6).
+        if (issued.kind === 'mfa') {
+          return res.redirect(
+            302,
+            this.google.twoStepUrl(mode, issued.challengeToken),
+          );
+        }
+        // A signed-in existing account: last sign-in, IP and region. Only
+        // now, so a 2FA user's first factor alone moves none of them; a new
+        // account's were recorded with the account (recordSync).
+        if (!session.isNewAccount) {
+          await this.google.recordSignIn(
+            session.userId,
+            requestClientIp(req) ?? undefined,
+          );
+        }
       } catch {
         return res.redirect(302, this.google.failureUrl(mode));
       }
-      // Only once the session exists. A new account's first browser is
-      // recorded without an email; a known account's new one sends A6.
-      const device = readOrMintDeviceId(deviceCookieOf(req.cookies));
-      setDeviceCookie(res, device.id);
-      this.knownDevices.track(
-        session.userId,
-        device.id,
-        { ip, userAgent: userAgent ?? null },
-        { silent: session.isNewAccount },
-      );
     }
     return res.redirect(302, redirectUrl);
   }

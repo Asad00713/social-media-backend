@@ -11,6 +11,7 @@ import {
   avatarKeyFolder,
   type CloudflareR2Service,
 } from '../media/cloudflare-r2.service';
+import { SecondFactorService } from '../auth/two-factor/second-factor.service';
 import { AccountDeletionService } from './account-deletion.service';
 
 // 0058: post_comments, seeded to prove they stay. 0060/0067/0068/0072:
@@ -18,7 +19,8 @@ import { AccountDeletionService } from './account-deletion.service';
 // known_devices, which the delete clears. 0070/0071/0073: the users columns
 // the anonymising update writes and the schema selects. 0080: REMOVED memberships. 0092: users.deleted_at and preferences.
 // 0093/0094: workspace columns the schema selects. 0095: invited_by and
-// changed_by_user_id SET NULL, workspace.owner_id RESTRICT.
+// changed_by_user_id SET NULL, workspace.owner_id RESTRICT. 0098/0099:
+// user_sessions, the totp/mfa columns, user_backup_codes, login_challenges.
 const MIGRATIONS = [
   '0058_post_comments.sql',
   '0060_insight_hidden_steps.sql',
@@ -35,6 +37,9 @@ const MIGRATIONS = [
   '0093_workspace_settings.sql',
   '0094_workspace_labels.sql',
   '0095_users_fk_set_null.sql',
+  '0098_user_sessions.sql',
+  '0099_two_factor.sql',
+  '0100_mfa_lock_escalation.sql',
 ];
 
 const rand = () => Math.random().toString(36).slice(2, 10);
@@ -111,6 +116,7 @@ function makeService(
     subscriptions as unknown as SubscriptionService,
     usage as unknown as UsageService,
     r2 as unknown as CloudflareR2Service,
+    new SecondFactorService(db),
   );
   return { service, subscriptions, usage, r2 };
 }
@@ -468,6 +474,93 @@ describeDb('AccountDeletionService (database)', () => {
       await expect(
         client.query(`INSERT INTO users (email) VALUES ($1)`, [oldEmail]),
       ).resolves.toBeDefined();
+    });
+  });
+
+  it('two-step on: removes user_sessions, user_backup_codes and login_challenges and nulls the totp columns; a backup code in `code` is accepted', async () => {
+    await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const me = await seedUser(client);
+      await client.query(
+        `UPDATE users
+            SET totp_secret_enc = 'enc-active', totp_pending_secret_enc = 'enc-pending',
+                totp_enabled_at = now(), totp_last_step = 42, mfa_failures = 3
+          WHERE id = $1`,
+        [me.id],
+      );
+      const codes = await new SecondFactorService(db).replaceBackupCodes(me.id);
+      await client.query(
+        `INSERT INTO user_sessions (user_id, label, device_type, expires_at)
+         VALUES ($1, 'Chrome on Windows', 'desktop', now() + interval '30 days'),
+                ($1, 'Safari on iPhone', 'mobile', now() + interval '30 days')`,
+        [me.id],
+      );
+      await client.query(
+        `INSERT INTO login_challenges (user_id, purpose, expires_at)
+         VALUES ($1, 'mfa', now() + interval '5 minutes'),
+                ($1, 'admin_email', now() + interval '5 minutes')`,
+        [me.id],
+      );
+      const { service, subscriptions } = makeService(db);
+
+      // No code, then a wrong one: refused before billing, nothing deleted.
+      await expect(
+        service.deleteAccount(me.id, {
+          confirmEmail: me.email,
+          actor: 'self',
+          actorId: me.id,
+        }),
+      ).rejects.toMatchObject({
+        status: 400,
+        response: { code: 'MFA_CODE_REQUIRED' },
+      });
+      await expect(
+        service.deleteAccount(me.id, {
+          confirmEmail: me.email,
+          code: 'ZZZZ-ZZZZ',
+          actor: 'self',
+          actorId: me.id,
+        }),
+      ).rejects.toMatchObject({
+        status: 400,
+        response: { code: 'MFA_CODE_INVALID' },
+      });
+      expect(subscriptions.cancelForAccount).not.toHaveBeenCalled();
+      expect((await userRow(client, me.id)).deleted_at).toBeNull();
+
+      // A backup code, lowercased and in the `code` field (R13).
+      await service.deleteAccount(me.id, {
+        confirmEmail: me.email,
+        code: codes[0].toLowerCase(),
+        actor: 'self',
+        actorId: me.id,
+      });
+
+      const u = await userRow(client, me.id);
+      expect(u.deleted_at).toBeInstanceOf(Date);
+      for (const col of [
+        'totp_secret_enc',
+        'totp_pending_secret_enc',
+        'totp_enabled_at',
+        'totp_last_step',
+        'mfa_locked_until',
+      ]) {
+        expect([col, u[col]]).toEqual([col, null]);
+      }
+      expect(u.mfa_failures).toBe(0);
+      for (const table of [
+        'user_sessions',
+        'user_backup_codes',
+        'login_challenges',
+      ]) {
+        expect([
+          table,
+          await count(
+            client,
+            `SELECT count(*) AS n FROM ${table} WHERE user_id = $1`,
+            [me.id],
+          ),
+        ]).toEqual([table, 0]);
+      }
     });
   });
 

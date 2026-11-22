@@ -1,7 +1,12 @@
 import type { GoogleClaims } from './google-claims';
 
 export type GoogleAuthMode = 'popup' | 'redirect';
-export type GoogleDoneStatus = 'success' | 'cancelled' | 'error';
+/** `mfa_required`: the account has two-step sign-in on; `challenge` goes with it. */
+export type GoogleDoneStatus =
+  | 'success'
+  | 'cancelled'
+  | 'error'
+  | 'mfa_required';
 export type GoogleRefusalCode =
   | 'EMAIL_UNVERIFIED'
   | 'GOOGLE_ACCOUNT_MISMATCH'
@@ -65,10 +70,16 @@ export function decideGoogleSignIn(input: {
 /** Where the popup (or the full page) lands when the Google round-trip ends. */
 export function buildDoneUrl(
   frontendUrl: string,
-  result: { status: GoogleDoneStatus; code?: string; mode: GoogleAuthMode },
+  result: {
+    status: GoogleDoneStatus;
+    code?: string;
+    challenge?: string;
+    mode: GoogleAuthMode;
+  },
 ): string {
   const params = new URLSearchParams({ status: result.status });
   if (result.code) params.set('code', result.code);
+  if (result.challenge) params.set('challenge', result.challenge);
   params.set('mode', result.mode);
   return `${frontendUrl.replace(/\/+$/, '')}/auth/google/done?${params.toString()}`;
 }
