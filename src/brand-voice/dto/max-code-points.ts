@@ -19,6 +19,9 @@ import {
 
 const LINE_BREAK = /[\r\n]/;
 
+/** Postgres rejects U+0000 in text and jsonb, which would surface as a 500. */
+const hasNul = (value: string): boolean => value.includes('\u0000');
+
 /** A string of at most `max` code points. Respects `{ each: true }`. */
 export function MaxCodePoints(
   max: number,
@@ -34,6 +37,27 @@ export function MaxCodePoints(
         defaultMessage: buildMessage(
           (eachPrefix) =>
             `${eachPrefix}$property must be at most $constraint1 characters`,
+          validationOptions,
+        ),
+      },
+    },
+    validationOptions,
+  );
+}
+
+/** A string with no U+0000 (Postgres cannot store it). Respects `{ each: true }`. */
+export function NoNulChars(
+  validationOptions?: ValidationOptions,
+): PropertyDecorator {
+  return ValidateBy(
+    {
+      name: 'noNulChars',
+      validator: {
+        validate: (value: unknown) =>
+          typeof value === 'string' && !hasNul(value),
+        defaultMessage: buildMessage(
+          (eachPrefix) =>
+            `${eachPrefix}$property must not contain a NUL character`,
           validationOptions,
         ),
       },
@@ -72,7 +96,7 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> => {
 
 /**
  * A plain object whose keys are publishing platforms and whose values are
- * one-line strings of at most 120 code points. An empty string is allowed:
+ * one-line strings without NUL, of at most 120 code points. An empty string is allowed:
  * it removes that platform's tweak.
  */
 export function IsChannelTweaks(
@@ -90,6 +114,7 @@ export function IsChannelTweaks(
               platforms.includes(platform) &&
               typeof line === 'string' &&
               !LINE_BREAK.test(line) &&
+              !hasNul(line) &&
               codePointLength(line) <= BRAND_VOICE_LIMITS.tweak,
           ),
         defaultMessage: buildMessage(

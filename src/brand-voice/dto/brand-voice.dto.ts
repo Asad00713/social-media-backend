@@ -23,6 +23,7 @@ import {
   IsChannelTweaks,
   MaxCodePoints,
   NoLineBreaks,
+  NoNulChars,
 } from './max-code-points';
 
 /** Skips the validators when the field is left out; `null` still fails. */
@@ -45,6 +46,7 @@ export class UpdateBrandVoiceDto implements BrandVoicePatch {
   @ValidateIf((_dto: unknown, value: unknown) => value != null)
   @IsString()
   @NoLineBreaks()
+  @NoNulChars()
   @MaxCodePoints(BRAND_VOICE_LIMITS.description)
   description?: string | null;
 
@@ -52,6 +54,7 @@ export class UpdateBrandVoiceDto implements BrandVoicePatch {
   @IsArray()
   @ArrayMaxSize(BRAND_VOICE_LIMITS.words)
   @IsString({ each: true })
+  @NoNulChars({ each: true })
   @MaxCodePoints(BRAND_VOICE_LIMITS.word, { each: true })
   wordsUse?: string[];
 
@@ -59,6 +62,7 @@ export class UpdateBrandVoiceDto implements BrandVoicePatch {
   @IsArray()
   @ArrayMaxSize(BRAND_VOICE_LIMITS.words)
   @IsString({ each: true })
+  @NoNulChars({ each: true })
   @MaxCodePoints(BRAND_VOICE_LIMITS.word, { each: true })
   wordsAvoid?: string[];
 

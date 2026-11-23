@@ -127,6 +127,7 @@ describe('BrandVoiceController over HTTP', () => {
     await request(app.getHttpServer())
       .get('/workspaces/not-a-uuid/brand-voice')
       .expect(400);
+    expect(service.get).not.toHaveBeenCalled();
   });
 
   it('PATCH passes the workspace and the validated body to the service', async () => {

@@ -26,6 +26,13 @@ describe('UpdateBrandVoiceDto', () => {
     ],
     ['a line break', { version: 1, description: 'one\ntwo' }],
     ['a carriage return', { version: 1, description: 'one\rtwo' }],
+    ['a NUL in the description', { version: 1, description: 'a\u0000b' }],
+    ['a NUL in a word to use', { version: 1, wordsUse: ['a\u0000'] }],
+    ['a NUL in a word to avoid', { version: 1, wordsAvoid: ['ok', '\u0000'] }],
+    [
+      'a NUL in a tweak',
+      { version: 1, channelTweaks: { linkedin: 'x\u0000' } },
+    ],
     ['a numeric description', { version: 1, description: 5 }],
     [
       '21 words',
