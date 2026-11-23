@@ -6,6 +6,8 @@ import { parseQuickReplies } from './lib/quick-replies';
 import { DRIZZLE } from '../drizzle/drizzle.module';
 import type { DbType } from '../drizzle/db';
 import { loadReplyContext } from '../inbox/conversations/lib/reply-context';
+import { BrandVoiceService } from '../brand-voice/brand-voice.service';
+import { withBrandVoice } from '../brand-voice/lib/with-brand-voice';
 
 export type SuggestReplyInstruction =
   | 'suggest'
@@ -68,6 +70,7 @@ export class InboxAiService {
     private readonly aiText: AiTextService,
     private readonly aiTokens: AiTokenService,
     @Inject(DRIZZLE) private readonly db: DbType,
+    private readonly brandVoice: BrandVoiceService,
   ) {}
 
   async suggestReply(
@@ -92,6 +95,16 @@ export class InboxAiService {
       messages = input.messages as typeof messages;
     }
 
+    // Read before metering: promptFor never throws and never charges. A
+    // translation keeps the source's voice, so it never reads one.
+    const voice =
+      instruction === 'translate_en'
+        ? ''
+        : await this.brandVoice.promptFor(workspaceId, {
+            platform,
+            omitHashtags: true,
+          });
+
     const { result, usage } = await this.aiTokens.executeWithTokens(
       workspaceId,
       userId,
@@ -106,7 +119,7 @@ export class InboxAiService {
           input.draft,
         );
         const reply = await this.aiText.complete(
-          SYSTEM_PROMPTS.inboxReply,
+          withBrandVoice(SYSTEM_PROMPTS.inboxReply, voice),
           user,
         );
         return { result: { reply }, outputLength: reply.length };
@@ -129,6 +142,11 @@ export class InboxAiService {
       input.commentId,
     );
 
+    const voice = await this.brandVoice.promptFor(workspaceId, {
+      platform,
+      omitHashtags: true,
+    });
+
     const { result } = await this.aiTokens.executeWithTokens(
       workspaceId,
       userId,
@@ -137,7 +155,7 @@ export class InboxAiService {
       `Inbox quick replies on ${platform}`,
       async () => {
         const raw = await this.aiText.complete(
-          SYSTEM_PROMPTS.inboxReply,
+          withBrandVoice(SYSTEM_PROMPTS.inboxReply, voice),
           QUICK_REPLIES_PROMPT(platform, messages),
         );
         const replies = parseQuickReplies(raw);

@@ -54,3 +54,4 @@ export * from './billing-payment-alerts.schema';
 export * from './labels.schema';
 export * from './user-sessions.schema';
 export * from './two-factor.schema';
+export * from './workspace-brand-voice.schema';

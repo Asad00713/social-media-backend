@@ -49,6 +49,11 @@ import {
 } from './dto/ai.dto';
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
+import { BrandVoiceService } from '../brand-voice/brand-voice.service';
+import {
+  brandVoicePrompt,
+  hashtagsWanted,
+} from '../brand-voice/lib/brand-voice-prompt';
 
 /** What `POST /ai/workspaces/:workspaceId/transcribe` replies with. */
 export interface TranscribeResponse {
@@ -72,6 +77,7 @@ export class AiController {
     private readonly sttService: ElevenLabsSttService,
     private readonly composerAiService: ComposerAiService,
     private readonly inboxAiService: InboxAiService,
+    private readonly brandVoice: BrandVoiceService,
   ) {}
 
   // ==========================================================================
@@ -180,6 +186,9 @@ export class AiController {
     @CurrentUser() user: { userId: string },
     @Body() dto: GenerateCaptionDto,
   ) {
+    // Read before metering: a voice read is never charged, and never fails.
+    const source = await this.brandVoice.loadPromptSource(workspaceId);
+    const voice = brandVoicePrompt({ ...source, platform: dto.platform });
     const { result, usage } = await this.aiTokenService.executeWithTokens(
       workspaceId,
       user.userId,
@@ -191,8 +200,11 @@ export class AiController {
           description: dto.description,
           platform: dto.platform,
           tone: dto.tone,
-          includeHashtags: dto.includeHashtags,
+          // The request wins; otherwise the voice decides, so "Do not
+          // include hashtags" cannot override a voice that asks for them.
+          includeHashtags: dto.includeHashtags ?? hashtagsWanted(source.voice),
           includeCta: dto.includeCta,
+          voice,
         });
         return { result: content, outputLength: content.length };
       },
@@ -302,6 +314,11 @@ export class AiController {
     @CurrentUser() user: { userId: string },
     @Body() dto: RepurposeContentDto,
   ) {
+    const source = await this.brandVoice.loadPromptSource(workspaceId);
+    const voice = brandVoicePrompt({
+      ...source,
+      platform: dto.targetPlatform,
+    });
     const { result, usage } = await this.aiTokenService.executeWithTokens(
       workspaceId,
       user.userId,
@@ -313,6 +330,7 @@ export class AiController {
           originalContent: dto.originalContent,
           sourcePlatform: dto.sourcePlatform,
           targetPlatform: dto.targetPlatform,
+          voice,
         });
         return { result: content, outputLength: content.length };
       },
@@ -332,6 +350,8 @@ export class AiController {
     @CurrentUser() user: { userId: string },
     @Body() dto: ImprovePostDto,
   ) {
+    const source = await this.brandVoice.loadPromptSource(workspaceId);
+    const voice = brandVoicePrompt({ ...source, platform: dto.platform });
     const { result, usage } = await this.aiTokenService.executeWithTokens(
       workspaceId,
       user.userId,
@@ -343,6 +363,7 @@ export class AiController {
           originalPost: dto.originalPost,
           platform: dto.platform,
           improvementFocus: dto.improvementFocus,
+          voice,
         });
         return { result: content, outputLength: content.length };
       },

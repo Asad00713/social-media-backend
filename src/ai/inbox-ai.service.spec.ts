@@ -2,6 +2,8 @@ import { BadRequestException } from '@nestjs/common';
 import { InboxAiService, SuggestReplyInput } from './inbox-ai.service';
 import type { AiTextService } from './ai-text.service';
 import type { AiTokenService } from './services/ai-token.service';
+import type { BrandVoiceService } from '../brand-voice/brand-voice.service';
+import { SYSTEM_PROMPTS } from './prompts';
 import type { DbType } from '../drizzle/db';
 import { loadReplyContext } from '../inbox/conversations/lib/reply-context';
 
@@ -17,7 +19,7 @@ type TokenCallback = () => Promise<{ result: unknown; outputLength?: number }>;
 
 const mockedLoad = jest.mocked(loadReplyContext);
 
-function build(completion = 'Thanks for reaching out! ...') {
+function build(completion = 'Thanks for reaching out! ...', voice = '') {
   const aiText = {
     complete: jest
       .fn<Promise<string>, [string, string]>()
@@ -38,16 +40,26 @@ function build(completion = 'Thanks for reaching out! ...') {
       },
     ),
   };
+  const brandVoice = {
+    promptFor: jest
+      .fn<
+        Promise<string>,
+        [string, { platform?: string; omitHashtags?: boolean }?]
+      >()
+      .mockResolvedValue(voice),
+  };
   // Boundary casts: the service only touches the members faked above.
   const db = {} as unknown as DbType;
   return {
     aiText,
     aiTokens,
+    brandVoice,
     db,
     service: new InboxAiService(
       aiText as unknown as AiTextService,
       aiTokens as unknown as AiTokenService,
       db,
+      brandVoice as unknown as BrandVoiceService,
     ),
   };
 }
@@ -104,6 +116,78 @@ describe('InboxAiService.suggestReply', () => {
     expect(userPrompt).toContain(
       'Here is my current draft reply:\n<draft>\nGracias por escribir\n</draft>\n\nTranslate it into natural English, keeping the meaning and tone. If it is already English, return it unchanged.',
     );
+  });
+
+  it("suggestReply puts the voice for the conversation's platform after the inbox system prompt", async () => {
+    mockedLoad.mockResolvedValue({
+      platform: 'instagram',
+      messages: [{ author: 'customer', text: 'Love this!' }],
+    });
+    const { service, aiText, brandVoice } = build('Thanks!', 'BLOCK');
+    await service.suggestReply(WS, 'user-1', { conversationId: CONV });
+    expect(brandVoice.promptFor).toHaveBeenCalledWith(WS, {
+      platform: 'instagram',
+      omitHashtags: true,
+    });
+    const [system] = aiText.complete.mock.calls[0];
+    expect(system).toBe(`${SYSTEM_PROMPTS.inboxReply}
+
+BLOCK`);
+  });
+
+  it('suggestReply reads the voice for the legacy body too', async () => {
+    const { service, aiText, brandVoice } = build('Thanks!', 'BLOCK');
+    await service.suggestReply('ws-1', 'user-1', {
+      platform: 'facebook',
+      messages: [{ author: 'customer', text: 'hi' }],
+      instruction: 'rephrase',
+      draft: 'hello there',
+    });
+    expect(brandVoice.promptFor).toHaveBeenCalledWith('ws-1', {
+      platform: 'facebook',
+      omitHashtags: true,
+    });
+    expect(aiText.complete.mock.calls[0][0]).toBe(
+      `${SYSTEM_PROMPTS.inboxReply}
+
+BLOCK`,
+    );
+  });
+
+  it('translate_en never reads the voice', async () => {
+    mockedLoad.mockResolvedValue({
+      platform: 'instagram',
+      messages: [{ author: 'customer', text: 'hola' }],
+    });
+    const { service, aiText, brandVoice } = build('Thanks', 'BLOCK');
+    await service.suggestReply(WS, 'user-1', {
+      conversationId: CONV,
+      instruction: 'translate_en',
+      draft: 'Gracias por escribir',
+    });
+    expect(brandVoice.promptFor).not.toHaveBeenCalled();
+    expect(aiText.complete.mock.calls[0][0]).toBe(SYSTEM_PROMPTS.inboxReply);
+  });
+
+  it('an empty voice leaves the inbox system prompt exactly as before', async () => {
+    mockedLoad.mockResolvedValue({
+      platform: 'instagram',
+      messages: [{ author: 'customer', text: 'hi' }],
+    });
+    const { service, aiText } = build('Thanks!', '');
+    await service.suggestReply(WS, 'user-1', { conversationId: CONV });
+    expect(aiText.complete.mock.calls[0][0]).toBe(SYSTEM_PROMPTS.inboxReply);
+  });
+
+  it('an invalid request reads no voice', async () => {
+    const { service, brandVoice } = build('x', 'BLOCK');
+    await expect(
+      service.suggestReply(WS, 'u', {
+        conversationId: CONV,
+        instruction: 'shorten',
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(brandVoice.promptFor).not.toHaveBeenCalled();
   });
 
   it.each(['translate_en', 'rephrase', 'shorten', 'friendly'] as const)(
@@ -167,6 +251,49 @@ describe('InboxAiService.quickReplies', () => {
     expect(userPrompt).toContain('Love this!');
     expect(userPrompt).toMatch(/exactly 3/);
     expect(userPrompt).toMatch(/60/);
+  });
+});
+
+describe('InboxAiService.quickReplies voice', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('quickReplies sends the voice too', async () => {
+    mockedLoad.mockResolvedValue({
+      platform: 'instagram',
+      messages: [{ author: 'customer', text: 'Love this!' }],
+    });
+    const { service, aiText, brandVoice } = build(
+      '["Thanks!","We will DM you","Glad you like it"]',
+      'BLOCK',
+    );
+    await service.quickReplies(WS, 'user-1', {
+      conversationId: CONV,
+      commentId: COMMENT,
+    });
+    expect(brandVoice.promptFor).toHaveBeenCalledWith(WS, {
+      platform: 'instagram',
+      omitHashtags: true,
+    });
+    expect(aiText.complete.mock.calls[0][0]).toBe(
+      `${SYSTEM_PROMPTS.inboxReply}
+
+BLOCK`,
+    );
+  });
+
+  it('quickReplies with an empty voice keeps the system prompt as before', async () => {
+    mockedLoad.mockResolvedValue({
+      platform: 'instagram',
+      messages: [{ author: 'customer', text: 'Love this!' }],
+    });
+    const { service, aiText } = build(
+      '["Thanks!","We will DM you","Glad you like it"]',
+    );
+    await service.quickReplies(WS, 'user-1', {
+      conversationId: CONV,
+      commentId: COMMENT,
+    });
+    expect(aiText.complete.mock.calls[0][0]).toBe(SYSTEM_PROMPTS.inboxReply);
   });
 });
 

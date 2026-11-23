@@ -1,5 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { GroqService } from './groq.service';
+import { SYSTEM_PROMPTS } from './prompts';
 
 // Build a GroqService whose Groq client returns `content` for any completion,
 // so we can exercise the real prompt-building + numbered-list parsing.
@@ -75,5 +76,78 @@ describe('GroqService.generateCaptionVariants', () => {
     });
 
     expect(variants).toEqual(['Just a single unnumbered caption.']);
+  });
+});
+
+describe('GroqService brand voice in the system prompt', () => {
+  const VOICE = 'Brand voice:\n- Tone: warm.';
+  const builders = [
+    ['buildCaptionPrompt', SYSTEM_PROMPTS.captionWriter],
+    ['buildCaptionVariantsPrompt', SYSTEM_PROMPTS.captionWriter],
+    ['buildImprovePrompt', SYSTEM_PROMPTS.contentGenerator],
+  ] as const;
+
+  function build(name: (typeof builders)[number][0], voice?: string) {
+    const service = makeService('');
+    switch (name) {
+      case 'buildCaptionPrompt':
+        return service.buildCaptionPrompt({
+          description: 'idea',
+          platform: 'linkedin',
+          voice,
+        });
+      case 'buildCaptionVariantsPrompt':
+        return service.buildCaptionVariantsPrompt({
+          description: 'idea',
+          platform: 'linkedin',
+          count: 2,
+          voice,
+        });
+      default:
+        return service.buildImprovePrompt({
+          originalPost: 'post',
+          platform: 'linkedin',
+          voice,
+        });
+    }
+  }
+
+  it.each(builders)(
+    '%s: no voice keeps the system constant exactly',
+    (name, constant) => {
+      expect(build(name).system).toBe(constant);
+      expect(build(name, '').system).toBe(constant);
+    },
+  );
+
+  it.each(builders)('%s appends the voice', (name, constant) => {
+    expect(build(name, VOICE).system).toBe(`${constant}\n\n${VOICE}`);
+  });
+
+  it('repurposeContent sends the voice in the system prompt', async () => {
+    const service = makeService('');
+    const spy = jest
+      .spyOn(
+        service as unknown as {
+          generateCompletion: (s: string, u: string) => Promise<string>;
+        },
+        'generateCompletion',
+      )
+      .mockResolvedValue('out');
+    await service.repurposeContent({
+      originalContent: 'text',
+      sourcePlatform: 'linkedin',
+      targetPlatform: 'twitter',
+      voice: VOICE,
+    });
+    expect(spy.mock.calls[0][0]).toBe(
+      `${SYSTEM_PROMPTS.repurposer}\n\n${VOICE}`,
+    );
+    await service.repurposeContent({
+      originalContent: 'text',
+      sourcePlatform: 'linkedin',
+      targetPlatform: 'twitter',
+    });
+    expect(spy.mock.calls[1][0]).toBe(SYSTEM_PROMPTS.repurposer);
   });
 });

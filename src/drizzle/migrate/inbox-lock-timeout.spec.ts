@@ -52,6 +52,8 @@ import { readMigrations } from './runner';
  * 0099 ALTERs users and known_devices: ACCESS EXCLUSIVE, metadata-only ADD
  * COLUMN; the FKs of its two new tables take SHARE ROW EXCLUSIVE on users.
  * 0100 ALTERs users (ACCESS EXCLUSIVE, catalog-only ADD COLUMN).
+ * 0101 creates workspace_brand_voice; its FK takes SHARE ROW EXCLUSIVE on
+ * workspace; the backfill only reads workspace_brand_profiles.
  */
 const FILES = [
   '0046_inbox_items_thread_key.sql',
@@ -81,6 +83,7 @@ const FILES = [
   '0098_user_sessions.sql',
   '0099_two_factor.sql',
   '0100_mfa_lock_escalation.sql',
+  '0101_brand_voice.sql',
 ];
 
 const firstStatement = (sql: string): string =>

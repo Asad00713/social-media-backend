@@ -21,7 +21,7 @@ export type Capability =
    * the workspace rather than just working in it.
    */
   | 'maestro:view-all'
-  /** Change the workspace brand kit: colours, default logo, presets. */
+  /** Change the workspace brand kit and brand voice. */
   | 'brand:manage'
   /** Create, change, share and send Insights reports; they email people outside the workspace. */
   | 'reports:manage'

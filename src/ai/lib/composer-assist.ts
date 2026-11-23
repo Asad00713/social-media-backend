@@ -9,6 +9,8 @@
  * in the post, and a blank is filled only with words the sources contain.
  */
 
+import { withBrandVoice } from '../../brand-voice/lib/with-brand-voice';
+
 export const COMPOSER_PLATFORMS = [
   'twitter',
   'linkedin',
@@ -88,17 +90,22 @@ export function finishPrompt(input: {
   caption: string;
   platform?: ComposerPlatform;
   maxChars?: number;
+  /** The brand-voice block, already built; '' or left out for none. */
+  voice?: string;
 }): { system: string; user: string } {
   return {
-    system: [
-      `You finish a half-written draft of ${platformLine(input.platform)}.`,
-      DATA_RULE,
-      'Reply with ONLY the words that come after the draft, so the draft followed by your reply reads as one finished post. Do not repeat the draft. Do not rewrite it.',
-      'Finish the thought the draft has started, in its language, voice and formatting. Add a closing line or call to action only when the draft is heading toward one.',
-      `${NO_INVENTION} If finishing would need such a fact, end the post without it.`,
-      limitLine(input.maxChars),
-      'No preamble, no quotes, no explanation.',
-    ].join('\n'),
+    system: withBrandVoice(
+      [
+        `You finish a half-written draft of ${platformLine(input.platform)}.`,
+        DATA_RULE,
+        'Reply with ONLY the words that come after the draft, so the draft followed by your reply reads as one finished post. Do not repeat the draft. Do not rewrite it.',
+        'Finish the thought the draft has started, in its language, voice and formatting. Add a closing line or call to action only when the draft is heading toward one.',
+        `${NO_INVENTION} If finishing would need such a fact, end the post without it.`,
+        limitLine(input.maxChars),
+        'No preamble, no quotes, no explanation.',
+      ].join('\n'),
+      input.voice ?? '',
+    ),
     user: `<draft>\n${asData(input.caption)}\n</draft>`,
   };
 }
@@ -131,16 +138,21 @@ export function fitPrompt(input: {
   caption: string;
   platform: ComposerPlatform;
   maxChars: number;
+  /** The brand-voice block for this platform, already built. */
+  voice?: string;
 }): { system: string; user: string } {
   return {
-    system: [
-      `You adapt one caption into ${platformLine(input.platform)}.`,
-      DATA_RULE,
-      'Keep its meaning, its facts, its language, and every link, mention and hashtag it depends on. Change only length, structure and style.',
-      `Hard limit: ${input.maxChars} characters, spaces included. Shorten by tightening the wording, never by dropping a fact the post depends on.`,
-      NO_INVENTION,
-      'Reply with the adapted caption only. No preamble, no quotes.',
-    ].join('\n'),
+    system: withBrandVoice(
+      [
+        `You adapt one caption into ${platformLine(input.platform)}.`,
+        DATA_RULE,
+        'Keep its meaning, its facts, its language, and every link, mention and hashtag it depends on. Change only length, structure and style.',
+        `Hard limit: ${input.maxChars} characters, spaces included. Shorten by tightening the wording, never by dropping a fact the post depends on.`,
+        NO_INVENTION,
+        'Reply with the adapted caption only. No preamble, no quotes.',
+      ].join('\n'),
+      input.voice ?? '',
+    ),
     user: `<caption>\n${asData(input.caption)}\n</caption>`,
   };
 }
@@ -156,6 +168,8 @@ export function linkPrompt(input: {
   siteName?: string;
   platform?: ComposerPlatform;
   maxChars?: number;
+  /** The brand-voice block, already built; '' or left out for none. */
+  voice?: string;
 }): { system: string; user: string } {
   const page = [
     `<url>${asData(input.url)}</url>`,
@@ -168,15 +182,18 @@ export function linkPrompt(input: {
     .filter(Boolean)
     .join('\n');
   return {
-    system: [
-      `You write ${platformLine(input.platform)} that shares a web page.`,
-      DATA_RULE,
-      'The page details come from the page itself. Write only from what they state.',
-      NO_INVENTION,
-      'Put the URL once, on its own line at the end.',
-      limitLine(input.maxChars),
-      'Reply with the post only. No preamble, no quotes.',
-    ].join('\n'),
+    system: withBrandVoice(
+      [
+        `You write ${platformLine(input.platform)} that shares a web page.`,
+        DATA_RULE,
+        'The page details come from the page itself. Write only from what they state.',
+        NO_INVENTION,
+        'Put the URL once, on its own line at the end.',
+        limitLine(input.maxChars),
+        'Reply with the post only. No preamble, no quotes.',
+      ].join('\n'),
+      input.voice ?? '',
+    ),
     user: page,
   };
 }
@@ -198,6 +215,8 @@ export interface BlankFacts {
   sells?: string | null;
   audience?: string | null;
   voice?: string[];
+  /** The brand-voice description: a grounding fact, not a style block. */
+  brandDescription?: string | null;
 }
 
 /** The facts as lines, empty ones dropped. Also the grounding corpus. */
@@ -210,6 +229,9 @@ export function factLines(facts: BlankFacts): string[] {
     facts.sells ? `What the brand sells: ${facts.sells}` : '',
     facts.audience ? `Who it is for: ${facts.audience}` : '',
     facts.voice?.length ? `Brand voice: ${facts.voice.join(', ')}` : '',
+    facts.brandDescription
+      ? `How the brand describes itself: ${facts.brandDescription}`
+      : '',
   ].filter(Boolean);
 }
 

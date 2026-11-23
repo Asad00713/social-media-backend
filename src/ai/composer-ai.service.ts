@@ -3,6 +3,11 @@ import { GroqService } from './groq.service';
 import { AiTextService } from './ai-text.service';
 import { AiTokenService, TokenDeductResult } from './services/ai-token.service';
 import type { Platform, Tone } from './dto/ai.dto';
+import { BrandVoiceService } from '../brand-voice/brand-voice.service';
+import {
+  brandVoicePrompt,
+  hashtagsWanted,
+} from '../brand-voice/lib/brand-voice-prompt';
 
 export interface GeneratePerChannelInput {
   description: string;
@@ -44,6 +49,7 @@ export class ComposerAiService {
     private readonly groq: GroqService,
     private readonly aiText: AiTextService,
     private readonly aiTokens: AiTokenService,
+    private readonly brandVoice: BrandVoiceService,
   ) {}
 
   async generatePerChannel(
@@ -52,6 +58,10 @@ export class ComposerAiService {
     input: GeneratePerChannelInput,
   ): Promise<GeneratePerChannelResult> {
     const { description, platforms, tone, includeHashtags } = input;
+
+    // One read for the whole fan-out, before metering: a voice read is never
+    // charged, and never fails.
+    const source = await this.brandVoice.loadPromptSource(workspaceId);
 
     const { result, usage } = await this.aiTokens.executeWithTokens(
       workspaceId,
@@ -66,8 +76,12 @@ export class ComposerAiService {
               description,
               platform,
               tone,
-              includeHashtags: !!includeHashtags,
+              // The request wins; otherwise the voice decides (undefined with
+              // no voice, which the prompt reads as "no hashtags", as before).
+              includeHashtags: includeHashtags ?? hashtagsWanted(source.voice),
               includeCta: true,
+              // Each channel gets its own tweak.
+              voice: brandVoicePrompt({ ...source, platform }),
             });
             const text = await this.aiText.complete(system, user);
             return { platform, text };
@@ -96,6 +110,9 @@ export class ComposerAiService {
   ): Promise<GenerateCaptionVariantsResult> {
     const { description, platform, tone, count } = input;
 
+    const source = await this.brandVoice.loadPromptSource(workspaceId);
+    const voice = brandVoicePrompt({ ...source, platform });
+
     const { result, usage } = await this.aiTokens.executeWithTokens(
       workspaceId,
       userId,
@@ -108,6 +125,7 @@ export class ComposerAiService {
           platform,
           tone,
           count,
+          voice,
         });
         // ~400 tokens headroom per caption so long platforms don't truncate.
         const raw = await this.aiText.complete(system, user, {

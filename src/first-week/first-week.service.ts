@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import type { BrandProfileRow } from '../drizzle/schema/workspace-brand-profile.schema';
 import { AiTokenService } from '../ai/services/ai-token.service';
+import { BrandVoiceService } from '../brand-voice/brand-voice.service';
 import { ComposerSchedulingService } from '../posts/composer/services/composer-scheduling.service';
 import { DraftStoreService } from '../posts/composer/services/draft-store.service';
 import { FirstWeekQueueService } from './first-week-queue.service';
@@ -42,6 +43,12 @@ function isStalled(profile: BrandProfileRow, now: Date): boolean {
 
 const unique = (ids: string[]): string[] => [...new Set(ids)];
 
+/** Where a stored brand came from, as far as the brand-voice seed cares. */
+type BrandOrigin = Pick<BrandProfileRow, 'source' | 'sourcePlatform'>;
+
+/** A brand the person described: no platform to pass on. */
+const DESCRIBED: BrandOrigin = { source: 'described', sourcePlatform: null };
+
 @Injectable()
 export class FirstWeekService {
   private readonly logger = new Logger(FirstWeekService.name);
@@ -52,6 +59,7 @@ export class FirstWeekService {
     private readonly drafts: DraftStoreService,
     private readonly scheduling: ComposerSchedulingService,
     private readonly tokens: AiTokenService,
+    private readonly brandVoice: BrandVoiceService,
   ) {}
 
   async getState(
@@ -104,6 +112,8 @@ export class FirstWeekService {
       throw err;
     }
 
+    // Each branch seeds the brand voice right after the brand write and
+    // BEFORE a run is enqueued, so the first-week drafts read the seeded voice.
     const existing = await this.repo.getProfile(workspaceId);
     if (!existing) {
       const created = await this.repo.insertProfileIfAbsent(workspaceId, {
@@ -112,19 +122,28 @@ export class FirstWeekService {
         brand,
       });
       if (created) {
+        await this.seedVoice(workspaceId, brand, DESCRIBED);
         await this.start({ workspaceId, mode: 'described', userId });
       } else {
-        // Lost a race with the backfill trigger: treat as an edit.
+        // Lost a race with the backfill trigger: treat as an edit of the
+        // profile it created (read back for its source).
         await this.repo.updateBrand(workspaceId, brand);
+        await this.seedVoice(
+          workspaceId,
+          brand,
+          await this.repo.getProfile(workspaceId),
+        );
       }
     } else if (this.isRetryable(existing, now)) {
       // Effective status is failed-like (including a stalled run): store the
       // brand, then re-run exactly as retry does.
       if (existing.sells) {
         await this.repo.updateBrand(workspaceId, brand);
+        await this.seedVoice(workspaceId, brand, existing);
         await this.rerun(existing, userId);
       } else {
         await this.repo.saveDescribedBrand(workspaceId, brand);
+        await this.seedVoice(workspaceId, brand, DESCRIBED);
         await this.rerun({ ...existing, source: 'described' }, userId);
       }
     } else if (!existing.sells) {
@@ -135,8 +154,33 @@ export class FirstWeekService {
     } else {
       // Fresh drafting or ready: an edit of the words only, no redraft.
       await this.repo.updateBrand(workspaceId, brand);
+      await this.seedVoice(workspaceId, brand, existing);
     }
-    return this.profileViewOrThrow(workspaceId);
+
+    const after = await this.repo.getProfile(workspaceId);
+    if (!after) throw new NotFoundException('First week not found');
+    return this.viewOf(after, new Date());
+  }
+
+  /**
+   * Seeds the brand voice from a brand just stored. An Edit of a learned
+   * brand keeps its source (the Home form is prefilled with the learned
+   * text); a Describe is 'described', so no platform. A learned brand whose
+   * platform is unknown is skipped, as the 0101 backfill skips it: it might
+   * be Threads. A Threads-learned brand is skipped inside seedFromBrand (R7).
+   * Never throws (seedFromBrand catches).
+   */
+  private async seedVoice(
+    workspaceId: string,
+    brand: BrandInput,
+    origin: BrandOrigin | null,
+  ): Promise<void> {
+    if (!origin) return;
+    const learned = origin.source === 'posts';
+    if (learned && !origin.sourcePlatform) return;
+    await this.brandVoice.seedFromBrand(workspaceId, brand, {
+      sourcePlatform: learned ? origin.sourcePlatform : null,
+    });
   }
 
   /** Try again: only from failed, needs_description, no_tokens or a stalled run, in the mode the profile already has. */

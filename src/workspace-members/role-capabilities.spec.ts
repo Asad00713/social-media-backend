@@ -58,6 +58,12 @@ describe('roleCan', () => {
     expect(roleCan('ADMIN', 'reports:manage')).toBe(true);
     expect(roleCan('OWNER', 'reports:manage')).toBe(true);
   });
+
+  /** The brand voice steers every AI draft, so a member cannot rewrite it. */
+  it('keeps brand voice edits ADMIN+', () => {
+    expect(roleCan('MEMBER', 'brand:manage')).toBe(false);
+    expect(roleCan('ADMIN', 'brand:manage')).toBe(true);
+  });
 });
 
 describe('settings capabilities (spec §4.2)', () => {

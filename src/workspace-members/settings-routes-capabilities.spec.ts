@@ -11,6 +11,7 @@ import { WorkspaceMembersController } from './workspace-members.controller';
 import { JoinLinkController } from './join-link.controller';
 import { PublicInvitationsController } from './public-invitations.controller';
 import { LabelsController } from '../labels/labels.controller';
+import { BrandVoiceController } from '../brand-voice/brand-voice.controller';
 import { BillingController } from '../billing/billing.controller';
 import { AccountSettingsController } from '../users/account-settings.controller';
 
@@ -75,6 +76,16 @@ const MATRIX: Array<[string, Ctor, Table, boolean]> = [
       merge: 'labels:manage',
       remove: 'labels:manage',
       restore: 'labels:manage',
+    },
+    true,
+  ],
+  [
+    'BrandVoiceController',
+    BrandVoiceController,
+    {
+      get: 'settings:view',
+      update: 'brand:manage',
+      revert: 'brand:manage',
     },
     true,
   ],

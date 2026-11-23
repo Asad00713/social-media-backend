@@ -102,7 +102,11 @@ class FakeRepo {
 }
 
 function harness(
-  opts: { complete?: string[]; tokenOk?: (n: number) => boolean } = {},
+  opts: {
+    complete?: string[];
+    tokenOk?: (n: number) => boolean;
+    voiceBlock?: string;
+  } = {},
 ) {
   const repo = new FakeRepo();
   const completions = [
@@ -148,13 +152,22 @@ function harness(
       credit: { provider: 'unsplash', author: 'A', pageUrl: 'https://u' },
     })),
   };
+  const brandVoice = {
+    promptFor: jest.fn<Promise<string>, [string, { omitHashtags?: boolean }]>(
+      async () => opts.voiceBlock ?? '',
+    ),
+    seedFromBrand: jest.fn<Promise<void>, [string, unknown, unknown]>(
+      async () => undefined,
+    ),
+  };
   const svc = new FirstWeekRunService(
     repo as any,
     tokens as any,
     ai as any,
     stock as any,
+    brandVoice as any,
   );
-  return { svc, repo, ai, tokens, stock, deducted };
+  return { svc, repo, ai, tokens, stock, deducted, brandVoice };
 }
 
 describe('FirstWeekRunService', () => {
@@ -187,6 +200,43 @@ describe('FirstWeekRunService', () => {
         sourcePlatform: 'instagram',
         postsRead: 4,
       });
+    });
+
+    it('seeds the brand voice from the learned brand with its source platform', async () => {
+      const h = harness();
+      await h.svc.execute({ workspaceId: WS, mode: 'posts' }, NOW);
+      expect(h.brandVoice.seedFromBrand).toHaveBeenCalledTimes(1);
+      expect(h.brandVoice.seedFromBrand).toHaveBeenCalledWith(
+        WS,
+        {
+          sells: 'Small-batch coffee',
+          voice: ['Warm', 'Local'],
+          audience: 'Students nearby',
+        },
+        { sourcePlatform: 'instagram' },
+      );
+    });
+
+    it('reads the voice once per run, without hashtags, and sends it with every draft', async () => {
+      const block = 'Brand voice: Warm.\nFollow it.';
+      const h = harness({ voiceBlock: block });
+      await h.svc.execute({ workspaceId: WS, mode: 'posts' }, NOW);
+      expect(h.brandVoice.promptFor).toHaveBeenCalledTimes(1);
+      expect(h.brandVoice.promptFor).toHaveBeenCalledWith(WS, {
+        omitHashtags: true,
+      });
+      const systems = h.ai.complete.mock.calls
+        .map((c: any[]) => c[0] as string)
+        .slice(1); // call 0 is the brand read
+      expect(systems).toHaveLength(5);
+      for (const s of systems) expect(s.endsWith(`\n\n${block}`)).toBe(true);
+    });
+
+    it('leaves the draft system prompt as it was when the voice is empty', async () => {
+      const h = harness();
+      await h.svc.execute({ workspaceId: WS, mode: 'posts' }, NOW);
+      const system = (h.ai.complete.mock.calls[1] as unknown as string[])[0];
+      expect(system.endsWith('already drafted.')).toBe(true);
     });
 
     it('writes drafts with the spec metadata, slot times in the workspace zone, and image-capable targets only', async () => {

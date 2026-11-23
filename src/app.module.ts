@@ -53,6 +53,7 @@ import { InsightsModule } from './insights/insights.module';
 import { ChannelPageModule } from './channels/channel-page/channel-page.module';
 import { WorkspaceHubModule } from './workspace-hub/workspace-hub.module';
 import { BrandKitModule } from './brand-kit/brand-kit.module';
+import { BrandVoiceModule } from './brand-voice/brand-voice.module';
 import { ShortLinksModule } from './short-links/short-links.module';
 import { NotificationPreferencesModule } from './notification-preferences/notification-preferences.module';
 import { PlatformStatusModule } from './platform-status/platform-status.module';
@@ -132,6 +133,7 @@ import { QUEUES } from './queue/queue.module';
     ChannelPageModule,
     WorkspaceHubModule,
     BrandKitModule,
+    BrandVoiceModule,
     ShortLinksModule,
     NotificationPreferencesModule,
     PlatformStatusModule,

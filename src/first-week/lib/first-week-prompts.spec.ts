@@ -70,4 +70,18 @@ describe('buildDraftPrompt', () => {
     expect(user).not.toContain('Examples of how they write');
     expect(user).not.toContain('Already drafted');
   });
+
+  it("keeps today's system prompt when there is no voice block", () => {
+    const today = buildDraftPrompt(base).system;
+    expect(buildDraftPrompt({ ...base, voiceBlock: '' }).system).toBe(today);
+    expect(today).toContain('no more than two hashtags');
+  });
+
+  it('appends the voice block to the system prompt and keeps its two-hashtag rule', () => {
+    const block = 'Brand voice: Warm.\nFollow it.';
+    const today = buildDraftPrompt(base).system;
+    const { system } = buildDraftPrompt({ ...base, voiceBlock: block });
+    expect(system).toBe(`${today}\n\n${block}`);
+    expect(system).toContain('no more than two hashtags');
+  });
 });
