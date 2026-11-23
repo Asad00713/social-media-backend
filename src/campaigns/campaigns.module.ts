@@ -13,9 +13,14 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
 import { PostsModule } from '../posts/posts.module';
 import { AiModule } from '../ai/ai.module';
 import { QUEUES } from '../queue/queue.module';
+import { BillingModule } from '../billing/billing.module';
 
 @Module({
   imports: [
+    // PlanFeatureGuard (on this module's controllers) needs
+    // SubscriptionLookupService. Plain import, not forwardRef:
+    // nothing in billing imports this module's chain, so no cycle.
+    BillingModule,
     DrizzleModule,
     WorkspaceRoleModule,
     BullModule.registerQueue(

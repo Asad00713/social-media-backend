@@ -15,6 +15,8 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
+import { PlanFeatureGuard } from '../billing/plan/plan-feature.guard';
+import { RequiresFeature } from '../billing/plan/requires-feature.decorator';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { CampaignsService } from './campaigns.service';
@@ -33,7 +35,7 @@ import {
 import { MAX_SPAN_RANGE_DAYS, SpansQueryDto } from './dto/spans-query.dto';
 
 @Controller('campaigns')
-@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard, PlanFeatureGuard)
 export class CampaignsController {
   constructor(private readonly campaignsService: CampaignsService) {}
 
@@ -106,6 +108,10 @@ export class CampaignsController {
     return this.campaignsService.createSimple(workspaceId, user.userId, dto);
   }
 
+  // Gated per route, not on the class: Simple (bulk) campaigns stay on
+  // Free per the matrix, and only Drip costs real AI money per platform
+  // per slot. A class-level gate would take campaigns from Free entirely.
+  @RequiresFeature('campaigns:drip')
   @RequireCapability('posts:publish')
   @Post('workspaces/:workspaceId/drip')
   @HttpCode(HttpStatus.CREATED)
