@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { and, eq, lt, sql } from 'drizzle-orm';
+import { and, eq, gt, lt, sql } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import { chatMessages } from '../../drizzle/schema/chatbot.schema';
 
@@ -14,6 +14,25 @@ import { chatMessages } from '../../drizzle/schema/chatbot.schema';
  * closing a turn that is still streaming would mark a live answer as failed.
  */
 const STRANDED_AFTER_MS = 15 * 60 * 1000;
+
+/**
+ * How far back a pass looks.
+ *
+ * ⚠ This bound is about COST, not correctness. `status = 'running'` is a jsonb
+ * expression with no index behind it, so the date range is the only thing that
+ * can narrow the scan — and a one-sided `createdAt < now - 15m` matches very
+ * nearly the whole of an ever-growing `chat_messages`. That would sequentially
+ * scan the table every ten minutes forever, for a predicate that matches
+ * almost nothing.
+ *
+ * Bounding both ends keeps each pass proportional to recent traffic. Seven
+ * days is generous: a stranded turn is found within ten minutes of the crash
+ * that caused it, and the boot pass catches a deploy immediately, so nothing
+ * legitimately survives unswept for days. A row older than this window would
+ * need the sweeper to have been off for a week — recoverable by widening this
+ * constant once, deliberately, rather than by paying for the scan every pass.
+ */
+const LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Rows per pass. A backlog drains over successive runs rather than in one. */
 const BATCH = 200;
@@ -78,11 +97,17 @@ export class StrandedTurnSweeperService implements OnApplicationBootstrap {
 
   /** Closes abandoned turns. Returns how many were repaired. */
   async sweep(): Promise<number> {
-    const cutoff = new Date(Date.now() - STRANDED_AFTER_MS);
+    const now = Date.now();
+    const cutoff = new Date(now - STRANDED_AFTER_MS);
+    const floor = new Date(now - LOOKBACK_MS);
 
     // `->>` yields text, so the comparison is against the string 'running'.
-    // Indexed by `chat_messages_created_at_idx` on the date half; the status
-    // test runs over what that narrows to, which is near-empty in healthy data.
+    //
+    // The two date bounds are what make this affordable: the status test is an
+    // unindexed jsonb expression, so `chat_messages_created_at_idx` on the
+    // range is the only thing narrowing the scan. Oldest first, so a backlog
+    // larger than one batch drains in a definite order instead of the planner
+    // handing back whichever rows it likes and possibly never reaching some.
     const stranded = await db
       .select({
         id: chatMessages.id,
@@ -94,9 +119,11 @@ export class StrandedTurnSweeperService implements OnApplicationBootstrap {
         and(
           eq(chatMessages.role, 'assistant'),
           lt(chatMessages.createdAt, cutoff),
+          gt(chatMessages.createdAt, floor),
           sql`${chatMessages.metadata}->'maestroTurn'->>'status' = 'running'`,
         ),
       )
+      .orderBy(chatMessages.createdAt)
       .limit(BATCH);
 
     if (stranded.length === 0) return 0;

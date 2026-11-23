@@ -8,6 +8,8 @@ const updates: { id: unknown; set: unknown }[] = [];
 const deletes: unknown[] = [];
 /** Predicates the sweep built, so a test can assert what it filtered on. */
 const wherePredicates: unknown[] = [];
+/** Columns the sweep ordered by, so batch draining can be asserted. */
+const orderedBy: unknown[] = [];
 
 /**
  * Flattens a drizzle `SQL` into readable text. Its chunks hold column objects
@@ -43,7 +45,12 @@ jest.mock('../../drizzle/db', () => ({
       from: () => ({
         where: (predicate: unknown) => {
           wherePredicates.push(predicate);
-          return { limit: () => Promise.resolve(selected) };
+          return {
+            orderBy: (col: unknown) => {
+              orderedBy.push(col);
+              return { limit: () => Promise.resolve(selected) };
+            },
+          };
         },
       }),
     }),
@@ -89,6 +96,7 @@ describe('StrandedTurnSweeperService', () => {
     updates.length = 0;
     deletes.length = 0;
     wherePredicates.length = 0;
+    orderedBy.length = 0;
     service = new StrandedTurnSweeperService();
   });
 
@@ -110,6 +118,30 @@ describe('StrandedTurnSweeperService', () => {
     expect(predicate).toContain('maestroTurn');
     expect(predicate).toContain('running');
     expect(predicate).toContain('created_at');
+  });
+
+  it('bounds the scan at BOTH ends of the date range', async () => {
+    // `status = 'running'` is an unindexed jsonb expression, so the date range
+    // is the only thing that can narrow the scan. A one-sided `createdAt <
+    // now - 15m` matches very nearly the whole of an ever-growing
+    // `chat_messages`, which would sequentially scan the table every ten
+    // minutes for a predicate that matches almost nothing.
+    await service.sweep();
+
+    const predicate = describeSql(wherePredicates[0]);
+    // Two comparisons on the same column: one upper bound, one lower.
+    expect(predicate.match(/created_at/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(predicate).toContain('<');
+    expect(predicate).toContain('>');
+  });
+
+  it('takes the oldest stranded turns first', async () => {
+    // Without an order, a backlog bigger than one batch drains in whatever
+    // order the planner likes, and some rows may never be reached.
+    await service.sweep();
+
+    expect(orderedBy).toHaveLength(1);
+    expect(describeSql(orderedBy[0])).toContain('created_at');
   });
 
   it('closes a stranded turn as failed and keeps what it wrote', async () => {
