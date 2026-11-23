@@ -100,14 +100,21 @@ function make(over: { profile?: any; rows?: any[] } = {}) {
       resetsAt: new Date('2026-11-01T00:00:00Z'),
     })),
   };
+  const brandVoice = {
+    promptFor: jest.fn(async () => ''),
+    seedFromBrand: jest.fn<Promise<void>, [string, unknown, unknown]>(
+      async () => undefined,
+    ),
+  };
   const svc = new FirstWeekService(
     repo as any,
     queue as any,
     drafts as any,
     scheduling as any,
     tokens as any,
+    brandVoice as any,
   );
-  return { svc, repo, queue, drafts, scheduling, state };
+  return { svc, repo, queue, drafts, scheduling, state, brandVoice };
 }
 
 describe('FirstWeekService.getState', () => {
@@ -238,6 +245,57 @@ describe('FirstWeekService.saveBrand', () => {
       workspaceId: WS,
       mode: 'described',
       userId: 'u1',
+    });
+  });
+
+  it('Describe seeds the brand voice with no source platform', async () => {
+    const { svc, repo, brandVoice } = make({ profile: null });
+    repo.getProfile
+      .mockResolvedValueOnce(null as any)
+      .mockResolvedValue(profile({ source: 'described', status: 'drafting' }));
+    await svc.saveBrand(WS, 'u1', dto);
+    expect(brandVoice.seedFromBrand).toHaveBeenCalledTimes(1);
+    expect(brandVoice.seedFromBrand).toHaveBeenCalledWith(WS, clean, {
+      sourcePlatform: null,
+    });
+  });
+
+  it('an Edit of an Instagram-learned brand keeps its source platform', async () => {
+    const { svc, brandVoice } = make();
+    await svc.saveBrand(WS, 'u1', dto);
+    expect(brandVoice.seedFromBrand).toHaveBeenCalledWith(WS, clean, {
+      sourcePlatform: 'instagram',
+    });
+  });
+
+  it('an Edit of a Threads-learned brand passes threads, so nothing is seeded', async () => {
+    const { svc, brandVoice } = make({
+      profile: profile({ source: 'posts', sourcePlatform: 'threads' }),
+    });
+    await svc.saveBrand(WS, 'u1', dto);
+    expect(brandVoice.seedFromBrand).toHaveBeenCalledWith(WS, clean, {
+      sourcePlatform: 'threads',
+    });
+  });
+
+  it('describing a never-learned brand seeds with no platform, even from a posts profile', async () => {
+    const { svc, repo, brandVoice } = make({
+      profile: profile({
+        sells: null,
+        voice: [],
+        audience: null,
+        status: 'needs_description',
+        sourcePlatform: null,
+      }),
+    });
+    repo.saveDescribedBrand.mockImplementation(async () => {
+      repo.getProfile.mockResolvedValue(
+        profile({ source: 'described', sourcePlatform: null }),
+      );
+    });
+    await svc.saveBrand(WS, 'u1', dto);
+    expect(brandVoice.seedFromBrand).toHaveBeenCalledWith(WS, clean, {
+      sourcePlatform: null,
     });
   });
 

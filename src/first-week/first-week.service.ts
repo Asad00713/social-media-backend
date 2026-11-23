@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import type { BrandProfileRow } from '../drizzle/schema/workspace-brand-profile.schema';
 import { AiTokenService } from '../ai/services/ai-token.service';
+import { BrandVoiceService } from '../brand-voice/brand-voice.service';
 import { ComposerSchedulingService } from '../posts/composer/services/composer-scheduling.service';
 import { DraftStoreService } from '../posts/composer/services/draft-store.service';
 import { FirstWeekQueueService } from './first-week-queue.service';
@@ -52,6 +53,7 @@ export class FirstWeekService {
     private readonly drafts: DraftStoreService,
     private readonly scheduling: ComposerSchedulingService,
     private readonly tokens: AiTokenService,
+    private readonly brandVoice: BrandVoiceService,
   ) {}
 
   async getState(
@@ -136,7 +138,16 @@ export class FirstWeekService {
       // Fresh drafting or ready: an edit of the words only, no redraft.
       await this.repo.updateBrand(workspaceId, brand);
     }
-    return this.profileViewOrThrow(workspaceId);
+
+    // An Edit of a learned brand keeps its source (the Home form is prefilled
+    // with the learned text); a first Describe is 'described', so no platform.
+    // A Threads-learned brand is skipped inside seedFromBrand (R7).
+    const after = await this.repo.getProfile(workspaceId);
+    await this.brandVoice.seedFromBrand(workspaceId, brand, {
+      sourcePlatform: after?.source === 'posts' ? after.sourcePlatform : null,
+    });
+    if (!after) throw new NotFoundException('First week not found');
+    return this.viewOf(after, new Date());
   }
 
   /** Try again: only from failed, needs_description, no_tokens or a stalled run, in the mode the profile already has. */

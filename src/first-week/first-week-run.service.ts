@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { AiTextService } from '../ai/ai-text.service';
 import { AiTokenService } from '../ai/services/ai-token.service';
+import { BrandVoiceService } from '../brand-voice/brand-voice.service';
 import { FirstWeekRepository, type NewDraftRow } from './first-week.repository';
 import { FirstWeekStockImageService } from './first-week-stock-image.service';
 import type { BrandInput, FirstWeekJobData } from './first-week.types';
@@ -71,6 +72,7 @@ export class FirstWeekRunService {
     private readonly tokens: AiTokenService,
     private readonly ai: AiTextService,
     private readonly stock: FirstWeekStockImageService,
+    private readonly brandVoice: BrandVoiceService,
   ) {}
 
   async execute(
@@ -191,6 +193,10 @@ export class FirstWeekRunService {
             sourcePlatform: source.platform,
             postsRead: source.captions.length,
           });
+          // Never throws; skips a Threads-learned brand (R7).
+          await this.brandVoice.seedFromBrand(workspaceId, learned, {
+            sourcePlatform: source.platform,
+          });
           if (source.platform === 'instagram' && source.profilePictureUrl) {
             await this.repo.setWorkspaceLogoIfEmpty(
               workspaceId,
@@ -234,6 +240,11 @@ export class FirstWeekRunService {
     const targets = selectTargets(channels);
     const platforms = [...new Set(targets.map((t) => t.platform))];
 
+    // Read once per run (never throws; '' when the workspace has no voice).
+    const voiceBlock = await this.brandVoice.promptFor(workspaceId, {
+      omitHashtags: true,
+    });
+
     const existing = await this.repo.listFirstWeekDrafts(workspaceId);
     const doneSlots = new Set<number>();
     const captions: string[] = [];
@@ -261,6 +272,7 @@ export class FirstWeekRunService {
         sampleCaptions: samples,
         previousCaptions: captions,
         platforms,
+        voiceBlock,
       });
       // The stock lookup and the INSERT run inside the metered callback:
       // tokens are deducted only after the row is safely written, so a failed

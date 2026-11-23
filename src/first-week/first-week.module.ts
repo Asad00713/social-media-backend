@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AiModule } from '../ai/ai.module';
+import { BrandVoiceModule } from '../brand-voice/brand-voice.module';
 import { ChannelsModule } from '../channels/channels.module';
 import { PexelsModule } from '../pexels/pexels.module';
 import { ComposerModule } from '../posts/composer/composer.module';
@@ -18,12 +19,15 @@ import { FirstWeekTriggerModule } from './first-week-trigger.module';
  *   - AiModule: AiTextService + AiTokenService (the run is metered).
  *   - ChannelsModule: UnsplashService.  PexelsModule: PexelsService.
  *   - ComposerModule: DraftStoreService + ComposerSchedulingService.
+ *   - BrandVoiceModule: the workspace's voice, read once per draft run and seeded
+ *     from the brand first week learns or is given.
  *   - WorkspaceRoleModule: the capability guard only (not WorkspaceMembersModule,
  *     which pulls Billing into a cycle; see its docs).
  */
 @Module({
   imports: [
     AiModule,
+    BrandVoiceModule,
     ChannelsModule,
     PexelsModule,
     ComposerModule,
