@@ -140,5 +140,12 @@ describe('brand-voice types', () => {
         ].sort(),
       );
     });
+
+    it('answers tone in canonical order whatever order the row stored', () => {
+      // A first-week seed or the 0101 backfill stores voice order.
+      const seeded = row({ tone: ['Bold', 'Warm'] });
+      expect(fieldsOf(seeded).tone).toEqual(['Warm', 'Bold']);
+      expect(toBrandVoice(seeded).tone).toEqual(['Warm', 'Bold']);
+    });
   });
 });

@@ -1,7 +1,10 @@
 import { HttpException, Logger } from '@nestjs/common';
 import type { DbType } from '../drizzle/db';
-import { BrandVoiceService } from './brand-voice.service';
-import { DEFAULT_BRAND_VOICE_FIELDS } from './brand-voice.types';
+import { BrandVoiceService, EMPTY_PROMPT_SOURCE } from './brand-voice.service';
+import {
+  DEFAULT_BRAND_VOICE_FIELDS,
+  type BrandVoiceRow,
+} from './brand-voice.types';
 
 const WS = '00000000-0000-4000-8000-000000000001';
 const SECRET = 'Hand-poured soy candles';
@@ -28,6 +31,7 @@ function query(rows: unknown[]): unknown {
     'limit',
     'values',
     'onConflictDoNothing',
+    'set',
     'returning',
   ]) {
     q[m] = () => q;
@@ -35,6 +39,43 @@ function query(rows: unknown[]): unknown {
   q.then = (ok: (v: unknown) => unknown, ko: never) =>
     Promise.resolve(rows).then(ok, ko);
   return q;
+}
+
+const CONFLICT_BODY = {
+  statusCode: 409,
+  error: 'Conflict',
+  code: 'VERSION_CONFLICT',
+  message: 'Someone else just changed the brand voice. Reload to see it.',
+};
+
+function storedRow(over: Partial<BrandVoiceRow> = {}): BrandVoiceRow {
+  return {
+    workspaceId: WS,
+    ...DEFAULT_BRAND_VOICE_FIELDS,
+    tone: ['Warm'],
+    version: 2,
+    previous: { ...DEFAULT_BRAND_VOICE_FIELDS },
+    createdAt: new Date('2026-11-23T00:00:00Z'),
+    updatedAt: new Date('2026-11-23T00:00:00Z'),
+    ...over,
+  };
+}
+
+/** A db whose transaction finds `row` and whose UPDATE matches nothing. */
+function dbWhoseUpdateMatchesNothing(row: BrandVoiceRow): DbType {
+  const tx = { select: () => query([row]), update: () => query([]) };
+  return {
+    transaction: (fn: (t: typeof tx) => Promise<unknown>) => fn(tx),
+  } as unknown as DbType;
+}
+
+async function rejection(p: Promise<unknown>): Promise<HttpException> {
+  const err = await p.then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+  expect(err).toBeInstanceOf(HttpException);
+  return err as HttpException;
 }
 
 describe('BrandVoiceService', () => {
@@ -104,11 +145,49 @@ describe('BrandVoiceService', () => {
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(HttpException);
     expect((err as HttpException).getStatus()).toBe(409);
-    expect((err as HttpException).getResponse()).toEqual({
-      statusCode: 409,
-      error: 'Conflict',
-      code: 'VERSION_CONFLICT',
-      message: 'Someone else just changed the brand voice. Reload to see it.',
-    });
+    expect((err as HttpException).getResponse()).toEqual(CONFLICT_BODY);
+  });
+
+  it('a save whose version-guarded UPDATE matches no row is 409 VERSION_CONFLICT', async () => {
+    const svc = new BrandVoiceService(dbWhoseUpdateMatchesNothing(storedRow()));
+    const err = await rejection(svc.update(WS, { version: 2, tone: ['Bold'] }));
+    expect(err.getStatus()).toBe(409);
+    expect(err.getResponse()).toEqual(CONFLICT_BODY);
+  });
+
+  it('an Undo whose version-guarded UPDATE matches no row is 409 VERSION_CONFLICT', async () => {
+    const svc = new BrandVoiceService(dbWhoseUpdateMatchesNothing(storedRow()));
+    const err = await rejection(svc.revert(WS, 2));
+    expect(err.getStatus()).toBe(409);
+    expect(err.getResponse()).toEqual(CONFLICT_BODY);
+  });
+
+  it('EMPTY_PROMPT_SOURCE is deep-frozen and the fallback is a mutable copy', async () => {
+    const v = EMPTY_PROMPT_SOURCE.voice;
+    for (const o of [
+      EMPTY_PROMPT_SOURCE,
+      EMPTY_PROMPT_SOURCE.savedHashtags,
+      v,
+      v.tone,
+      v.wordsUse,
+      v.wordsAvoid,
+      v.channelTweaks,
+    ]) {
+      expect(Object.isFrozen(o)).toBe(true);
+    }
+
+    const db = {
+      select: () => {
+        throw new Error('select failed');
+      },
+    } as unknown as DbType;
+    const source = await new BrandVoiceService(db).loadPromptSource(WS);
+    expect(source).toEqual(EMPTY_PROMPT_SOURCE);
+    expect(source).not.toBe(EMPTY_PROMPT_SOURCE);
+    expect(Object.isFrozen(source.voice)).toBe(false);
+    source.voice.tone.push('Bold');
+    source.savedHashtags.push('#x');
+    expect(EMPTY_PROMPT_SOURCE.voice.tone).toEqual([]);
+    expect(DEFAULT_BRAND_VOICE_FIELDS.tone).toEqual([]);
   });
 });

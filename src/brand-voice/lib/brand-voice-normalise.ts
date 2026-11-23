@@ -1,8 +1,7 @@
 import {
-  BRAND_TONES,
-  BrandTone,
   BrandVoiceFields,
   ChannelTweaks,
+  sortTones,
   TWEAK_PLATFORMS,
   TweakPlatform,
 } from '../brand-voice.types';
@@ -14,9 +13,7 @@ import {
  */
 
 /** Tones in the canonical BRAND_TONES order, each once. */
-export function sortTones(tones: readonly BrandTone[]): BrandTone[] {
-  return BRAND_TONES.filter((t) => tones.includes(t));
-}
+export { sortTones };
 
 /** Trim and collapse every whitespace run to one space. */
 export function normaliseText(s: string): string {

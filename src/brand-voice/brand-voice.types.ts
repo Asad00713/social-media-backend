@@ -1,6 +1,8 @@
-import type {
-  BrandVoiceFields,
-  BrandVoiceRow,
+import {
+  BRAND_TONES,
+  type BrandTone,
+  type BrandVoiceFields,
+  type BrandVoiceRow,
 } from '../drizzle/schema/workspace-brand-voice.schema';
 
 export {
@@ -74,9 +76,22 @@ export function codePointLength(s: string): number {
   return Array.from(s).length;
 }
 
+/**
+ * Tones in the canonical BRAND_TONES order, each once. Lives here, not in
+ * lib/brand-voice-normalise.ts (which re-exports it), because normalise
+ * imports this file and every read goes through `copyFields`.
+ */
+export function sortTones(tones: readonly BrandTone[]): BrandTone[] {
+  return BRAND_TONES.filter((t) => tones.includes(t));
+}
+
+/**
+ * A copy of the seven fields, tone in canonical order: a row seeded or
+ * backfilled from first-week stores the order the voice words gave.
+ */
 function copyFields(f: BrandVoiceFields): BrandVoiceFields {
   return {
-    tone: [...f.tone],
+    tone: sortTones(f.tone),
     description: f.description,
     wordsUse: [...f.wordsUse],
     wordsAvoid: [...f.wordsAvoid],

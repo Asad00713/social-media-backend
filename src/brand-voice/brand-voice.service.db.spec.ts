@@ -382,6 +382,31 @@ describeDb('BrandVoiceService (database)', () => {
     });
   });
 
+  it('a seed stored in voice order is answered in canonical tone order', async () => {
+    await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const { workspaceId: ws } = await seedWorkspace(client);
+      const svc = new BrandVoiceService(db);
+      await svc.seedFromBrand(
+        ws,
+        { sells: 'Candles', voice: ['bold', 'warm'], audience: null },
+        { sourcePlatform: null },
+      );
+
+      expect((await storedRow(client, ws))?.tone).toEqual(['Bold', 'Warm']);
+      expect((await svc.get(ws)).tone).toEqual(['Warm', 'Bold']);
+      expect((await svc.loadPromptSource(ws)).voice.tone).toEqual([
+        'Warm',
+        'Bold',
+      ]);
+      // The next save snapshots the canonical order too.
+      await svc.update(ws, { version: 2, emojiLevel: 'none' });
+      expect((await storedRow(client, ws))?.previous?.tone).toEqual([
+        'Warm',
+        'Bold',
+      ]);
+    });
+  });
+
   it('seedFromBrand writes nothing for a Threads-learned brand or an empty seed', async () => {
     await withRollbackDb(MIGRATIONS, async (db, client) => {
       const svc = new BrandVoiceService(db);

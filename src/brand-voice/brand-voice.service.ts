@@ -29,19 +29,32 @@ export interface BrandVoicePromptSource {
   savedHashtags: string[];
 }
 
-/** The source of a workspace with no voice, and the fallback on any failure. */
-export const EMPTY_PROMPT_SOURCE: BrandVoicePromptSource = {
-  voice: DEFAULT_BRAND_VOICE_FIELDS,
-  savedHashtags: [],
-};
+/**
+ * The source of a workspace with no voice. Deep-frozen, so a spec stub that
+ * hands it out cannot be mutated by the code under test; the service itself
+ * always answers a fresh copy (`emptyPromptSource`).
+ */
+export const EMPTY_PROMPT_SOURCE: Readonly<BrandVoicePromptSource> =
+  Object.freeze({
+    voice: Object.freeze({
+      ...DEFAULT_BRAND_VOICE_FIELDS,
+      tone: Object.freeze([...DEFAULT_BRAND_VOICE_FIELDS.tone]),
+      wordsUse: Object.freeze([...DEFAULT_BRAND_VOICE_FIELDS.wordsUse]),
+      wordsAvoid: Object.freeze([...DEFAULT_BRAND_VOICE_FIELDS.wordsAvoid]),
+      channelTweaks: Object.freeze({
+        ...DEFAULT_BRAND_VOICE_FIELDS.channelTweaks,
+      }),
+    }) as BrandVoiceFields,
+    savedHashtags: Object.freeze([]) as unknown as string[],
+  });
 
 /** How many hashtag snippets feed "Use saved groups". */
 const SAVED_GROUPS_LIMIT = 10;
 
-/** A fresh copy, so no caller can alias the shared defaults. */
+/** A fresh, mutable copy of EMPTY_PROMPT_SOURCE. */
 function emptyPromptSource(): BrandVoicePromptSource {
   return {
-    voice: snapshotFields(DEFAULT_BRAND_VOICE_FIELDS),
+    voice: snapshotFields(EMPTY_PROMPT_SOURCE.voice),
     savedHashtags: [],
   };
 }
@@ -156,8 +169,15 @@ export class BrandVoiceService {
           version: current.version + 1,
           updatedAt: sql`now()`,
         })
-        .where(eq(workspaceBrandVoice.workspaceId, workspaceId))
+        .where(
+          and(
+            eq(workspaceBrandVoice.workspaceId, workspaceId),
+            // Guards the write on its own, not only through the row lock.
+            eq(workspaceBrandVoice.version, current.version),
+          ),
+        )
         .returning();
+      if (!updated) throw versionConflict();
       return updated;
     });
     return toBrandVoice(row);
@@ -186,8 +206,15 @@ export class BrandVoiceService {
           version: current.version + 1,
           updatedAt: sql`now()`,
         })
-        .where(eq(workspaceBrandVoice.workspaceId, workspaceId))
+        .where(
+          and(
+            eq(workspaceBrandVoice.workspaceId, workspaceId),
+            // Guards the write on its own, not only through the row lock.
+            eq(workspaceBrandVoice.version, current.version),
+          ),
+        )
         .returning();
+      if (!updated) throw versionConflict();
       return updated;
     });
     return toBrandVoice(row);
