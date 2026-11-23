@@ -4,6 +4,7 @@ import { AiController } from './ai.controller';
 import { AiModule } from './ai.module';
 import { InboxAiService } from './inbox-ai.service';
 import { DRIZZLE } from '../drizzle/drizzle.module';
+import { BrandVoiceService } from '../brand-voice/brand-voice.service';
 
 // D4: DI proof without Redis. AiModule has no queue providers; only the DB
 // pool is replaced by a stub.
@@ -20,6 +21,9 @@ describe('AiModule wiring', () => {
     const svc = moduleRef.get(InboxAiService);
     expect(svc).toBeInstanceOf(InboxAiService);
     expect((svc as unknown as { db: unknown }).db).toBe(db);
+    expect((svc as unknown as { brandVoice: unknown }).brandVoice).toBe(
+      moduleRef.get(BrandVoiceService, { strict: false }),
+    );
     await moduleRef.close();
   });
 });
