@@ -7,6 +7,7 @@ import {
   PLATFORM_OPTIONS,
   TONE_OPTIONS,
 } from './prompts';
+import { withBrandVoice } from '../brand-voice/lib/with-brand-voice';
 
 export type Platform = (typeof PLATFORM_OPTIONS)[number];
 export type Tone = (typeof TONE_OPTIONS)[number];
@@ -24,6 +25,8 @@ export interface GenerateCaptionOptions {
   tone?: Tone;
   includeHashtags?: boolean;
   includeCta?: boolean;
+  /** The workspace's brand-voice block (`brandVoicePrompt`); '' or absent for none. */
+  voice?: string;
 }
 
 export interface GenerateCaptionVariantsOptions {
@@ -31,6 +34,8 @@ export interface GenerateCaptionVariantsOptions {
   platform: Platform;
   count: number;
   tone?: Tone;
+  /** The workspace's brand-voice block; '' or absent for none. */
+  voice?: string;
 }
 
 export interface GenerateHashtagsOptions {
@@ -61,12 +66,16 @@ export interface RepurposeContentOptions {
   originalContent: string;
   sourcePlatform: Platform;
   targetPlatform: Platform;
+  /** The workspace's brand-voice block; '' or absent for none. */
+  voice?: string;
 }
 
 export interface ImprovePostOptions {
   originalPost: string;
   platform: Platform;
   improvementFocus?: string;
+  /** The workspace's brand-voice block; '' or absent for none. */
+  voice?: string;
 }
 
 export interface GenerateThreadOptions {
@@ -242,7 +251,7 @@ export class GroqService {
     system: string;
     user: string;
   } {
-    const { description, platform, tone, includeHashtags, includeCta } =
+    const { description, platform, tone, includeHashtags, includeCta, voice } =
       options;
 
     const user = USER_PROMPTS.generateCaption(
@@ -253,7 +262,10 @@ export class GroqService {
       includeCta,
     );
 
-    return { system: SYSTEM_PROMPTS.captionWriter, user };
+    return {
+      system: withBrandVoice(SYSTEM_PROMPTS.captionWriter, voice ?? ''),
+      user,
+    };
   }
 
   /**
@@ -273,7 +285,7 @@ export class GroqService {
     system: string;
     user: string;
   } {
-    const { description, platform, count, tone } = options;
+    const { description, platform, count, tone, voice } = options;
 
     const user = USER_PROMPTS.generateCaptionVariants(
       description,
@@ -282,7 +294,10 @@ export class GroqService {
       tone,
     );
 
-    return { system: SYSTEM_PROMPTS.captionWriter, user };
+    return {
+      system: withBrandVoice(SYSTEM_PROMPTS.captionWriter, voice ?? ''),
+      user,
+    };
   }
 
   /**
@@ -475,7 +490,7 @@ export class GroqService {
    * Repurpose content from one platform to another
    */
   async repurposeContent(options: RepurposeContentOptions): Promise<string> {
-    const { originalContent, sourcePlatform, targetPlatform } = options;
+    const { originalContent, sourcePlatform, targetPlatform, voice } = options;
 
     const userPrompt = USER_PROMPTS.repurposeContent(
       originalContent,
@@ -483,7 +498,10 @@ export class GroqService {
       targetPlatform,
     );
 
-    return this.generateCompletion(SYSTEM_PROMPTS.repurposer, userPrompt);
+    return this.generateCompletion(
+      withBrandVoice(SYSTEM_PROMPTS.repurposer, voice ?? ''),
+      userPrompt,
+    );
   }
 
   /**
@@ -494,7 +512,7 @@ export class GroqService {
     system: string;
     user: string;
   } {
-    const { originalPost, platform, improvementFocus } = options;
+    const { originalPost, platform, improvementFocus, voice } = options;
 
     const user = USER_PROMPTS.improvePost(
       originalPost,
@@ -502,7 +520,10 @@ export class GroqService {
       improvementFocus,
     );
 
-    return { system: SYSTEM_PROMPTS.contentGenerator, user };
+    return {
+      system: withBrandVoice(SYSTEM_PROMPTS.contentGenerator, voice ?? ''),
+      user,
+    };
   }
 
   /**
@@ -700,7 +721,9 @@ Provide ${count} variations, numbered 1 through ${count}. Each should be complet
         isStale && typeof parsed.reason === 'string' ? parsed.reason : null;
       return { isStale, reason };
     } catch (error) {
-      this.logger.warn(`checkFreshness: failed to parse Groq response: ${error}`);
+      this.logger.warn(
+        `checkFreshness: failed to parse Groq response: ${error}`,
+      );
       return { isStale: false, reason: null };
     }
   }

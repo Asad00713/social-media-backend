@@ -12,6 +12,10 @@ import { AiTokenService } from './services/ai-token.service';
 import { ElevenLabsSttService } from './services/elevenlabs-stt.service';
 import { ComposerAiService } from './composer-ai.service';
 import { InboxAiService } from './inbox-ai.service';
+import {
+  BrandVoiceService,
+  EMPTY_PROMPT_SOURCE,
+} from '../brand-voice/brand-voice.service';
 
 const WS = '11111111-1111-4111-8111-111111111111';
 const URL = `/ai/workspaces/${WS}/transcribe`;
@@ -100,6 +104,14 @@ describe('AiController transcribe over HTTP', () => {
         { provide: ConfigService, useValue: { get: () => 'test-key' } },
         { provide: ComposerAiService, useValue: {} },
         { provide: InboxAiService, useValue: {} },
+        {
+          provide: BrandVoiceService,
+          useValue: {
+            loadPromptSource: jest.fn(() =>
+              Promise.resolve({ ...EMPTY_PROMPT_SOURCE }),
+            ),
+          },
+        },
       ],
     })
       .overrideGuard(JwtAuthGuard)

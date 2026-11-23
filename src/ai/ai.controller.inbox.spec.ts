@@ -12,6 +12,10 @@ import { AiTokenService } from './services/ai-token.service';
 import { ElevenLabsSttService } from './services/elevenlabs-stt.service';
 import { ComposerAiService } from './composer-ai.service';
 import { InboxAiService } from './inbox-ai.service';
+import {
+  BrandVoiceService,
+  EMPTY_PROMPT_SOURCE,
+} from '../brand-voice/brand-voice.service';
 
 const WS = '11111111-1111-4111-8111-111111111111';
 const CONV = '22222222-2222-4222-8222-222222222222';
@@ -35,6 +39,14 @@ describe('AiController inbox routes over HTTP', () => {
         { provide: ElevenLabsSttService, useValue: {} },
         { provide: ComposerAiService, useValue: {} },
         { provide: InboxAiService, useValue: inboxAi },
+        {
+          provide: BrandVoiceService,
+          useValue: {
+            loadPromptSource: jest.fn(() =>
+              Promise.resolve({ ...EMPTY_PROMPT_SOURCE }),
+            ),
+          },
+        },
       ],
     })
       .overrideGuard(JwtAuthGuard)
