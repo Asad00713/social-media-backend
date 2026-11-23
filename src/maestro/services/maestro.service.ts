@@ -149,6 +149,14 @@ export type MaestroSseEvent =
       data: { tool: string; output: unknown; isError: boolean };
     }
   | { event: 'message_stream'; data: { token: string } }
+  /**
+   * The turn's assistant row has been opened; this is its id.
+   *
+   * Emitted before any text, so a client knows what to call the reply it is
+   * about to receive even if the turn is stopped mid-stream — `message_complete`
+   * carries the same id, and never arrives on an abort.
+   */
+  | { event: 'message_start'; data: { messageId: string } }
   | { event: 'message_complete'; data: { content: string; messageId: string } }
   | { event: 'followups'; data: { suggestions: string[] } }
   | { event: 'title'; data: { title: string } }
@@ -961,6 +969,31 @@ export class MaestroService {
         return { role: m.role as 'user' | 'assistant', content };
       });
 
+    // The turn record.
+    //
+    // The assistant row is opened HERE, before the model runs, and finished in
+    // place when the turn ends. It used to be inserted only once a reply
+    // existed, which left a turn with no identity while it was the only thing
+    // happening: a Stop produced text the client could not name, and a crash
+    // or a deploy left a user question on disk with no reply and no trace that
+    // anything had ever run — `finally` never fires for a killed process, so
+    // nothing could tell an abandoned turn from one that was never asked.
+    //
+    // Opening it first gives the turn an id (emitted as `message_start`, the
+    // id every later stop/continue/retry refers to) and a status a sweeper can
+    // find. It also collapses the old insert-vs-insert race between the normal
+    // save and the abort rescue: there is one row, and both paths update it.
+    //
+    // ⚠ Deliberately AFTER the history build above, which drops its last row
+    // as "the user turn just persisted". Inserting before it would make this
+    // empty row the one dropped, and replay the user's message twice.
+    //
+    // ⚠ Declared out here, but opened INSIDE the try below: the `finally` has
+    // to be able to close this row, and a row created before the try would be
+    // left `running` forever if the turn were stopped on the very first yield.
+    const turnStartedAt = new Date().toISOString();
+    let turnId: string | null = null;
+
     // First message in a fresh conversation → generate a title (Groq, concurrent
     // with the agent run so it adds no latency to the response stream).
     const isFirstTurn = history.length === 0 && !conversation.title;
@@ -1117,6 +1150,38 @@ export class MaestroService {
     const runtime = this.runtimes.forKind(params.runtime ?? 'sdk');
 
     try {
+      // The turn record.
+      //
+      // The assistant row is opened BEFORE the model runs and finished in
+      // place when the turn ends. It used to be inserted only once a reply
+      // existed, which left a turn with no identity while it was the only
+      // thing happening: a Stop produced text the client could not name, and a
+      // crash or a deploy left a user question on disk with no reply and no
+      // trace that anything had ever run — `finally` never fires for a killed
+      // process, so nothing could tell an abandoned turn from one that was
+      // never asked.
+      //
+      // Opening it first gives the turn an id (emitted as `message_start`, the
+      // id every later stop/continue/retry refers to) and a status a sweeper
+      // can find. It also collapses the old insert-vs-insert race between the
+      // normal save and the abort rescue: there is one row, and both paths
+      // update it.
+      const turnRow = await this.conversations.addMessage(
+        conversationId,
+        'assistant',
+        null,
+        {
+          maestroTurn: {
+            status: 'running' as const,
+            startedAt: turnStartedAt,
+            model,
+          },
+        },
+        model,
+      );
+      turnId = turnRow.id;
+      yield { event: 'message_start', data: { messageId: turnId } };
+
       for await (const ev of runtime.run(input)) {
         if (signal.aborted) break;
         switch (ev.type) {
@@ -1294,6 +1359,10 @@ export class MaestroService {
             }
           : undefined;
 
+      // Non-null from here: the row is opened at the top of this try, and a
+      // failure to open it throws rather than falling through.
+      const rowId = turnId as string;
+
       if (
         displayText ||
         maestroMedia ||
@@ -1301,22 +1370,36 @@ export class MaestroService {
         maestroWeb ||
         maestroNavigated
       ) {
-        const saved = await this.conversations.addMessage(
-          conversationId,
-          'assistant',
-          displayText || null,
-          metadata,
-          model,
-          usage.outputTokens,
-        );
+        // Finish the row this turn opened, rather than inserting a second one.
+        await this.conversations.updateMessage(rowId, {
+          content: displayText || null,
+          metadata: {
+            ...(metadata ?? {}),
+            maestroTurn: {
+              status: 'complete' as const,
+              startedAt: turnStartedAt,
+              endedAt: new Date().toISOString(),
+              model,
+            },
+          },
+          tokenCount: usage.outputTokens,
+        });
         // Tells the abort rescue in `finally` that this turn is already on
         // disk. Without it, a Stop pressed between this line and the end
-        // of the generator would write the answer a second time.
+        // of the generator would overwrite the finished answer with the
+        // partial text it had buffered.
         savedAssistant = true;
         yield {
           event: 'message_complete',
-          data: { content: displayText, messageId: saved.id },
+          data: { content: displayText, messageId: rowId },
         };
+      } else {
+        // The turn produced nothing to show — no text, no media, no question.
+        // Its row was opened before the model ran, so leaving it would render
+        // as an empty bubble forever. Drop it; the transcript is unchanged
+        // from how this case behaved before the row existed at all.
+        savedAssistant = true;
+        await this.conversations.deleteMessage(rowId);
       }
       await meterTurn(displayText.length);
 
@@ -1353,23 +1436,49 @@ export class MaestroService {
       // and it was gone on reload: a question with no reply.
       //
       // `finally` is the only place that survives that teardown, which is
-      // why the save cannot simply be moved earlier. Guarded on `aborted`
-      // so the normal path, which saves below with full metadata and a
-      // `message_complete`, is left untouched — and on `savedAssistant`
-      // so a turn aborted AFTER its save does not write a second row.
+      // why the save cannot simply be moved earlier. Guarded on
+      // `savedAssistant` so a turn that already finished its row above is
+      // left alone.
+      //
+      // ⚠ NOT guarded on `signal.aborted` any more. The row is opened before
+      // the model runs, so whatever ends the turn early — a Stop, or a model
+      // error that returns from the catch — has to close it. Keyed on abort
+      // alone, an errored turn would leave a `running` row behind for the
+      // sweeper to mop up minutes later, when the outcome is known right here.
       //
       // Nothing is yielded here: the consumer has already stopped reading,
       // and a yield in a finally during teardown is discarded anyway.
-      if (signal.aborted && !savedAssistant && partialText.trim()) {
+      // `turnId` is null when the turn never got as far as opening its row —
+      // the insert itself failed. There is nothing to close in that case.
+      if (!savedAssistant && turnId) {
+        const openRowId = turnId;
+        const rescued = partialText.trim();
         try {
-          await this.conversations.addMessage(
-            conversationId,
-            'assistant',
-            partialText.trim(),
-            { maestroStopped: true },
-            model,
-            usage.outputTokens,
-          );
+          if (rescued) {
+            await this.conversations.updateMessage(openRowId, {
+              content: rescued,
+              metadata: {
+                // Kept alongside the status: the frontend and the stopped
+                // strip both read this flag, and old rows only have it.
+                ...(signal.aborted ? { maestroStopped: true } : {}),
+                maestroTurn: {
+                  status: signal.aborted
+                    ? ('stopped' as const)
+                    : ('failed' as const),
+                  startedAt: turnStartedAt,
+                  endedAt: new Date().toISOString(),
+                  model,
+                },
+              },
+              tokenCount: usage.outputTokens,
+            });
+          } else {
+            // Stopped or failed before a single word was written. There is
+            // nothing to show, so the row it opened is removed rather than
+            // left as an empty bubble — the same outcome as before turn rows
+            // existed, where nothing was saved in this case either.
+            await this.conversations.deleteMessage(openRowId);
+          }
         } catch (err) {
           // Never let the rescue break the teardown it is running inside.
           this.logger.error(`failed to save stopped turn: ${err}`);

@@ -27,6 +27,10 @@ import { DripModule } from '../drips/drip.module';
 import { MaestroController } from './maestro.controller';
 import { MaestroService } from './services/maestro.service';
 import { MaestroKeyService } from './services/maestro-key.service';
+// Closes turns abandoned by a crash or a deploy. MUST stay in `providers`
+// below: a cron service the container never builds never runs, and its own
+// unit tests cannot show that (BE#264 lost `workspacePurge` exactly this way).
+import { StrandedTurnSweeperService } from './services/stranded-turn-sweeper.service';
 import { ClaudeAgentSdkRuntime } from './runtime/claude-agent-sdk.runtime';
 import { MessagesApiRuntime } from './runtime/messages-api.runtime';
 import { AgentRuntimeSelector } from './runtime/runtime-selector';
@@ -87,6 +91,7 @@ import { MaestroBridgeProcessor } from './bridge/processors/maestro-bridge.proce
     MaestroService,
     MentionSearchService,
     MaestroKeyService,
+    StrandedTurnSweeperService,
     ClaudeAgentSdkRuntime,
     MessagesApiRuntime,
     AgentRuntimeSelector,
