@@ -165,4 +165,129 @@ describe('ClaudeAgentSdkRuntime', () => {
       name: 'list_channels',
     });
   });
+
+  /**
+   * What a STOPPED turn is charged.
+   *
+   * A stopped turn never reaches the `result` message, so the running total
+   * built from these `usage` events is the only figure there is — and it is
+   * billed. Every case below has been wrong in this file at some point, and
+   * none of them could be seen from the outside: a COMPLETED turn overwrites
+   * the running total with the SDK's own aggregate, so an error here is
+   * invisible until someone presses Stop.
+   */
+  describe('usage it reports as the turn runs', () => {
+    function assistantWithUsage(
+      id: string,
+      usage: Record<string, number>,
+      text = 'hi',
+    ) {
+      return {
+        type: 'assistant',
+        message: { id, content: [{ type: 'text', text }], usage },
+      };
+    }
+
+    function lastUsage(events: AgentEvent[]) {
+      const usages = events.filter((e) => e.type === 'usage');
+      return usages.length
+        ? (usages[usages.length - 1] as Extract<AgentEvent, { type: 'usage' }>)
+            .usage
+        : null;
+    }
+
+    it('sums input across steps, because each step is its own priced request', async () => {
+      // Taking only the last step's figure under-bills by every earlier step,
+      // and worst on the longest turns. Anthropic's own cost-tracking
+      // guidance accumulates per-step input for exactly this reason.
+      scriptMessages([
+        assistantWithUsage('m1', { input_tokens: 100, output_tokens: 10 }),
+        assistantWithUsage('m2', { input_tokens: 150, output_tokens: 20 }),
+      ]);
+
+      expect(lastUsage(await collect())).toMatchObject({
+        inputTokens: 250,
+        outputTokens: 30,
+      });
+    });
+
+    it('counts a step once even when it called several tools', async () => {
+      // A step that calls several tools emits one assistant message per tool,
+      // ALL carrying that step's usage under the same message id. This is the
+      // one place summing really would double-count.
+      scriptMessages([
+        assistantWithUsage('same-step', {
+          input_tokens: 100,
+          output_tokens: 10,
+        }),
+        assistantWithUsage('same-step', {
+          input_tokens: 100,
+          output_tokens: 10,
+        }),
+      ]);
+
+      expect(lastUsage(await collect())).toMatchObject({
+        inputTokens: 100,
+        outputTokens: 10,
+      });
+    });
+
+    it('counts the cached prefix, which is carved out of input_tokens', async () => {
+      // `input_tokens` holds only what came AFTER the last cache breakpoint.
+      // Reading it alone makes a long cached turn look nearly free.
+      scriptMessages([
+        assistantWithUsage('m1', {
+          input_tokens: 50,
+          cache_read_input_tokens: 9000,
+          cache_creation_input_tokens: 1000,
+          output_tokens: 5,
+        }),
+      ]);
+
+      expect(lastUsage(await collect())).toMatchObject({
+        inputTokens: 10050,
+        outputTokens: 5,
+      });
+    });
+
+    it('reports usage before the turn ends, so a stop has a figure to bill', async () => {
+      // The whole reason this event exists: `done` never arrives on a stop.
+      scriptMessages([
+        assistantWithUsage('m1', { input_tokens: 100, output_tokens: 10 }),
+      ]);
+
+      const events = await collect();
+
+      expect(events.findIndex((e) => e.type === 'usage')).toBeGreaterThanOrEqual(
+        0,
+      );
+      expect(events.some((e) => e.type === 'done')).toBe(false);
+    });
+
+    it('lets the SDK aggregate win once the turn completes', async () => {
+      // `result.usage` is already totalled across steps, so `done` ASSIGNS it
+      // rather than adding — adding would double the whole turn.
+      scriptMessages([
+        assistantWithUsage('m1', { input_tokens: 100, output_tokens: 10 }),
+        {
+          type: 'result',
+          subtype: 'success',
+          usage: { input_tokens: 120, output_tokens: 12 },
+          total_cost_usd: 0.004,
+        },
+      ]);
+
+      const events = await collect();
+      const done = events.find((e) => e.type === 'done') as Extract<
+        AgentEvent,
+        { type: 'done' }
+      >;
+
+      expect(done.usage).toMatchObject({
+        inputTokens: 120,
+        outputTokens: 12,
+        costUsd: 0.004,
+      });
+    });
+  });
 });

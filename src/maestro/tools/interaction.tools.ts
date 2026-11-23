@@ -43,7 +43,12 @@ function normalizeQuestions(args: Record<string, unknown>): NormalizedQuestion[]
         multiSelect: Boolean(item.multiSelect),
       };
     })
-    .filter((q) => q.question && q.options.length > 0)
+    // Only the question text is required. An option-less question is now a
+    // real thing to ask — the card gives every question a free-text row of
+    // its own, so an open question is answerable in place. It used to be
+    // dropped here AND again in the service AND again on the frontend, so
+    // relaxing any one of the three alone would have changed nothing.
+    .filter((q) => q.question)
     .slice(0, 3);
 }
 
@@ -67,8 +72,9 @@ export function createInteractionTools(): AgentToolDefinition[] {
                 .describe('The full question to ask the user.'),
               options: z
                 .array(z.string())
+                .optional()
                 .describe(
-                  '2-6 short, action-oriented option labels to choose from.',
+                  '2-6 short, action-oriented option labels to choose from. Omit ONLY for a genuinely open question (a name, a date, a sentence in their own words) — every question also shows a free-text field, so options are for when you can name the likely answers, which is most of the time.',
                 ),
               multiSelect: z
                 .boolean()
@@ -97,8 +103,13 @@ export function createInteractionTools(): AgentToolDefinition[] {
           kind: 'question' as const,
           shown: true,
           questions,
-          instruction:
-            'The question(s) are now displayed to the user as clickable options. End your turn now and wait for their reply.',
+          // Worded for what the card actually shows. "Clickable options" was
+          // true of every question until one could be asked without any, and
+          // a model told its open question is on screen as options may well
+          // re-ask it in prose with a list.
+          instruction: questions.some((q) => q.options.length === 0)
+            ? 'The question(s) are now displayed to the user, each with a field to type into and any options you gave. End your turn now and wait for their reply.'
+            : 'The question(s) are now displayed to the user as clickable options. End your turn now and wait for their reply.',
         };
       },
     },

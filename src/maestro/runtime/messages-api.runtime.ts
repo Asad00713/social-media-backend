@@ -160,8 +160,33 @@ export class MessagesApiRuntime implements AgentRuntime {
         }
 
         const reply = await stream.finalMessage();
-        inputTokens += reply.usage.input_tokens;
+        // ⚠ `input_tokens` counts only what came AFTER the last cache
+        // breakpoint. This runtime marks a breakpoint (`cache_control` above),
+        // so the whole cached prefix is reported in its own two fields
+        // instead — leaving them out undercounted every round after the first,
+        // which on this path is most of the prompt. Priced the same as plain
+        // input here because our credits are flat internal units rather than
+        // pass-through Anthropic cost.
+        inputTokens +=
+          reply.usage.input_tokens +
+          (reply.usage.cache_read_input_tokens ?? 0) +
+          (reply.usage.cache_creation_input_tokens ?? 0);
         outputTokens += reply.usage.output_tokens;
+
+        // Report the running spend before deciding whether the turn is over.
+        //
+        // A turn the user STOPS never reaches the `done` below, and the tokens
+        // above were spent at Anthropic either way — so the service is told as
+        // the cost accrues, and can charge a stopped turn what it really used.
+        // Cumulative, so a consumer assigns rather than adds.
+        yield {
+          type: 'usage',
+          usage: {
+            inputTokens,
+            outputTokens,
+            costUsd: costUsd(input.model, inputTokens, outputTokens),
+          },
+        };
 
         const toolUses = reply.content.filter(
           (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',

@@ -149,6 +149,14 @@ export type MaestroSseEvent =
       data: { tool: string; output: unknown; isError: boolean };
     }
   | { event: 'message_stream'; data: { token: string } }
+  /**
+   * The turn's assistant row has been opened; this is its id.
+   *
+   * Emitted before any text, so a client knows what to call the reply it is
+   * about to receive even if the turn is stopped mid-stream — `message_complete`
+   * carries the same id, and never arrives on an abort.
+   */
+  | { event: 'message_start'; data: { messageId: string } }
   | { event: 'message_complete'; data: { content: string; messageId: string } }
   | { event: 'followups'; data: { suggestions: string[] } }
   | { event: 'title'; data: { title: string } }
@@ -479,7 +487,12 @@ export class MaestroService {
           multiSelect: Boolean(q.multiSelect),
         };
       })
-      .filter((q) => q.question && q.options.length > 0);
+      // Option-less questions survive here too, so a bridge user is asked the
+      // same thing a panel user is. The bridge renders options as a reply
+      // keyboard and falls back to plain text without them — which is the
+      // right shape for an open question: they just answer in their next
+      // message. Dropping it here instead made the turn end silently.
+      .filter((q) => q.question);
     return questions.length ? { questions } : null;
   }
 
@@ -956,6 +969,31 @@ export class MaestroService {
         return { role: m.role as 'user' | 'assistant', content };
       });
 
+    // The turn record.
+    //
+    // The assistant row is opened HERE, before the model runs, and finished in
+    // place when the turn ends. It used to be inserted only once a reply
+    // existed, which left a turn with no identity while it was the only thing
+    // happening: a Stop produced text the client could not name, and a crash
+    // or a deploy left a user question on disk with no reply and no trace that
+    // anything had ever run — `finally` never fires for a killed process, so
+    // nothing could tell an abandoned turn from one that was never asked.
+    //
+    // Opening it first gives the turn an id (emitted as `message_start`, the
+    // id every later stop/continue/retry refers to) and a status a sweeper can
+    // find. It also collapses the old insert-vs-insert race between the normal
+    // save and the abort rescue: there is one row, and both paths update it.
+    //
+    // ⚠ Deliberately AFTER the history build above, which drops its last row
+    // as "the user turn just persisted". Inserting before it would make this
+    // empty row the one dropped, and replay the user's message twice.
+    //
+    // ⚠ Declared out here, but opened INSIDE the try below: the `finally` has
+    // to be able to close this row, and a row created before the try would be
+    // left `running` forever if the turn were stopped on the very first yield.
+    const turnStartedAt = new Date().toISOString();
+    let turnId: string | null = null;
+
     // First message in a fresh conversation → generate a title (Groq, concurrent
     // with the agent run so it adds no latency to the response stream).
     const isFirstTurn = history.length === 0 && !conversation.title;
@@ -1051,12 +1089,99 @@ export class MaestroService {
     let maestroNavigated: { destination: string; reason?: string } | null =
       null;
 
+    // What the assistant has written so far, and whether it has been saved.
+    // Both exist for the `finally` below: a stopped turn is torn down at a
+    // `yield`, so the rescue there cannot see anything scoped inside the
+    // try. `raw` is not usable for it — it is declared inside, and it also
+    // still holds the follow-ups marker.
+    let partialText = '';
+    let savedAssistant = false;
+    // Tells the `finally` whether the spend is already on the books, exactly
+    // as `savedAssistant` does for the text. See `meterTurn` below.
+    let metered = false;
+
+    /**
+     * Charge the workspace for what this turn really spent.
+     *
+     * Called on the normal path AND from the `finally`, because the tokens are
+     * spent at Anthropic the moment the model runs — whether the turn then
+     * completes, is stopped by the user, or dies on an error. Metering only on
+     * success made Stop a way to use Maestro for free, and made a failed turn
+     * a silent loss: real spend, no record.
+     *
+     * The agent's REAL token spend is converted to user tokens at 100:1
+     * (rounded up, min 1) so a ~1,000-token turn costs 10. Raw counts are kept
+     * in the log details.
+     *
+     * `metered` guards it the way `savedAssistant` guards the save: a Stop
+     * landing after the normal call must not charge twice.
+     */
+    const meterTurn = async (outputLength: number): Promise<void> => {
+      if (metered) return;
+      // Nothing ran, nothing to charge — a turn refused before the model (or
+      // aborted during the pre-flight) must not be billed the 1-token floor.
+      if (usage.inputTokens === 0 && usage.outputTokens === 0) return;
+      metered = true;
+      const totalTokens = usage.inputTokens + usage.outputTokens;
+      const billedTokens = Math.max(
+        1,
+        Math.ceil(totalTokens / AGENT_TOKENS_PER_USER_TOKEN),
+      );
+      // BYOK turns are LOGGED but not charged — the workspace already paid
+      // Anthropic directly with its own key.
+      const isByok = auth.keySource === 'byok';
+      await this.tokens.recordUsage(
+        ctx.workspaceId,
+        userId,
+        billedTokens,
+        'maestro_chat',
+        {
+          apiInputTokens: usage.inputTokens,
+          apiOutputTokens: usage.outputTokens,
+          outputLength,
+        },
+        { billable: !isByok },
+      );
+    };
+
     // Both adapters implement the same port, so everything below — the SSE
     // translation, the media/question/reference extraction, persistence — is
     // shared. That is what makes the two tabs comparable.
     const runtime = this.runtimes.forKind(params.runtime ?? 'sdk');
 
     try {
+      // The turn record.
+      //
+      // The assistant row is opened BEFORE the model runs and finished in
+      // place when the turn ends. It used to be inserted only once a reply
+      // existed, which left a turn with no identity while it was the only
+      // thing happening: a Stop produced text the client could not name, and a
+      // crash or a deploy left a user question on disk with no reply and no
+      // trace that anything had ever run — `finally` never fires for a killed
+      // process, so nothing could tell an abandoned turn from one that was
+      // never asked.
+      //
+      // Opening it first gives the turn an id (emitted as `message_start`, the
+      // id every later stop/continue/retry refers to) and a status a sweeper
+      // can find. It also collapses the old insert-vs-insert race between the
+      // normal save and the abort rescue: there is one row, and both paths
+      // update it.
+      const turnRow = await this.conversations.addMessage(
+        conversationId,
+        'assistant',
+        null,
+        {
+          maestroTurn: {
+            status: 'running' as const,
+            startedAt: turnStartedAt,
+            model,
+          },
+        },
+        model,
+      );
+      turnId = turnRow.id;
+      yield { event: 'message_start', data: { messageId: turnId } };
+
       for await (const ev of runtime.run(input)) {
         if (signal.aborted) break;
         switch (ev.type) {
@@ -1090,6 +1215,12 @@ export class MaestroService {
                 emittedLen = safeEnd;
               }
             }
+            // Mirrored for the abort rescue in `finally`, which cannot see
+            // `raw` — it is declared inside the try. Set HERE, after
+            // `markerIdx` has been resolved for this chunk, so a turn
+            // stopped mid-follow-ups saves its answer rather than one with
+            // "FOLLOWUPS:" trailing it.
+            partialText = markerIdx === -1 ? raw : raw.slice(0, markerIdx);
             break;
           }
           case 'tool_call':
@@ -1164,6 +1295,13 @@ export class MaestroService {
             };
             break;
           }
+          // Running spend, reported as the turn goes. Kept so a turn the user
+          // stops is charged what it actually used — `done` never arrives for
+          // one of those, and the tokens are spent regardless. The event is
+          // cumulative, so this assigns rather than adds.
+          case 'usage':
+            usage = ev.usage;
+            break;
           case 'done':
             usage = ev.usage;
             break;
@@ -1221,6 +1359,10 @@ export class MaestroService {
             }
           : undefined;
 
+      // Non-null from here: the row is opened at the top of this try, and a
+      // failure to open it throws rather than falling through.
+      const rowId = turnId as string;
+
       if (
         displayText ||
         maestroMedia ||
@@ -1228,42 +1370,38 @@ export class MaestroService {
         maestroWeb ||
         maestroNavigated
       ) {
-        const saved = await this.conversations.addMessage(
-          conversationId,
-          'assistant',
-          displayText || null,
-          metadata,
-          model,
-          usage.outputTokens,
-        );
+        // Finish the row this turn opened, rather than inserting a second one.
+        await this.conversations.updateMessage(rowId, {
+          content: displayText || null,
+          metadata: {
+            ...(metadata ?? {}),
+            maestroTurn: {
+              status: 'complete' as const,
+              startedAt: turnStartedAt,
+              endedAt: new Date().toISOString(),
+              model,
+            },
+          },
+          tokenCount: usage.outputTokens,
+        });
+        // Tells the abort rescue in `finally` that this turn is already on
+        // disk. Without it, a Stop pressed between this line and the end
+        // of the generator would overwrite the finished answer with the
+        // partial text it had buffered.
+        savedAssistant = true;
         yield {
           event: 'message_complete',
-          data: { content: displayText, messageId: saved.id },
+          data: { content: displayText, messageId: rowId },
         };
+      } else {
+        // The turn produced nothing to show — no text, no media, no question.
+        // Its row was opened before the model ran, so leaving it would render
+        // as an empty bubble forever. Drop it; the transcript is unchanged
+        // from how this case behaved before the row existed at all.
+        savedAssistant = true;
+        await this.conversations.deleteMessage(rowId);
       }
-      // Meter the spend against the workspace budget. The agent's REAL token
-      // spend is converted to user tokens at 100:1 (rounded up, min 1) so a
-      // ~1,000-token turn costs 10. Raw counts are kept in the log details.
-      const totalTokens = usage.inputTokens + usage.outputTokens;
-      const billedTokens = Math.max(
-        1,
-        Math.ceil(totalTokens / AGENT_TOKENS_PER_USER_TOKEN),
-      );
-      // BYOK turns are LOGGED but not charged — the workspace already paid
-      // Anthropic directly with its own key.
-      const isByok = auth.keySource === 'byok';
-      await this.tokens.recordUsage(
-        ctx.workspaceId,
-        userId,
-        billedTokens,
-        'maestro_chat',
-        {
-          apiInputTokens: usage.inputTokens,
-          apiOutputTokens: usage.outputTokens,
-          outputLength: displayText.length,
-        },
-        { billable: !isByok },
-      );
+      await meterTurn(displayText.length);
 
       if (followups.length > 0) {
         yield { event: 'followups', data: { suggestions: followups } };
@@ -1288,6 +1426,80 @@ export class MaestroService {
           message: err instanceof Error ? err.message : 'Maestro failed',
         },
       };
+    } finally {
+      // A STOPPED turn still keeps what it wrote.
+      //
+      // When the user presses Stop the controller breaks out of its
+      // `for await`, and breaking a for-await calls `.return()` on this
+      // generator — so it dies at whichever `yield` it is sitting on and
+      // the save further down never runs at all. The text was on screen,
+      // and it was gone on reload: a question with no reply.
+      //
+      // `finally` is the only place that survives that teardown, which is
+      // why the save cannot simply be moved earlier. Guarded on
+      // `savedAssistant` so a turn that already finished its row above is
+      // left alone.
+      //
+      // ⚠ NOT guarded on `signal.aborted` any more. The row is opened before
+      // the model runs, so whatever ends the turn early — a Stop, or a model
+      // error that returns from the catch — has to close it. Keyed on abort
+      // alone, an errored turn would leave a `running` row behind for the
+      // sweeper to mop up minutes later, when the outcome is known right here.
+      //
+      // Nothing is yielded here: the consumer has already stopped reading,
+      // and a yield in a finally during teardown is discarded anyway.
+      // `turnId` is null when the turn never got as far as opening its row —
+      // the insert itself failed. There is nothing to close in that case.
+      if (!savedAssistant && turnId) {
+        const openRowId = turnId;
+        const rescued = partialText.trim();
+        try {
+          if (rescued) {
+            await this.conversations.updateMessage(openRowId, {
+              content: rescued,
+              metadata: {
+                // Kept alongside the status: the frontend and the stopped
+                // strip both read this flag, and old rows only have it.
+                ...(signal.aborted ? { maestroStopped: true } : {}),
+                maestroTurn: {
+                  status: signal.aborted
+                    ? ('stopped' as const)
+                    : ('failed' as const),
+                  startedAt: turnStartedAt,
+                  endedAt: new Date().toISOString(),
+                  model,
+                },
+              },
+              tokenCount: usage.outputTokens,
+            });
+          } else {
+            // Stopped or failed before a single word was written. There is
+            // nothing to show, so the row it opened is removed rather than
+            // left as an empty bubble — the same outcome as before turn rows
+            // existed, where nothing was saved in this case either.
+            await this.conversations.deleteMessage(openRowId);
+          }
+        } catch (err) {
+          // Never let the rescue break the teardown it is running inside.
+          this.logger.error(`failed to save stopped turn: ${err}`);
+        }
+      }
+
+      // And it is still PAID for. The tokens were spent at Anthropic the
+      // moment the model ran, so a turn that was stopped, or that died on an
+      // error before reaching the normal call, must still be charged — the
+      // same teardown that skipped the save skips the metering.
+      //
+      // Leaving it on the success path alone made Stop a way to use Maestro
+      // for nothing: press it on every turn and the real cost is ours while
+      // the credit count never moves. `meterTurn` is idempotent, so the
+      // normal path having already charged is simply a no-op here.
+      try {
+        await meterTurn(partialText.trim().length);
+      } catch (err) {
+        // Same rule as the save above: never break the teardown.
+        this.logger.error(`failed to meter turn: ${err}`);
+      }
     }
   }
 }
