@@ -1,4 +1,8 @@
-import { ExecutionContext, ForbiddenException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ExecutionContext,
+  ForbiddenException,
+} from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { PlanFeatureGuard } from './plan-feature.guard';
 import type { PlanFeature } from './plan-features';
@@ -136,6 +140,19 @@ describe('PlanFeatureGuard', () => {
     expect(find).toHaveBeenCalledWith(WS);
   });
 
+  it('resolves the lead-ads module’s :wid spelling', async () => {
+    // The third spelling. A missed one does not fail open — it lands on the
+    // "no workspace in path" branch and refuses EVERY request to that
+    // controller, so the whole feature 403s for paying customers too.
+    const find = jest.fn().mockResolvedValue({ planCode: 'PRO' });
+    const guard = make('ads:use', find);
+
+    await expect(guard.canActivate(mockContext({ wid: WS }))).resolves.toBe(
+      true,
+    );
+    expect(find).toHaveBeenCalledWith(WS);
+  });
+
   it('refuses a gated route with no workspace in its path', async () => {
     // A route that needs a plan feature but is not workspace-scoped is a
     // wiring mistake. Failing open would hide it; refusing surfaces it the
@@ -146,15 +163,23 @@ describe('PlanFeatureGuard', () => {
     );
   });
 
-  it('refuses a non-uuid workspace id without querying', async () => {
-    // Reaches Postgres as an invalid uuid otherwise, and a 500 from a plan
-    // guard reads to the user as the feature being broken.
+  it('answers 400, not 403, to a non-uuid workspace id', async () => {
+    // A malformed id is a client error, not a plan limitation, and the
+    // difference is visible: a 403 saying "upgrade your plan" for a typo in a
+    // URL is a lie. Guards run before the route's ParseUUIDPipe, so the guard
+    // has to reject the way the pipe would — the controllers' own HTTP specs
+    // assert 400 here and caught this when the guard first threw 403.
     const find = jest.fn();
     const guard = make('inbox:use', find);
 
-    await expect(
-      guard.canActivate(mockContext({ workspaceId: 'not-a-uuid' })),
-    ).rejects.toBeInstanceOf(ForbiddenException);
+    const err = await guard
+      .canActivate(mockContext({ workspaceId: 'not-a-uuid' }))
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(BadRequestException);
+    expect(err).not.toBeInstanceOf(ForbiddenException);
+    // And it must not reach Postgres with an invalid uuid, which would be a
+    // 500 that reads to the user as the feature being broken.
     expect(find).not.toHaveBeenCalled();
   });
 });

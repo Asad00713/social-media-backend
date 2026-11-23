@@ -11,6 +11,8 @@ import {
   DEFAULT_INBOX_SETTINGS,
   InboxSettingsService,
 } from './services/inbox-settings.service';
+import { PlanFeatureGuard } from '../../billing/plan/plan-feature.guard';
+import { SubscriptionLookupService } from '../../billing/services/subscription-lookup.service';
 
 const WS = '11111111-1111-4111-8111-111111111111';
 
@@ -24,6 +26,15 @@ describe('InboxSettingsController over HTTP', () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [InboxSettingsController],
       providers: [
+        // The controller carries @RequiresFeature, so its guard is a real
+        // dependency now. A stub plan that passes keeps these tests about
+        // what they were written for (roles, validation) rather than
+        // plans; plan-feature.guard.spec.ts covers the gate itself.
+        PlanFeatureGuard,
+        {
+          provide: SubscriptionLookupService,
+          useValue: { findByWorkspaceId: () => Promise.resolve({ planCode: 'MAX' }) },
+        },
         WorkspaceRoleGuard,
         { provide: WorkspaceRoleService, useValue: roles },
         { provide: InboxSettingsService, useValue: settings },

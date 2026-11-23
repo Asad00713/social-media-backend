@@ -24,9 +24,12 @@ import {
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
 import { ListExternalEventsDto } from './dto/list-external-events.dto';
+import { PlanFeatureGuard } from '../billing/plan/plan-feature.guard';
+import { RequiresFeature } from '../billing/plan/requires-feature.decorator';
 
 @Controller('calendar-sync')
-@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard, PlanFeatureGuard)
+@RequiresFeature('calendar:sync')
 export class CalendarSyncController {
   private readonly logger = new Logger(CalendarSyncController.name);
 

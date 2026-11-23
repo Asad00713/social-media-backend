@@ -19,6 +19,8 @@ import {
   PrivateReplyDto,
 } from './dto/comment-actions.dto';
 import { CommentActionsService } from './services/comment-actions.service';
+import { PlanFeatureGuard } from '../../billing/plan/plan-feature.guard';
+import { RequiresFeature } from '../../billing/plan/requires-feature.decorator';
 
 interface AuthUser {
   userId: string;
@@ -31,7 +33,8 @@ interface AuthUser {
  * before its param, so it never swallows the thread route.
  */
 @Controller('inbox/workspaces/:workspaceId/comments')
-@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard, PlanFeatureGuard)
+@RequiresFeature('inbox:use')
 export class CommentActionsController {
   constructor(private readonly actions: CommentActionsService) {}
 

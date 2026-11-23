@@ -24,6 +24,8 @@ import {
 } from './dto/report-settings.dto';
 import type { ReportDto, ReportPayloadDto } from './reports.dto';
 import { ReportsService } from './reports.service';
+import { PlanFeatureGuard } from '../../billing/plan/plan-feature.guard';
+import { RequiresFeature } from '../../billing/plan/requires-feature.decorator';
 
 /**
  * Saved Insights reports. Anyone who can see Insights can read them; creating,
@@ -31,7 +33,8 @@ import { ReportsService } from './reports.service';
  * emails people outside the workspace.
  */
 @Controller('insights/workspaces/:workspaceId/reports')
-@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard, PlanFeatureGuard)
+@RequiresFeature('insights:scheduled-reports')
 @RequireCapability('analytics:view')
 export class ReportsController {
   constructor(private readonly reports: ReportsService) {}

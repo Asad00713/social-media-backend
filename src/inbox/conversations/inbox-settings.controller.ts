@@ -16,10 +16,13 @@ import {
   InboxSettingsService,
   type InboxSettings,
 } from './services/inbox-settings.service';
+import { PlanFeatureGuard } from '../../billing/plan/plan-feature.guard';
+import { RequiresFeature } from '../../billing/plan/requires-feature.decorator';
 
 /** Settings belong to the person, so any member (GUEST included) may use them. */
 @Controller('inbox/workspaces/:workspaceId/settings')
-@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard, PlanFeatureGuard)
+@RequiresFeature('inbox:use')
 export class InboxSettingsController {
   constructor(private readonly settings: InboxSettingsService) {}
 

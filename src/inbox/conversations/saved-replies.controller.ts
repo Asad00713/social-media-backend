@@ -22,9 +22,12 @@ import {
   UpdateSavedReplyDto,
 } from './dto/saved-replies.dto';
 import { SavedRepliesService } from './services/saved-replies.service';
+import { PlanFeatureGuard } from '../../billing/plan/plan-feature.guard';
+import { RequiresFeature } from '../../billing/plan/requires-feature.decorator';
 
 @Controller('inbox/workspaces/:workspaceId/saved-replies')
-@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard, PlanFeatureGuard)
+@RequiresFeature('inbox:use')
 export class SavedRepliesController {
   constructor(private readonly replies: SavedRepliesService) {}
 

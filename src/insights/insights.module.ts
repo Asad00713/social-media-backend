@@ -23,6 +23,7 @@ import { ReportsProcessor } from './reports/reports.processor';
 import { ReportsRepository } from './reports/reports.repository';
 import { ReportsScheduler } from './reports/reports.scheduler';
 import { ReportsService } from './reports/reports.service';
+import { BillingModule } from '../billing/billing.module';
 
 // AnalyticsModule supplies the YouTube client and the Redis client the
 // Audience routes read through. The queues are registered here too: the
@@ -32,6 +33,10 @@ import { ReportsService } from './reports/reports.service';
 // dependencies without pulling in Billing; see home.module.ts.
 @Module({
   imports: [
+    // PlanFeatureGuard (on this module's controllers) needs
+    // SubscriptionLookupService. Plain import, not forwardRef:
+    // nothing in billing imports this module's chain, so no cycle.
+    BillingModule,
     WorkspaceRoleModule,
     // The report tokens: signed with JWT_ACCESS_SECRET, as the TikTok proxy's.
     JwtModule.register({}),

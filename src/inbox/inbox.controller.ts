@@ -34,6 +34,8 @@ import { SendDmTemplateDto } from './dto/send-dm-template.dto';
 import { toSendOptions } from './dto/send-options.dto';
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
+import { PlanFeatureGuard } from '../billing/plan/plan-feature.guard';
+import { RequiresFeature } from '../billing/plan/requires-feature.decorator';
 
 interface AuthUser {
   userId: string;
@@ -41,7 +43,8 @@ interface AuthUser {
 }
 
 @Controller('inbox/workspaces/:workspaceId')
-@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard, PlanFeatureGuard)
+@RequiresFeature('inbox:use')
 export class InboxController {
   private readonly logger = new Logger(InboxController.name);
 

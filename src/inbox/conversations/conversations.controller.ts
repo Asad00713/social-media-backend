@@ -31,9 +31,12 @@ import { ConversationDetailService } from './services/conversation-detail.servic
 import { ConversationListService } from './services/conversation-list.service';
 import { ConversationMutationsService } from './services/conversation-mutations.service';
 import { ConversationPresenter } from './services/conversation-presenter.service';
+import { PlanFeatureGuard } from '../../billing/plan/plan-feature.guard';
+import { RequiresFeature } from '../../billing/plan/requires-feature.decorator';
 
 @Controller('inbox/workspaces/:workspaceId/conversations')
-@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard, PlanFeatureGuard)
+@RequiresFeature('inbox:use')
 export class ConversationsController {
   constructor(
     private readonly listService: ConversationListService,

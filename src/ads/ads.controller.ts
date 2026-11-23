@@ -39,6 +39,8 @@ import { adAccounts, adCampaigns, adSets, leads } from '../drizzle/schema';
 import { eq, and, desc } from 'drizzle-orm';
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
+import { PlanFeatureGuard } from '../billing/plan/plan-feature.guard';
+import { RequiresFeature } from '../billing/plan/requires-feature.decorator';
 
 interface AuthUser {
   userId: string;
@@ -46,7 +48,8 @@ interface AuthUser {
 }
 
 @Controller('ads/workspaces/:workspaceId')
-@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard, PlanFeatureGuard)
+@RequiresFeature('ads:use')
 export class AdsController {
   constructor(
     private readonly adAccounts: AdAccountsService,

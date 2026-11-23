@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   CanActivate,
   ExecutionContext,
   ForbiddenException,
@@ -71,15 +72,32 @@ export class PlanFeatureGuard implements CanActivate {
     // product on a plan of their own. Same exemption the suspend guard makes.
     if (request.user?.role === 'SUPER_ADMIN') return true;
 
-    // `:workspaceId` everywhere except the analytics module, which uses
-    // `:wsId` — the same two spellings the suspend guard resolves.
+    // Three spellings exist in the codebase, counted across every controller:
+    // `:workspaceId` (276), `:wsId` (55, analytics) and `:wid` (6, lead ads).
+    // The suspend guard resolves the first two because no gated route used the
+    // third; this guard needs all three, and a missed spelling here does not
+    // fail open — it reaches the branch below and refuses every request to
+    // that controller.
     const workspaceId =
-      request.params?.workspaceId ?? request.params?.wsId ?? null;
+      request.params?.workspaceId ??
+      request.params?.wsId ??
+      request.params?.wid ??
+      null;
     // A gated route with no workspace in its path cannot be answered. Rather
     // than guess, refuse: a route that needs a plan feature but is not
     // workspace-scoped is a wiring mistake, and failing open would hide it.
-    if (!workspaceId || !isUUID(workspaceId)) {
+    if (!workspaceId) {
       throw new ForbiddenException(this.payload(feature, 'FREE'));
+    }
+
+    // A malformed id is a CLIENT error, not a plan limitation, and the
+    // difference is visible to the user: a 403 saying "upgrade your plan"
+    // for a typo in a URL is a lie. Guards run before the route's
+    // ParseUUIDPipe, so without this a bad id reached the pipe as a 403 and
+    // the controllers' own HTTP specs caught it. Rejecting the way the pipe
+    // would keeps the status the API already documents.
+    if (!isUUID(workspaceId)) {
+      throw new BadRequestException('Validation failed (uuid is expected)');
     }
 
     let planCode: string;

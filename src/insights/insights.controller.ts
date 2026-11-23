@@ -18,6 +18,8 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
+import { PlanFeatureGuard } from '../billing/plan/plan-feature.guard';
+import { RequiresFeature } from '../billing/plan/requires-feature.decorator';
 import type {
   InsightsOverviewDto,
   InsightsPostsDto,
@@ -60,7 +62,7 @@ const tableOf = (raw: {
   });
 
 @Controller('insights/workspaces/:workspaceId')
-@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard, PlanFeatureGuard)
 @RequireCapability('analytics:view')
 export class InsightsController {
   constructor(private readonly insights: InsightsService) {}
@@ -122,6 +124,11 @@ export class InsightsController {
   }
 
   /** The same table, every row, as a CSV download. */
+  //
+  // Gated per route, not on the class: the matrix keeps Insights itself on
+  // Free (with a shorter history window) and puts only the EXPORT behind Pro.
+  // A class-level gate here would take analytics away from Free entirely.
+  @RequiresFeature('insights:export')
   @Get('posts/export')
   async export(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
@@ -151,6 +158,7 @@ export class InsightsController {
    * Export). `kind=daily` is the only kind; the posts table has its own
    * `posts/export`.
    */
+  @RequiresFeature('insights:export')
   @Get('export')
   async exportDaily(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
