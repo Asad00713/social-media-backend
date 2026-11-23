@@ -2008,7 +2008,7 @@ async function voiceRow(
   client: PoolClient,
   workspaceId: string,
 ): Promise<Record<string, any> | undefined> {
-  const r = await client.query(
+  const r = await client.query<Record<string, any>>(
     `SELECT * FROM workspace_brand_voice WHERE workspace_id = $1`,
     [workspaceId],
   );
