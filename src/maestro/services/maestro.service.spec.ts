@@ -11,6 +11,8 @@ import type { AgentEvent } from '../maestro.types';
 
 const CONVERSATION_ID = 'conv-1';
 const USER_ID = 'user-1';
+/** The id of the assistant row a turn opens for itself. */
+const TURN_ID = 'turn-1';
 const WORKSPACE_ID = 'ws-1';
 
 type Emitted = { event: string; data: Record<string, unknown> };
@@ -57,6 +59,9 @@ interface Harness {
   setMessageMetadata: jest.Mock<Promise<void>, unknown[]>;
   /** Typed so `.mock.calls` indexes without falling back to `any`. */
   addMessage: jest.Mock<Promise<{ id: string }>, unknown[]>;
+  /** The turn row is opened up front and FINISHED through these two. */
+  updateMessage: jest.Mock<Promise<void>, unknown[]>;
+  deleteMessage: jest.Mock<Promise<void>, unknown[]>;
   recordUsage: jest.Mock<Promise<void>, unknown[]>;
   getDecryptedKey: jest.Mock<Promise<string | null>, unknown[]>;
   runInputs: { systemPrompt: string | string[] }[];
@@ -94,10 +99,21 @@ function makeHarness(
   // which is identical either way, so both kinds resolve to the same fake.
   const runtimes = { forKind: () => runtime };
 
+  // The assistant row gets a distinct id so a test can tell the turn row from
+  // the user row it follows, and assert that `message_start` and
+  // `message_complete` name the SAME one.
   const addMessage = jest
     .fn<Promise<{ id: string }>, unknown[]>()
-    .mockResolvedValue({ id: 'msg-saved' });
+    .mockImplementation((_conv: unknown, role: unknown) =>
+      Promise.resolve({ id: role === 'assistant' ? TURN_ID : 'msg-saved' }),
+    );
   const setMessageMetadata = jest
+    .fn<Promise<void>, unknown[]>()
+    .mockResolvedValue(undefined);
+  const updateMessage = jest
+    .fn<Promise<void>, unknown[]>()
+    .mockResolvedValue(undefined);
+  const deleteMessage = jest
     .fn<Promise<void>, unknown[]>()
     .mockResolvedValue(undefined);
   const conversations = {
@@ -117,6 +133,8 @@ function makeHarness(
       ],
     ),
     setMessageMetadata,
+    updateMessage,
+    deleteMessage,
   };
 
   const recordUsage = jest
@@ -205,6 +223,8 @@ function makeHarness(
   return {
     service,
     addMessage,
+    updateMessage,
+    deleteMessage,
     recordUsage,
     getDecryptedKey,
     setMessageMetadata,
@@ -286,11 +306,29 @@ describe('MaestroService.streamMessage', () => {
       const events = await run(h);
 
       expect(names(events)).toEqual([
+        // The turn announces its row before it says anything, so a client can
+        // name the reply it is about to stream even if it never completes.
+        'message_start',
         'thinking',
         'message_stream',
         'message_complete',
         'done',
       ]);
+    });
+
+    it('announces the turn id before any content, and completes the same id', async () => {
+      // The whole point of the up-front row: `message_complete` is the only
+      // event that used to carry an id, and it never arrives on a stop.
+      const h = makeHarness([...textDeltas('Hello'), DONE_EVENT]);
+
+      const events = await run(h);
+
+      expect(events[0].event).toBe('message_start');
+      const started = (events[0].data as { messageId: string }).messageId;
+      const completed = events.find((e) => e.event === 'message_complete');
+      expect((completed?.data as { messageId: string }).messageId).toBe(
+        started,
+      );
     });
 
     it('reports a tool call and its result before any answer text', async () => {
@@ -319,7 +357,9 @@ describe('MaestroService.streamMessage', () => {
       expect(order.indexOf('tool_result')).toBeLessThan(
         order.indexOf('message_stream'),
       );
-      expect(events[0].data).toEqual({
+      expect(
+        events.find((e) => e.event === 'tool_executing')?.data,
+      ).toEqual({
         tool: 'send_slack_message',
         input: {},
       });
@@ -350,8 +390,12 @@ describe('MaestroService.streamMessage', () => {
 
       const events = await run(h);
 
-      expect(names(events)).toEqual(['message_stream', 'error']);
-      expect(events[1].data).toEqual({ message: 'model exploded' });
+      expect(names(events)).toEqual([
+        'message_start',
+        'message_stream',
+        'error',
+      ]);
+      expect(events[2].data).toEqual({ message: 'model exploded' });
     });
 
     it('emits no partial text when the error lands before the hold-back clears', async () => {
@@ -364,7 +408,7 @@ describe('MaestroService.streamMessage', () => {
 
       const events = await run(h);
 
-      expect(names(events)).toEqual(['error']);
+      expect(names(events)).toEqual(['message_start', 'error']);
     });
   });
 
@@ -468,25 +512,36 @@ describe('MaestroService.streamMessage', () => {
       const complete = events.find((e) => e.event === 'message_complete');
 
       expect(complete?.data.content).toBe('Visible part.');
-      expect(h.addMessage).toHaveBeenLastCalledWith(
-        CONVERSATION_ID,
-        'assistant',
-        'Visible part.',
-        undefined,
-        expect.any(String),
-        expect.any(Number),
-      );
+      expect(h.updateMessage).toHaveBeenLastCalledWith(TURN_ID, {
+        content: 'Visible part.',
+        metadata: { maestroTurn: expect.objectContaining({ status: 'complete' }) },
+        tokenCount: expect.any(Number),
+      });
     });
   });
 
   describe('persistence', () => {
+    /**
+     * The metadata the turn wrote into its own row.
+     *
+     * The row is opened empty before the model runs and finished in place, so
+     * what used to be the insert's 4th argument is now the update's `metadata`.
+     */
+    function savedMeta<T>(h: Harness): T | undefined {
+      const calls = h.updateMessage.mock.calls.filter(
+        (c) => c[0] === TURN_ID,
+      );
+      const last = calls[calls.length - 1];
+      return (last?.[1] as { metadata?: T } | undefined)?.metadata;
+    }
+
     it('reports the id the conversation store assigned', async () => {
       const h = makeHarness([...textDeltas('Saved.'), DONE_EVENT]);
 
       const events = await run(h);
       const complete = events.find((e) => e.event === 'message_complete');
 
-      expect(complete?.data.messageId).toBe('msg-saved');
+      expect(complete?.data.messageId).toBe(TURN_ID);
     });
 
     it('still completes a turn that produced only media', async () => {
@@ -515,10 +570,8 @@ describe('MaestroService.streamMessage', () => {
       const events = await run(h);
 
       expect(names(events)).toContain('message_complete');
-      const meta = h.addMessage.mock.calls[1][3] as {
-        maestroMedia: { items: unknown[] };
-      };
-      expect(meta.maestroMedia.items).toHaveLength(1);
+      const meta = savedMeta<{ maestroMedia: { items: unknown[] } }>(h);
+      expect(meta?.maestroMedia.items).toHaveLength(1);
     });
 
     /**
@@ -548,10 +601,10 @@ describe('MaestroService.streamMessage', () => {
 
       await run(h);
 
-      const meta = h.addMessage.mock.calls[1][3] as {
+      const meta = savedMeta<{
         maestroNavigated: { destination: string; reason?: string };
-      };
-      expect(meta.maestroNavigated).toEqual({
+      }>(h);
+      expect(meta?.maestroNavigated).toEqual({
         destination: 'settings-profile',
         reason: 'to change your picture',
       });
@@ -568,7 +621,7 @@ describe('MaestroService.streamMessage', () => {
 
       await run(h);
 
-      const meta = h.addMessage.mock.calls[1][3];
+      const meta = savedMeta(h);
       expect(JSON.stringify(meta)).not.toContain('/w/');
       expect(JSON.stringify(meta)).not.toContain('http');
     });
@@ -585,10 +638,8 @@ describe('MaestroService.streamMessage', () => {
 
       await run(h);
 
-      const meta = h.addMessage.mock.calls[1][3] as {
-        maestroNavigated: { destination: string };
-      };
-      expect(meta.maestroNavigated.destination).toBe('inbox');
+      const meta = savedMeta<{ maestroNavigated: { destination: string } }>(h);
+      expect(meta?.maestroNavigated.destination).toBe('inbox');
     });
 
     it('records nothing when the navigation was refused', async () => {
@@ -609,9 +660,7 @@ describe('MaestroService.streamMessage', () => {
 
       await run(h);
 
-      const meta = h.addMessage.mock.calls[1][3] as
-        | { maestroNavigated?: unknown }
-        | undefined;
+      const meta = savedMeta<{ maestroNavigated?: unknown }>(h);
       expect(meta?.maestroNavigated).toBeUndefined();
     });
 
@@ -626,10 +675,8 @@ describe('MaestroService.streamMessage', () => {
       const events = await run(h);
 
       expect(names(events)).toContain('message_complete');
-      const meta = h.addMessage.mock.calls[1][3] as {
-        maestroNavigated: { destination: string };
-      };
-      expect(meta.maestroNavigated.destination).toBe('drafts');
+      const meta = savedMeta<{ maestroNavigated: { destination: string } }>(h);
+      expect(meta?.maestroNavigated.destination).toBe('drafts');
     });
 
     it('saves nothing extra when the turn produced no output at all', async () => {
@@ -637,10 +684,65 @@ describe('MaestroService.streamMessage', () => {
 
       const events = await run(h);
 
-      // Only the inbound user turn was persisted.
-      expect(h.addMessage).toHaveBeenCalledTimes(1);
+      // The turn opened a row for itself and then had nothing to put in it,
+      // so that row is removed rather than left as an empty bubble.
+      expect(h.updateMessage).not.toHaveBeenCalled();
+      expect(h.deleteMessage).toHaveBeenCalledWith(TURN_ID);
       expect(names(events)).not.toContain('message_complete');
       expect(names(events)).toContain('done');
+    });
+
+    it('leaves exactly one assistant row for a completed turn', async () => {
+      // The row is opened up front and finished in place. Inserting the reply
+      // separately — as it once did — would leave the opened row behind empty.
+      const h = makeHarness([...textDeltas('One row only.'), DONE_EVENT]);
+
+      await run(h);
+
+      const inserts = h.addMessage.mock.calls.filter(
+        (c) => c[1] === 'assistant',
+      );
+      expect(inserts).toHaveLength(1);
+      expect(inserts[0][2]).toBeNull();
+      expect(h.deleteMessage).not.toHaveBeenCalled();
+    });
+
+    it('opens the turn row as running and closes it as complete', async () => {
+      // The status is what a sweeper reads to tell an abandoned turn from a
+      // finished one — a crash never reaches the `finally` that would close it.
+      const h = makeHarness([...textDeltas('Done.'), DONE_EVENT]);
+
+      await run(h);
+
+      const opened = h.addMessage.mock.calls.find(
+        (c) => c[1] === 'assistant',
+      );
+      expect(opened?.[3]).toMatchObject({
+        maestroTurn: { status: 'running' },
+      });
+      const closed = savedMeta<{ maestroTurn: { status: string } }>(h);
+      expect(closed?.maestroTurn.status).toBe('complete');
+      expect(closed?.maestroTurn).toHaveProperty('endedAt');
+    });
+
+    it('closes the row as failed when the model errors out', async () => {
+      // A failed turn used to leave nothing at all. Now its row exists, so it
+      // must be closed here rather than left `running` for the sweeper.
+      const h = makeHarness([
+        ...textDeltas('A partial answer that was already streaming'),
+        { type: 'error', message: 'model exploded' } as AgentEvent,
+      ]);
+
+      await run(h);
+
+      const closed = savedMeta<{
+        maestroTurn: { status: string };
+        maestroStopped?: boolean;
+      }>(h);
+      expect(closed?.maestroTurn.status).toBe('failed');
+      // Not a stop: the user did not interrupt this, so the panel must not
+      // draw it as an answer they cut short.
+      expect(closed?.maestroStopped).toBeUndefined();
     });
   });
 
@@ -1076,9 +1178,14 @@ describe('MaestroService.streamMessage', () => {
       }
     }
 
-    /** The assistant rows this turn wrote. */
+    /**
+     * What this turn wrote into its own assistant row.
+     *
+     * The row is OPENED empty before the model runs and finished in place, so
+     * the content lands in `updateMessage`, not in an insert.
+     */
     function assistantSaves(h: Harness): unknown[][] {
-      return h.addMessage.mock.calls.filter((c) => c[1] === 'assistant');
+      return h.updateMessage.mock.calls.filter((c) => c[0] === TURN_ID);
     }
 
     it('keeps what a stopped turn had already written', async () => {
@@ -1093,7 +1200,7 @@ describe('MaestroService.streamMessage', () => {
 
       const [saved] = assistantSaves(h);
       expect(saved).toBeDefined();
-      expect(saved[2]).toContain('Here is');
+      expect((saved[1] as { content: string }).content).toContain('Here is');
     });
 
     it('marks the saved row as stopped', async () => {
@@ -1103,17 +1210,24 @@ describe('MaestroService.streamMessage', () => {
 
       await stopAfter(h, 2);
 
-      expect(assistantSaves(h)[0][3]).toMatchObject({ maestroStopped: true });
+      expect(
+        (assistantSaves(h)[0][1] as { metadata: unknown }).metadata,
+      ).toMatchObject({
+        maestroStopped: true,
+        maestroTurn: { status: 'stopped' },
+      });
     });
 
     it('writes nothing when the turn was stopped before it spoke', async () => {
       // An empty assistant row is worse than none: it reads as Maestro
-      // having answered with silence.
+      // having answered with silence. The row this turn opened for itself is
+      // removed rather than left behind blank.
       const h = makeHarness([...textDeltas('   '), DONE_EVENT]);
 
       await stopAfter(h, 1);
 
       expect(assistantSaves(h)).toHaveLength(0);
+      expect(h.deleteMessage).toHaveBeenCalledWith(TURN_ID);
     });
 
     /**
