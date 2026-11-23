@@ -128,14 +128,30 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
     // because nothing ever matched.
     const toolNameById = new Map<string, string>();
 
-    // Spend so far, summed across the turn's assistant messages.
+    // Spend so far, accrued across the turn's assistant messages.
     //
     // The `result` message at the end carries the turn's own total, but a turn
     // the user STOPS never reaches it — and the tokens were spent at Anthropic
     // either way. Tracking it as it accrues means a stopped turn can be
     // charged what it really cost instead of being guessed at or given away.
+    //
+    // ⚠ Input IS summed, deliberately. Each round is a separately-priced API
+    // request, so re-sending the conversation really is paid for again —
+    // Anthropic's own Agent SDK cost-tracking guidance accumulates per-step
+    // `input_tokens` with `+=` for exactly this reason. Taking only the last
+    // round's figure would UNDER-bill by every earlier round, worst on the
+    // longest turns.
+    //
+    // ⚠ But the SAME message id can arrive more than once: when the model
+    // calls several tools in one step, every assistant message of that step
+    // shares an id and repeats that step's usage. Those are the one real
+    // double-count, so each id is counted once.
+    //
+    // ⚠ `result.usage` (read by `done`) is the opposite case — the SDK has
+    // already totalled it across steps, so that one is ASSIGNED, never added.
     let runningInput = 0;
     let runningOutput = 0;
+    const meteredMessageIds = new Set<string>();
 
     try {
       for await (const message of conversation) {
@@ -154,11 +170,22 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
             break;
           }
           case 'assistant': {
-            // Each assistant message reports its own call's usage; one turn
-            // holds several of them when tools run, so these are summed.
+            // Each assistant message reports the usage of the step that
+            // produced it, and one turn holds several steps when tools run.
+            // Counted once per message id: a step that called several tools
+            // emits one message per tool, all carrying that step's usage.
             const used = message.message.usage;
-            if (used) {
-              runningInput += used.input_tokens ?? 0;
+            const msgId = message.message.id;
+            if (used && msgId && !meteredMessageIds.has(msgId)) {
+              meteredMessageIds.add(msgId);
+              runningInput +=
+                (used.input_tokens ?? 0) +
+                // The cached prefix is carved OUT of `input_tokens` into its
+                // own fields, so leaving these out undercounts the volume a
+                // long turn really sent. Priced the same here because our
+                // credits are flat internal units, not pass-through cost.
+                (used.cache_read_input_tokens ?? 0) +
+                (used.cache_creation_input_tokens ?? 0);
               runningOutput += used.output_tokens ?? 0;
               yield {
                 type: 'usage',

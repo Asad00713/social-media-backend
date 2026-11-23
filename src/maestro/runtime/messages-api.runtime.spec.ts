@@ -47,6 +47,8 @@ function scriptReply(opts: {
   content: unknown[];
   inputTokens?: number;
   outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
 }) {
   const events = (opts.deltas ?? []).map((delta) => ({
     type: 'content_block_delta' as const,
@@ -63,6 +65,12 @@ function scriptReply(opts: {
         usage: {
           input_tokens: opts.inputTokens ?? 10,
           output_tokens: opts.outputTokens ?? 5,
+          ...(opts.cacheReadTokens !== undefined
+            ? { cache_read_input_tokens: opts.cacheReadTokens }
+            : {}),
+          ...(opts.cacheCreationTokens !== undefined
+            ? { cache_creation_input_tokens: opts.cacheCreationTokens }
+            : {}),
         },
       }),
   };
@@ -399,6 +407,29 @@ describe('MessagesApiRuntime', () => {
       expect(done.usage.inputTokens).toBe(250);
       expect(done.usage.outputTokens).toBe(50);
       expect(done.usage.costUsd).toBeGreaterThan(0);
+    });
+
+    it('counts the cached prefix, which is carved out of input_tokens', async () => {
+      // This runtime marks a cache breakpoint, so `input_tokens` holds only
+      // what came AFTER it — the prefix is reported in its own two fields.
+      // Reading `input_tokens` alone made a long cached turn, which is most of
+      // this path's traffic after the first round, look nearly free.
+      mockStream.mockReturnValue(
+        scriptReply({
+          content: [{ type: 'text', text: 'hi' }],
+          inputTokens: 50,
+          cacheReadTokens: 9000,
+          cacheCreationTokens: 1000,
+          outputTokens: 5,
+        }),
+      );
+
+      const events = await collect(input());
+      const done = events[events.length - 1] as Extract<
+        AgentEvent,
+        { type: 'done' }
+      >;
+      expect(done.usage.inputTokens).toBe(10050);
     });
 
     it('prices an unknown model rather than reporting it as free', async () => {

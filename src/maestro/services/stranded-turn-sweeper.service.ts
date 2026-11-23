@@ -73,6 +73,15 @@ const BATCH = 200;
  * `cron-role.gate.ts` wrap the `SchedulerRegistry` and key on it, so a NAMED
  * cron is single-run and role-gated for free while an unnamed one would run on
  * every replica at once.
+ *
+ * ⚠ That applies to the TICK only. The boot pass below calls `sweep()`
+ * directly, so it is neither role-gated nor locked: it runs on every process
+ * of every role, and on each replica of a rolling deploy. That is deliberate
+ * and matches `stranded-post-sweeper.service.ts`, because the pass is
+ * idempotent bookkeeping — two processes closing the same row write the same
+ * thing, and a deploy is exactly when a stranded turn is most likely, so
+ * whichever process boots first should repair it. If this ever stops being
+ * idempotent, this boot pass has to go through the registry.
  */
 @Injectable()
 export class StrandedTurnSweeperService implements OnApplicationBootstrap {
