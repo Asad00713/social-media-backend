@@ -12,6 +12,12 @@ import { DrizzleModule } from '../drizzle/drizzle.module';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 import { PostsModule } from '../posts/posts.module';
 import { AiModule } from '../ai/ai.module';
+// For PostQueueService — the per-channel scheduling ceiling, which campaign
+// slots must respect like any other scheduled post. PostsModule imports
+// BillingModule for the same reason but does not re-export the service, and
+// BillingModule reaches only Stripe/Drizzle/Notifications — none of which
+// import CampaignsModule — so this is a plain import, not a forwardRef.
+import { BillingModule } from '../billing/billing.module';
 import { QUEUES } from '../queue/queue.module';
 
 @Module({
@@ -24,6 +30,7 @@ import { QUEUES } from '../queue/queue.module';
     ),
     PostsModule,
     AiModule,
+    BillingModule,
   ],
   controllers: [CampaignsController, EvergreenController],
   providers: [

@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { eq } from 'drizzle-orm';
@@ -6,6 +6,25 @@ import { db } from '../drizzle/db';
 import { posts, type PostTarget } from '../drizzle/schema/posts.schema';
 import type { ChannelDayContentJson } from '../drizzle/schema/campaigns.schema';
 import { QUEUES } from '../queue/queue.module';
+import { PostQueueService } from '../billing/services/post-queue.service';
+
+/**
+ * The workspace is at its plan's scheduling queue cap for this channel, so the
+ * slot cannot be materialized.
+ *
+ * A distinct type rather than letting the ForbiddenException through, because
+ * the campaign callers loop over slots and must be able to mark this one and
+ * continue. An uncaught refusal would abort a launch half-done.
+ */
+export class QueueLimitReachedError extends Error {
+  constructor(
+    readonly channelId: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'QueueLimitReachedError';
+  }
+}
 
 interface MaterializeInput {
   workspaceId: string;
@@ -36,6 +55,8 @@ export class CampaignPublishingService {
 
   constructor(
     @InjectQueue(QUEUES.POST_PUBLISHING) private readonly queue: Queue,
+    // New parameters go LAST: existing specs construct this positionally.
+    private readonly postQueue: PostQueueService,
   ) {}
 
   /** Deterministic per-(campaign,date,channel,time) job id → idempotent
@@ -72,6 +93,31 @@ export class CampaignPublishingService {
   async materializeAndEnqueue(
     input: MaterializeInput,
   ): Promise<{ postId: string; jobId: string }> {
+    // The plan's scheduling queue cap applies here too.
+    //
+    // `PostQueueService.enforceQueueLimit` guarded createPost, updatePost and
+    // the two composer paths, but not this one — so a campaign was a way to
+    // schedule past the cap without hitting it. Every campaign post (simple,
+    // drip and evergreen) comes through this function, which makes it the one
+    // place that closes that for all four callers.
+    //
+    // `enforceQueueLimit` throws, and none of the four callers catch: a launch
+    // loop would abort part-way, leaving some slots scheduled, the rest
+    // untouched, and the campaign never marked active. So the refusal is
+    // caught here and surfaced as `QueueLimitReachedError`, which a caller can
+    // treat per slot — the same shape the launch loop already uses for an
+    // unavailable channel (mark it, carry on).
+    try {
+      await this.postQueue.enforceQueueLimit(input.workspaceId, [
+        input.channelId,
+      ]);
+    } catch (err) {
+      if (err instanceof ForbiddenException) {
+        throw new QueueLimitReachedError(input.channelId, err.message);
+      }
+      throw err;
+    }
+
     const c = input.content;
     const platformContent: Record<string, { text?: string }> = {
       [input.platform]: { text: c.caption },
