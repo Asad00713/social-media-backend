@@ -2,6 +2,8 @@ import { asData } from '../../ai/lib/composer-assist';
 import {
   hasVoice,
   type BrandVoiceFields,
+  type EmojiLevel,
+  type HashtagsMode,
   type TweakPlatform,
 } from '../brand-voice.types';
 
@@ -26,7 +28,7 @@ function quotedList(values: string[]): string {
   return values.map(q).join(', ');
 }
 
-function emojiLine(level: BrandVoiceFields['emojiLevel']): string {
+function emojiLine(level: EmojiLevel): string {
   switch (level) {
     case 'none':
       return '- Emoji: none.';
@@ -37,10 +39,7 @@ function emojiLine(level: BrandVoiceFields['emojiLevel']): string {
   }
 }
 
-function hashtagsLine(
-  mode: BrandVoiceFields['hashtagsMode'],
-  saved: string[],
-): string {
+function hashtagsLine(mode: HashtagsMode, saved: string[]): string {
   switch (mode) {
     case 'none':
       return '- Hashtags: none.';
@@ -82,8 +81,9 @@ export function brandVoicePrompt(input: BrandVoicePromptInput): string {
       `- Never use these words or phrases: ${quotedList(voice.wordsAvoid)}.`,
     );
   }
-  lines.push(emojiLine(voice.emojiLevel));
-  if (!input.omitHashtags) {
+  // A null emoji level or hashtags mode was never chosen: say nothing.
+  if (voice.emojiLevel !== null) lines.push(emojiLine(voice.emojiLevel));
+  if (!input.omitHashtags && voice.hashtagsMode !== null) {
     lines.push(hashtagsLine(voice.hashtagsMode, input.savedHashtags ?? []));
   }
   const { platform } = input;
@@ -97,8 +97,11 @@ export function brandVoicePrompt(input: BrandVoicePromptInput): string {
   return lines.join('\n');
 }
 
-/** Whether the voice wants hashtags; `undefined` when there is no voice. */
+/**
+ * Whether the voice wants hashtags; `undefined` when there is no voice or no
+ * hashtags choice, so only a person who chose hashtags gets them (B6).
+ */
 export function hashtagsWanted(voice: BrandVoiceFields): boolean | undefined {
-  if (!hasVoice(voice)) return undefined;
+  if (!hasVoice(voice) || voice.hashtagsMode === null) return undefined;
   return voice.hashtagsMode !== 'none';
 }

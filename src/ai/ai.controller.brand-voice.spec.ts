@@ -139,6 +139,14 @@ describe('AiController brand voice', () => {
     expect(captionOptions().includeHashtags).toBe(false);
   });
 
+  it('generateCaption leaves includeHashtags undefined for a voice with no hashtag choice', async () => {
+    voiceIs({ ...WARM_VOICE, hashtagsMode: null });
+    await controller.generateCaption(WS, USER, captionDto());
+    expect(captionOptions().includeHashtags).toBeUndefined();
+    expect(captionOptions().voice).toContain('Warm');
+    expect(captionOptions().voice).not.toContain('Hashtags');
+  });
+
   it('generateCaption keeps an explicit includeHashtags: false', async () => {
     await controller.generateCaption(
       WS,

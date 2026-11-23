@@ -57,14 +57,18 @@ export type TweakPlatform = (typeof TWEAK_PLATFORMS)[number];
 /** Platform -> one line of extra guidance for that channel. */
 export type ChannelTweaks = Partial<Record<TweakPlatform, string>>;
 
-/** The part of a brand voice a person edits (and `previous` snapshots). */
+/**
+ * The part of a brand voice a person edits (and `previous` snapshots).
+ * `emojiLevel` and `hashtagsMode` are `null` until someone chooses one: the
+ * AI prompt then says nothing about emoji or hashtags.
+ */
 export interface BrandVoiceFields {
   tone: BrandTone[];
   description: string | null;
   wordsUse: string[];
   wordsAvoid: string[];
-  emojiLevel: EmojiLevel;
-  hashtagsMode: HashtagsMode;
+  emojiLevel: EmojiLevel | null;
+  hashtagsMode: HashtagsMode | null;
   channelTweaks: ChannelTweaks;
 }
 
@@ -91,11 +95,9 @@ export const workspaceBrandVoice = pgTable('workspace_brand_voice', {
     .array()
     .notNull()
     .default(sql`'{}'::text[]`),
-  emojiLevel: text('emoji_level').$type<EmojiLevel>().notNull().default('few'),
-  hashtagsMode: text('hashtags_mode')
-    .$type<HashtagsMode>()
-    .notNull()
-    .default('few'),
+  // NULL = not set; no default, so nobody gets a rule they did not choose.
+  emojiLevel: text('emoji_level').$type<EmojiLevel>(),
+  hashtagsMode: text('hashtags_mode').$type<HashtagsMode>(),
   channelTweaks: jsonb('channel_tweaks')
     .$type<ChannelTweaks>()
     .notNull()

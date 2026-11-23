@@ -47,6 +47,14 @@ describe('workspace_brand_voice schema', () => {
     );
   });
 
+  it('emoji_level and hashtags_mode are nullable with no default (NULL = not set)', () => {
+    for (const name of ['emoji_level', 'hashtags_mode']) {
+      const column = cfg.columns.find((c) => c.name === name);
+      expect(column?.notNull).toBe(false);
+      expect(column?.hasDefault).toBe(false);
+    }
+  });
+
   it('TWEAK_PLATFORMS is SUPPORTED_PLATFORMS without the integrations, in that order', () =>
     expect([...TWEAK_PLATFORMS]).toEqual(
       SUPPORTED_PLATFORMS.filter((p) => !INTEGRATION_PLATFORMS.includes(p)),

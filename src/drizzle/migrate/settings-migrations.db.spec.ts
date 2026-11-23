@@ -2022,7 +2022,7 @@ describeDb('0101 brand_voice', () => {
     return seedWorkspace(client, await seedUser(client));
   }
 
-  it('creates the table with its defaults', async () => {
+  it('creates the table with its defaults (emoji and hashtags not set)', async () => {
     const row = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const workspaceId = await freshWorkspace(client);
       await client.query(
@@ -2036,8 +2036,8 @@ describeDb('0101 brand_voice', () => {
       description: null,
       words_use: [],
       words_avoid: [],
-      emoji_level: 'few',
-      hashtags_mode: 'few',
+      emoji_level: null,
+      hashtags_mode: null,
       channel_tweaks: {},
       version: 1,
       previous: null,
@@ -2078,6 +2078,43 @@ describeDb('0101 brand_voice', () => {
     });
   });
 
+  it('accepts every emoji level and hashtags mode, and NULL for not set', async () => {
+    const rows = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const workspaceId = await freshWorkspace(client);
+      await client.query(
+        `INSERT INTO workspace_brand_voice (workspace_id) VALUES ($1)`,
+        [workspaceId],
+      );
+      const seen: Array<[string | null, string | null]> = [];
+      for (const [emoji, hashtags] of [
+        ['none', 'none'],
+        ['few', 'few'],
+        ['lots', 'many'],
+        ['few', 'saved_groups'],
+        [null, null],
+      ]) {
+        const r = await client.query<{
+          emoji_level: string | null;
+          hashtags_mode: string | null;
+        }>(
+          `UPDATE workspace_brand_voice SET emoji_level = $2, hashtags_mode = $3
+            WHERE workspace_id = $1
+            RETURNING emoji_level, hashtags_mode`,
+          [workspaceId, emoji, hashtags],
+        );
+        seen.push([r.rows[0].emoji_level, r.rows[0].hashtags_mode]);
+      }
+      return seen;
+    });
+    expect(rows).toEqual([
+      ['none', 'none'],
+      ['few', 'few'],
+      ['lots', 'many'],
+      ['few', 'saved_groups'],
+      [null, null],
+    ]);
+  });
+
   it('accepts the edges of the rules', async () => {
     const row = await withRollbackDb(MIGRATIONS, async (_db, client) => {
       const workspaceId = await freshWorkspace(client);
@@ -2109,6 +2146,48 @@ describeDb('0101 brand_voice', () => {
     expect(row?.tone).toEqual(['Warm', 'Witty', 'Clear', 'Calm']);
     expect(row?.description).toBe('Small-batch coffee for locals in Karachi');
     expect(row?.version).toBe(1);
+    // Nobody chose an emoji level or a hashtags mode: both stay not set.
+    expect(row?.emoji_level).toBeNull();
+    expect(row?.hashtags_mode).toBeNull();
+  });
+
+  it('trims tabs and newlines, not only spaces, around sells and audience', async () => {
+    const row = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const workspaceId = await freshWorkspace(client);
+      await seedBrandProfile(client, workspaceId, {
+        sells: '\tSmall-batch\n coffee\n',
+        audience: '\n locals \t',
+      });
+      await rerun0101(client);
+      return voiceRow(client, workspaceId);
+    });
+    expect(row?.description).toBe('Small-batch coffee for locals');
+  });
+
+  it('a whitespace-only sells backfills no description', async () => {
+    const result = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const blank = await freshWorkspace(client);
+      const withTone = await freshWorkspace(client);
+      await seedBrandProfile(client, blank, {
+        sells: '\n\t',
+        audience: 'locals',
+      });
+      await seedBrandProfile(client, withTone, {
+        sells: ' \n\t ',
+        audience: 'locals',
+        voice: ['Calm'],
+      });
+      await rerun0101(client);
+      return {
+        blank: await voiceRow(client, blank),
+        withTone: await voiceRow(client, withTone),
+      };
+    });
+    expect(result.blank).toBeUndefined();
+    expect(result.withTone).toMatchObject({
+      tone: ['Calm'],
+      description: null,
+    });
   });
 
   it('cuts a long description to 240 code points', async () => {
@@ -2124,6 +2203,21 @@ describeDb('0101 brand_voice', () => {
       return r.rows[0];
     });
     expect(row.n).toBe(240);
+  });
+
+  it('skips a learned brand whose platform is unknown (fail closed)', async () => {
+    const row = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const workspaceId = await freshWorkspace(client);
+      await seedBrandProfile(client, workspaceId, {
+        source: 'posts',
+        sourcePlatform: null,
+        sells: 'Coffee',
+        voice: ['Warm'],
+      });
+      await rerun0101(client);
+      return voiceRow(client, workspaceId);
+    });
+    expect(row).toBeUndefined();
   });
 
   it('skips a brand learned from Threads', async () => {

@@ -33,6 +33,22 @@ describe('UpdateBrandVoiceDto', () => {
       'a NUL in a tweak',
       { version: 1, channelTweaks: { linkedin: 'x\u0000' } },
     ],
+    [
+      'a lone surrogate in the description',
+      { version: 1, description: 'a\ud800b' },
+    ],
+    [
+      'a lone surrogate in a word to use',
+      { version: 1, wordsUse: ['ok', '\ud800'] },
+    ],
+    [
+      'a lone low surrogate in a word to avoid',
+      { version: 1, wordsAvoid: ['\udc00x'] },
+    ],
+    [
+      'a lone surrogate in a tweak',
+      { version: 1, channelTweaks: { linkedin: 'x\ud800' } },
+    ],
     ['a numeric description', { version: 1, description: 5 }],
     [
       '21 words',
@@ -61,6 +77,8 @@ describe('UpdateBrandVoiceDto', () => {
     ['a null tweak map', { version: 1, channelTweaks: null }],
     ['emoji "some"', { version: 1, emojiLevel: 'some' }],
     ['hashtags "lots"', { version: 1, hashtagsMode: 'lots' }],
+    ['emoji as an empty string', { version: 1, emojiLevel: '' }],
+    ['hashtags as a number', { version: 1, hashtagsMode: 0 }],
     ['no version', { tone: ['Warm'] }],
     ['version 0', { version: 0, tone: ['Warm'] }],
     ['a fractional version', { version: 1.5, tone: ['Warm'] }],
@@ -90,6 +108,26 @@ describe('UpdateBrandVoiceDto', () => {
         emojiLevel: 'none',
         hashtagsMode: 'saved_groups',
         channelTweaks: { linkedin: 'Longer and more formal', twitter: '' },
+      }),
+    ).toEqual([]);
+  });
+
+  it('accepts null emoji and hashtags, which reset them to not set', async () => {
+    expect(await errorsFor({ version: 1, emojiLevel: null })).toEqual([]);
+    expect(await errorsFor({ version: 1, hashtagsMode: null })).toEqual([]);
+    expect(
+      await errorsFor({ version: 1, emojiLevel: null, hashtagsMode: null }),
+    ).toEqual([]);
+  });
+
+  it('accepts a well-formed surrogate pair (an emoji) in every string field', async () => {
+    expect(
+      await errorsFor({
+        version: 1,
+        description: 'Coffee \u{1F600}',
+        wordsUse: ['\u{1F600}'],
+        wordsAvoid: ['x\u{1F600}'],
+        channelTweaks: { linkedin: '\u{1F600} more formal' },
       }),
     ).toEqual([]);
   });

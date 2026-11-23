@@ -22,6 +22,19 @@ const LINE_BREAK = /[\r\n]/;
 /** Postgres rejects U+0000 in text and jsonb, which would surface as a 500. */
 const hasNul = (value: string): boolean => value.includes('\u0000');
 
+/**
+ * A high surrogate not followed by a low one, or a low one not preceded by a
+ * high one. Postgres cannot encode a lone surrogate as UTF-8 and the write
+ * fails as a 500. Same answer as `!String.prototype.isWellFormed()` (ES2024,
+ * outside this project's ES2023 lib), on UTF-16 code units: no `u` flag.
+ */
+const LONE_SURROGATE =
+  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+/** Whether `value` is well-formed UTF-16 (every surrogate is paired). */
+export const isWellFormed = (value: string): boolean =>
+  !LONE_SURROGATE.test(value);
+
 /** A string of at most `max` code points. Respects `{ each: true }`. */
 export function MaxCodePoints(
   max: number,
@@ -66,6 +79,30 @@ export function NoNulChars(
   );
 }
 
+/**
+ * A string with no lone surrogate (well-formed UTF-16), so Postgres can
+ * store it. Respects `{ each: true }`.
+ */
+export function WellFormedText(
+  validationOptions?: ValidationOptions,
+): PropertyDecorator {
+  return ValidateBy(
+    {
+      name: 'wellFormedText',
+      validator: {
+        validate: (value: unknown) =>
+          typeof value === 'string' && isWellFormed(value),
+        defaultMessage: buildMessage(
+          (eachPrefix) =>
+            `${eachPrefix}$property must not contain an unpaired surrogate`,
+          validationOptions,
+        ),
+      },
+    },
+    validationOptions,
+  );
+}
+
 /** A string with no `\r` or `\n`: one line. Respects `{ each: true }`. */
 export function NoLineBreaks(
   validationOptions?: ValidationOptions,
@@ -96,8 +133,8 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> => {
 
 /**
  * A plain object whose keys are publishing platforms and whose values are
- * one-line strings without NUL, of at most 120 code points. An empty string is allowed:
- * it removes that platform's tweak.
+ * one-line, well-formed strings without NUL, of at most 120 code points. An
+ * empty string is allowed: it removes that platform's tweak.
  */
 export function IsChannelTweaks(
   validationOptions?: ValidationOptions,
@@ -115,6 +152,7 @@ export function IsChannelTweaks(
               typeof line === 'string' &&
               !LINE_BREAK.test(line) &&
               !hasNul(line) &&
+              isWellFormed(line) &&
               codePointLength(line) <= BRAND_VOICE_LIMITS.tweak,
           ),
         defaultMessage: buildMessage(

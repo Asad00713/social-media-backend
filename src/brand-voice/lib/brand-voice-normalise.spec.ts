@@ -93,6 +93,13 @@ describe('brand-voice-normalise', () => {
       });
     });
 
+    it('carries an explicit null emoji or hashtags choice through as null', () => {
+      expect(normalisePatch({ emojiLevel: null, hashtagsMode: null })).toEqual({
+        emojiLevel: null,
+        hashtagsMode: null,
+      });
+    });
+
     it('does not add a key for an undefined value', () => {
       expect(
         Object.keys(normalisePatch({ tone: undefined, emojiLevel: 'lots' })),

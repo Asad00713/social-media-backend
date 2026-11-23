@@ -42,6 +42,8 @@ describe('brand-voice-seed', () => {
     it('is null without sells, even with an audience', () => {
       expect(descriptionFromBrand(null, 'locals')).toBeNull();
       expect(descriptionFromBrand('   ', 'locals')).toBeNull();
+      // Every kind of whitespace, as the 0101 backfill trims it.
+      expect(descriptionFromBrand('\n\t', 'locals')).toBeNull();
     });
 
     it('cuts at 240 code points', () => {
@@ -58,6 +60,12 @@ describe('brand-voice-seed', () => {
       expect(descriptionFromBrand('a'.repeat(239) + ' bbb', null)).toBe(
         'a'.repeat(239),
       );
+    });
+
+    it('trims tabs and newlines around sells and audience', () => {
+      expect(
+        descriptionFromBrand('\tSmall-batch\n coffee\n', '\n locals \t'),
+      ).toBe('Small-batch coffee for locals');
     });
 
     it('collapses whitespace inside sells and audience', () => {

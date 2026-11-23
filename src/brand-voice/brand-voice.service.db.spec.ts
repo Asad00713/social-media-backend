@@ -32,7 +32,8 @@ interface StoredRow {
   tone: string[];
   description: string | null;
   words_use: string[];
-  emoji_level: string;
+  emoji_level: string | null;
+  hashtags_mode: string | null;
   version: number;
   previous: Record<string, unknown> | null;
 }
@@ -42,7 +43,8 @@ async function storedRow(
   workspaceId: string,
 ): Promise<StoredRow | null> {
   const r = await client.query<StoredRow>(
-    `SELECT tone, description, words_use, emoji_level, version, previous
+    `SELECT tone, description, words_use, emoji_level, hashtags_mode, version,
+            previous
        FROM workspace_brand_voice WHERE workspace_id = $1`,
     [workspaceId],
   );
@@ -227,7 +229,43 @@ describeDb('BrandVoiceService (database)', () => {
         ...DEFAULT_BRAND_VOICE_FIELDS,
         tone: ['Warm', 'Clear'],
       });
-      expect(row?.previous?.emojiLevel).toBe('few');
+      expect(row?.previous?.emojiLevel).toBeNull();
+    });
+  });
+
+  it('emoji and hashtags start not set; previous and Undo keep null; a null save resets a choice', async () => {
+    await withRollbackDb(MIGRATIONS, async (db, client) => {
+      const { workspaceId: ws } = await seedWorkspace(client);
+      const svc = new BrandVoiceService(db);
+
+      await svc.update(ws, { version: 1, tone: ['Warm'] });
+      expect(await storedRow(client, ws)).toMatchObject({
+        emoji_level: null,
+        hashtags_mode: null,
+      });
+
+      await svc.update(ws, {
+        version: 2,
+        emojiLevel: 'lots',
+        hashtagsMode: 'many',
+      });
+      expect((await storedRow(client, ws))?.previous).toMatchObject({
+        emojiLevel: null,
+        hashtagsMode: null,
+      });
+      // Undo goes back to not set, not to a default.
+      expect(await svc.revert(ws, 3)).toMatchObject({
+        emojiLevel: null,
+        hashtagsMode: null,
+        version: 4,
+      });
+
+      await svc.update(ws, { version: 4, emojiLevel: 'none' });
+      const reset = await svc.update(ws, { version: 5, emojiLevel: null });
+      expect(reset).toMatchObject({ emojiLevel: null, version: 6 });
+      const row = await storedRow(client, ws);
+      expect(row?.emoji_level).toBeNull();
+      expect(row?.previous).toMatchObject({ emojiLevel: 'none' });
     });
   });
 
@@ -360,6 +398,8 @@ describeDb('BrandVoiceService (database)', () => {
       expect(await storedRow(client, fresh.workspaceId)).toMatchObject({
         tone: ['Warm', 'Bold'],
         description: 'Candles for gift buyers',
+        emoji_level: null,
+        hashtags_mode: null,
         version: 2,
         previous: null,
       });

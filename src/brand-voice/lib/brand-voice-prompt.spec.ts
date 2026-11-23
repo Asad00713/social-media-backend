@@ -133,6 +133,44 @@ describe('brandVoicePrompt', () => {
     ).toContain(line);
   });
 
+  it('a voice with a tone but no emoji or hashtag choice prints neither line', () => {
+    const out = brandVoicePrompt({
+      voice: {
+        ...DEFAULT_BRAND_VOICE_FIELDS,
+        tone: ['Warm'],
+        emojiLevel: null,
+        hashtagsMode: null,
+      },
+      savedHashtags: ['#coffee'],
+    });
+    expect(out.split('\n').slice(2)).toEqual(['- Tone: Warm.']);
+    expect(out).not.toContain('Emoji');
+    expect(out).not.toContain('Hashtags');
+  });
+
+  it('a chosen emoji level still prints with no hashtag choice, and the other way round', () => {
+    const base = {
+      ...DEFAULT_BRAND_VOICE_FIELDS,
+      tone: ['Warm'],
+    } as BrandVoiceFields;
+    expect(
+      brandVoicePrompt({ voice: { ...base, emojiLevel: 'few' } }).split('\n'),
+    ).toEqual([
+      expect.any(String),
+      expect.any(String),
+      '- Tone: Warm.',
+      '- Emoji: at most 1 or 2.',
+    ]);
+    expect(
+      brandVoicePrompt({ voice: { ...base, hashtagsMode: 'few' } }).split('\n'),
+    ).toEqual([
+      expect.any(String),
+      expect.any(String),
+      '- Tone: Warm.',
+      '- Hashtags: 2 or 3.',
+    ]);
+  });
+
   it('saved_groups lists the saved tags, and falls back to few without them', () => {
     const voice = { ...FULL, hashtagsMode: 'saved_groups' } as BrandVoiceFields;
     expect(lines(voice, { savedHashtags: ['#coffee', '#karachi'] })).toContain(
@@ -195,11 +233,12 @@ describe('withBrandVoice', () => {
 });
 
 describe('hashtagsWanted', () => {
-  it('is undefined without a voice, false for none, true otherwise', () => {
+  it('is undefined without a voice or without a choice, false for none, true otherwise', () => {
     expect(hashtagsWanted(DEFAULT_BRAND_VOICE_FIELDS)).toBeUndefined();
     expect(
       hashtagsWanted({ ...DEFAULT_BRAND_VOICE_FIELDS, hashtagsMode: 'none' }),
     ).toBeUndefined();
+    expect(hashtagsWanted({ ...FULL, hashtagsMode: null })).toBeUndefined();
     expect(hashtagsWanted({ ...FULL, hashtagsMode: 'none' })).toBe(false);
     expect(hashtagsWanted({ ...FULL, hashtagsMode: 'few' })).toBe(true);
     expect(hashtagsWanted({ ...FULL, hashtagsMode: 'saved_groups' })).toBe(

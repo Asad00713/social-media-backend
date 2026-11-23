@@ -38,14 +38,14 @@ describe('brand-voice types', () => {
     });
   });
 
-  it('defaults are empty, with few emoji and few hashtags', () => {
+  it('defaults are empty, with emoji and hashtags not set (null)', () => {
     expect(DEFAULT_BRAND_VOICE_FIELDS).toEqual({
       tone: [],
       description: null,
       wordsUse: [],
       wordsAvoid: [],
-      emojiLevel: 'few',
-      hashtagsMode: 'few',
+      emojiLevel: null,
+      hashtagsMode: null,
       channelTweaks: {},
     });
   });
@@ -116,6 +116,14 @@ describe('brand-voice types', () => {
       });
       expect(result).not.toHaveProperty('previous');
       expect(result).not.toHaveProperty('workspaceId');
+    });
+
+    it('answers null emoji and hashtags for a row that never chose them', () => {
+      expect(
+        toBrandVoice(
+          row({ tone: ['Warm'], emojiLevel: null, hashtagsMode: null }),
+        ),
+      ).toMatchObject({ emojiLevel: null, hashtagsMode: null, hasVoice: true });
     });
 
     it('does not hand out the shared defaults to be mutated', () => {

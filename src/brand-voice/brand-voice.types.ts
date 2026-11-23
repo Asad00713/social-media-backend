@@ -40,8 +40,9 @@ export const DEFAULT_BRAND_VOICE_FIELDS: BrandVoiceFields = {
   description: null,
   wordsUse: [],
   wordsAvoid: [],
-  emojiLevel: 'few',
-  hashtagsMode: 'few',
+  // Not set: the prompt says nothing about emoji or hashtags.
+  emojiLevel: null,
+  hashtagsMode: null,
   channelTweaks: {},
 };
 
@@ -57,8 +58,8 @@ export type BrandVoicePatch = Partial<BrandVoiceFields> & { version: number };
 
 /**
  * Whether the workspace has said anything about its voice. Emoji, hashtags and
- * tweaks do not count: they have defaults, so on their own they are not a
- * voice and the AI prompts stay exactly as they were.
+ * tweaks do not count: on their own they are not a voice, and the AI prompts
+ * stay exactly as they were.
  */
 export function hasVoice(
   v: Pick<BrandVoiceFields, 'tone' | 'description' | 'wordsUse' | 'wordsAvoid'>,

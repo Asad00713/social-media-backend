@@ -299,8 +299,106 @@ describe('FirstWeekService.saveBrand', () => {
     });
   });
 
+  it('seeds the brand voice before a Describe enqueues the first-week run', async () => {
+    const { svc, repo, queue, brandVoice } = make({ profile: null });
+    repo.getProfile
+      .mockResolvedValueOnce(null as any)
+      .mockResolvedValue(profile({ source: 'described', status: 'drafting' }));
+    await svc.saveBrand(WS, 'u1', dto);
+    expect(queue.enqueue).toHaveBeenCalledTimes(1);
+    expect(brandVoice.seedFromBrand.mock.invocationCallOrder[0]).toBeLessThan(
+      queue.enqueue.mock.invocationCallOrder[0],
+    );
+    // ...and after the brand itself was written.
+    expect(repo.insertProfileIfAbsent.mock.invocationCallOrder[0]).toBeLessThan(
+      brandVoice.seedFromBrand.mock.invocationCallOrder[0],
+    );
+  });
+
+  it.each([
+    [
+      'a never-learned brand (described re-run)',
+      { sells: null, voice: [], audience: null, status: 'needs_description' },
+      { sourcePlatform: null },
+      'saveDescribedBrand',
+    ],
+    [
+      'a learned brand that failed (re-run keeps its platform)',
+      { status: 'failed' },
+      { sourcePlatform: 'instagram' },
+      'updateBrand',
+    ],
+  ] as const)(
+    'seeds before the re-run is enqueued for %s',
+    async (_name, over, seedOpts, write) => {
+      const { svc, repo, queue, brandVoice } = make({
+        profile: profile(over),
+      });
+      await svc.saveBrand(WS, 'u1', dto);
+      expect(queue.enqueue).toHaveBeenCalledTimes(1);
+      expect(brandVoice.seedFromBrand).toHaveBeenCalledTimes(1);
+      expect(brandVoice.seedFromBrand).toHaveBeenCalledWith(
+        WS,
+        clean,
+        seedOpts,
+      );
+      expect(repo[write].mock.invocationCallOrder[0]).toBeLessThan(
+        brandVoice.seedFromBrand.mock.invocationCallOrder[0],
+      );
+      expect(brandVoice.seedFromBrand.mock.invocationCallOrder[0]).toBeLessThan(
+        queue.enqueue.mock.invocationCallOrder[0],
+      );
+    },
+  );
+
+  it('still answers the stored profile after seeding', async () => {
+    const { svc, repo } = make({ profile: null });
+    repo.getProfile
+      .mockResolvedValueOnce(null as any)
+      .mockResolvedValue(
+        profile({ source: 'described', status: 'drafting', sells: 'Bikes' }),
+      );
+    const view = await svc.saveBrand(WS, 'u1', dto);
+    expect(view).toMatchObject({ status: 'drafting', sells: 'Bikes' });
+  });
+
+  it('does not seed an Edit of a learned brand whose platform is unknown (fail closed)', async () => {
+    const { svc, repo, brandVoice } = make({
+      profile: profile({ source: 'posts', sourcePlatform: null }),
+    });
+    await svc.saveBrand(WS, 'u1', dto);
+    expect(repo.updateBrand).toHaveBeenCalledWith(WS, clean);
+    expect(brandVoice.seedFromBrand).not.toHaveBeenCalled();
+  });
+
+  it('does not seed a failed learned brand whose platform is unknown, but still re-runs it', async () => {
+    const { svc, queue, brandVoice } = make({
+      profile: profile({
+        source: 'posts',
+        sourcePlatform: null,
+        status: 'failed',
+      }),
+    });
+    await svc.saveBrand(WS, 'u1', dto);
+    expect(queue.enqueue).toHaveBeenCalledTimes(1);
+    expect(brandVoice.seedFromBrand).not.toHaveBeenCalled();
+  });
+
+  it('after losing the insert race to a posts profile not yet learned, does not seed', async () => {
+    const { svc, repo, brandVoice } = make({ profile: null });
+    repo.insertProfileIfAbsent.mockResolvedValue(false);
+    repo.getProfile
+      .mockResolvedValueOnce(null as any)
+      .mockResolvedValue(
+        profile({ source: 'posts', sourcePlatform: null, status: 'reading' }),
+      );
+    await svc.saveBrand(WS, 'u1', dto);
+    expect(repo.updateBrand).toHaveBeenCalledWith(WS, clean);
+    expect(brandVoice.seedFromBrand).not.toHaveBeenCalled();
+  });
+
   it('falls through to an update when it lost the insert race', async () => {
-    const { svc, repo, queue } = make({ profile: null });
+    const { svc, repo, queue, brandVoice } = make({ profile: null });
     repo.insertProfileIfAbsent.mockResolvedValue(false);
     repo.getProfile
       .mockResolvedValueOnce(null as any)
@@ -308,6 +406,9 @@ describe('FirstWeekService.saveBrand', () => {
     await svc.saveBrand(WS, 'u1', dto);
     expect(repo.updateBrand).toHaveBeenCalledWith(WS, clean);
     expect(queue.enqueue).not.toHaveBeenCalled();
+    expect(brandVoice.seedFromBrand).toHaveBeenCalledWith(WS, clean, {
+      sourcePlatform: 'instagram',
+    });
   });
 
   it('updates a learned brand without redrafting', async () => {

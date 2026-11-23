@@ -24,10 +24,14 @@ import {
   MaxCodePoints,
   NoLineBreaks,
   NoNulChars,
+  WellFormedText,
 } from './max-code-points';
 
 /** Skips the validators when the field is left out; `null` still fails. */
 const whenPresent = (_dto: unknown, value: unknown) => value !== undefined;
+
+/** Skips the validators when the field is left out or `null`. */
+const whenNotNull = (_dto: unknown, value: unknown) => value != null;
 
 export class UpdateBrandVoiceDto implements BrandVoicePatch {
   /** The version the client read; the save is refused if it moved on. */
@@ -43,10 +47,11 @@ export class UpdateBrandVoiceDto implements BrandVoicePatch {
   tone?: BrandTone[];
 
   /** One sentence, or `null` to clear it. */
-  @ValidateIf((_dto: unknown, value: unknown) => value != null)
+  @ValidateIf(whenNotNull)
   @IsString()
   @NoLineBreaks()
   @NoNulChars()
+  @WellFormedText()
   @MaxCodePoints(BRAND_VOICE_LIMITS.description)
   description?: string | null;
 
@@ -55,6 +60,7 @@ export class UpdateBrandVoiceDto implements BrandVoicePatch {
   @ArrayMaxSize(BRAND_VOICE_LIMITS.words)
   @IsString({ each: true })
   @NoNulChars({ each: true })
+  @WellFormedText({ each: true })
   @MaxCodePoints(BRAND_VOICE_LIMITS.word, { each: true })
   wordsUse?: string[];
 
@@ -63,16 +69,19 @@ export class UpdateBrandVoiceDto implements BrandVoicePatch {
   @ArrayMaxSize(BRAND_VOICE_LIMITS.words)
   @IsString({ each: true })
   @NoNulChars({ each: true })
+  @WellFormedText({ each: true })
   @MaxCodePoints(BRAND_VOICE_LIMITS.word, { each: true })
   wordsAvoid?: string[];
 
-  @ValidateIf(whenPresent)
+  /** A level, or `null` to reset it to not set. */
+  @ValidateIf(whenNotNull)
   @IsIn(EMOJI_LEVELS)
-  emojiLevel?: EmojiLevel;
+  emojiLevel?: EmojiLevel | null;
 
-  @ValidateIf(whenPresent)
+  /** A mode, or `null` to reset it to not set. */
+  @ValidateIf(whenNotNull)
   @IsIn(HASHTAGS_MODES)
-  hashtagsMode?: HashtagsMode;
+  hashtagsMode?: HashtagsMode | null;
 
   /** Replaces the whole map; `''` removes that platform's line. */
   @ValidateIf(whenPresent)
