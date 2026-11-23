@@ -70,6 +70,23 @@ export type AgentEvent =
       isError: boolean;
     }
   | {
+      /**
+       * Spend so far, reported as the turn runs rather than at the end of it.
+       *
+       * A turn only reports its total when it finishes, so a turn the user
+       * STOPS mid-flight would otherwise look free — the tokens are spent at
+       * the provider either way. Emitting the running total as each assistant
+       * message lands means the service always holds a real figure to charge,
+       * never an estimate.
+       *
+       * Cumulative for the turn, not a delta: a consumer assigns it rather
+       * than adding it up, so a duplicate or a missed event cannot drift the
+       * total.
+       */
+      type: 'usage';
+      usage: { inputTokens: number; outputTokens: number; costUsd: number };
+    }
+  | {
       type: 'done';
       usage: { inputTokens: number; outputTokens: number; costUsd: number };
     }

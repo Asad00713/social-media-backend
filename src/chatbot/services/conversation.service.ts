@@ -6,6 +6,7 @@ import {
   conversations,
   chatMessages,
   MessageRole,
+  type NewChatMessage,
 } from '../../drizzle/schema/chatbot.schema';
 
 @Injectable()
@@ -244,6 +245,52 @@ export class ConversationService {
       .update(chatMessages)
       .set({ metadata })
       .where(eq(chatMessages.id, messageId));
+  }
+
+  /**
+   * Update a message in place.
+   *
+   * Maestro inserts its assistant row UP FRONT, the moment the turn starts, so
+   * that the turn has an id and a status from its first breath — a stop, a
+   * crash or a later Continue all need something to point at. The reply is then
+   * written into that row as it finishes, which is what this does.
+   *
+   * `setMessageMetadata` cannot serve: it replaces metadata only, and the row
+   * being finalized needs its content too.
+   *
+   * Only the fields passed are touched — an `undefined` leaves the column
+   * alone, while an explicit `null` content clears it (a turn can legitimately
+   * end with media or a question and no text).
+   */
+  async updateMessage(
+    messageId: string,
+    fields: {
+      content?: string | null;
+      metadata?: Record<string, unknown> | null;
+      tokenCount?: number;
+    },
+  ) {
+    const set: Partial<NewChatMessage> = {};
+    if ('content' in fields) set.content = fields.content;
+    if ('metadata' in fields) set.metadata = fields.metadata as never;
+    if (fields.tokenCount !== undefined) set.tokenCount = fields.tokenCount;
+    if (Object.keys(set).length === 0) return;
+
+    await this.db
+      .update(chatMessages)
+      .set(set)
+      .where(eq(chatMessages.id, messageId));
+  }
+
+  /**
+   * Delete a single message.
+   *
+   * Used to clear away a turn row that was opened but produced nothing — a
+   * stop before the model wrote a word, or a turn that answered with neither
+   * text nor media. Leaving it would render as an empty bubble on reload.
+   */
+  async deleteMessage(messageId: string) {
+    await this.db.delete(chatMessages).where(eq(chatMessages.id, messageId));
   }
 
   /**

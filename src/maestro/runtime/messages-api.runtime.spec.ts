@@ -127,9 +127,13 @@ describe('MessagesApiRuntime', () => {
       );
 
       const events = await collect(input());
+      // `usage` lands once the reply is complete and before `done`: the
+      // running spend is reported as it accrues, so a turn the user stops can
+      // still be charged what it used.
       expect(events.map((e) => e.type)).toEqual([
         'thinking_delta',
         'text_delta',
+        'usage',
         'done',
       ]);
     });
@@ -151,10 +155,14 @@ describe('MessagesApiRuntime', () => {
         );
 
       const events = await collect(input());
+      // One `usage` per model round — the tool round and the answer round —
+      // each carrying the running total rather than that round's own spend.
       expect(events.map((e) => e.type)).toEqual([
+        'usage',
         'tool_call',
         'tool_result',
         'text_delta',
+        'usage',
         'done',
       ]);
     });
@@ -219,7 +227,11 @@ describe('MessagesApiRuntime', () => {
       );
 
       expect(events.filter((e) => e.type === 'error')).toEqual([]);
-      expect(events.map((e) => e.type)).toEqual(['text_delta', 'done']);
+      expect(events.map((e) => e.type)).toEqual([
+        'text_delta',
+        'usage',
+        'done',
+      ]);
     });
   });
 

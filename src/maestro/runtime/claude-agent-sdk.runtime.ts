@@ -128,6 +128,15 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
     // because nothing ever matched.
     const toolNameById = new Map<string, string>();
 
+    // Spend so far, summed across the turn's assistant messages.
+    //
+    // The `result` message at the end carries the turn's own total, but a turn
+    // the user STOPS never reaches it — and the tokens were spent at Anthropic
+    // either way. Tracking it as it accrues means a stopped turn can be
+    // charged what it really cost instead of being guessed at or given away.
+    let runningInput = 0;
+    let runningOutput = 0;
+
     try {
       for await (const message of conversation) {
         switch (message.type) {
@@ -145,6 +154,24 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
             break;
           }
           case 'assistant': {
+            // Each assistant message reports its own call's usage; one turn
+            // holds several of them when tools run, so these are summed.
+            const used = message.message.usage;
+            if (used) {
+              runningInput += used.input_tokens ?? 0;
+              runningOutput += used.output_tokens ?? 0;
+              yield {
+                type: 'usage',
+                usage: {
+                  inputTokens: runningInput,
+                  outputTokens: runningOutput,
+                  // Only the `result` message prices the turn. Until it
+                  // arrives the cost is unknown, which is not the same as
+                  // free — the token counts above are the real figure.
+                  costUsd: 0,
+                },
+              };
+            }
             for (const block of message.message.content) {
               if (block.type === 'tool_use') {
                 const name = stripQualifiedToolName(block.name);
