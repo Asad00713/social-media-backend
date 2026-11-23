@@ -5,6 +5,7 @@ import { db } from '../db';
 import { plans, addonPricing } from '../schema';
 import { sql, eq } from 'drizzle-orm';
 import { PLAN_STORAGE_BYTES } from '../../billing/plan-storage';
+import { UNLIMITED } from '../../billing/services/limit-resolver.util';
 
 export async function seedPlans() {
   console.log('Seeding plans...');
@@ -20,6 +21,12 @@ export async function seedPlans() {
       channelsPerWorkspace: 3,
       membersPerWorkspace: 1,
       maxWorkspaces: 1,
+      // A queue depth, not a volume cap: this counts posts sitting in
+      // `scheduled`, and publishing frees the slot. So a Free workspace can
+      // publish as much as it likes — it just cannot stack more than 10 ahead
+      // per channel. Same model as Buffer's free tier ("10 scheduled posts per
+      // channel - refill anytime").
+      queuedPostsPerChannel: 10,
       aiTokensPerMonth: 100, // Enough for the first week (about 33) plus a few captions
       features: {
         basicScheduling: true,
@@ -40,6 +47,7 @@ export async function seedPlans() {
       channelsPerWorkspace: 5,
       membersPerWorkspace: 2,
       maxWorkspaces: 1,
+      queuedPostsPerChannel: 100,
       aiTokensPerMonth: 10000, // 10k AI tokens per month
       features: {
         basicScheduling: true,
@@ -60,12 +68,16 @@ export async function seedPlans() {
       channelsPerWorkspace: 8,
       membersPerWorkspace: 5,
       maxWorkspaces: 3,
+      queuedPostsPerChannel: UNLIMITED,
       aiTokensPerMonth: 20000, // 20k AI tokens per month
       features: {
         basicScheduling: true,
         analytics: true,
         advancedScheduling: true,
-        apiAccess: true,
+        // No inbound API exists — no key table, no auth strategy, no public
+        // controller. This was advertising something unbuilt, so it reads
+        // false until there is an API to grant.
+        apiAccess: false,
         prioritySupport: false,
         whiteLabel: false,
         aiFeatures: true,
@@ -80,14 +92,18 @@ export async function seedPlans() {
       channelsPerWorkspace: 50,
       membersPerWorkspace: 25,
       maxWorkspaces: 10,
+      queuedPostsPerChannel: UNLIMITED,
       aiTokensPerMonth: 50000, // 50k AI tokens per month
       features: {
         basicScheduling: true,
         analytics: true,
         advancedScheduling: true,
-        apiAccess: true,
+        // See the PRO note: there is no API to grant yet.
+        apiAccess: false,
         prioritySupport: true,
-        whiteLabel: true,
+        // Nothing implements white-label — no custom domain, no logo
+        // override, no email branding. False until it exists.
+        whiteLabel: false,
         aiFeatures: true,
       },
       isActive: true,
@@ -105,6 +121,11 @@ export async function seedPlans() {
         channelsPerWorkspace: sql`excluded.channels_per_workspace`,
         membersPerWorkspace: sql`excluded.members_per_workspace`,
         maxWorkspaces: sql`excluded.max_workspaces`,
+        // Was missing: every plan row therefore kept the column default (-1,
+        // unlimited) however the seed changed, so the queue cap that
+        // post-queue.service.ts already enforces never actually applied to
+        // anyone. A value in `planData` alone does not reach an existing row.
+        queuedPostsPerChannel: sql`excluded.queued_posts_per_channel`,
         aiTokensPerMonth: sql`excluded.ai_tokens_per_month`,
         storageBytesPerWorkspace: sql`excluded.storage_bytes_per_workspace`,
         features: sql`excluded.features`,
