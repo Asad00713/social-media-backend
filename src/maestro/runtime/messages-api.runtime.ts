@@ -163,6 +163,21 @@ export class MessagesApiRuntime implements AgentRuntime {
         inputTokens += reply.usage.input_tokens;
         outputTokens += reply.usage.output_tokens;
 
+        // Report the running spend before deciding whether the turn is over.
+        //
+        // A turn the user STOPS never reaches the `done` below, and the tokens
+        // above were spent at Anthropic either way — so the service is told as
+        // the cost accrues, and can charge a stopped turn what it really used.
+        // Cumulative, so a consumer assigns rather than adds.
+        yield {
+          type: 'usage',
+          usage: {
+            inputTokens,
+            outputTokens,
+            costUsd: costUsd(input.model, inputTokens, outputTokens),
+          },
+        };
+
         const toolUses = reply.content.filter(
           (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
         );

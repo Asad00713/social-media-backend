@@ -1116,6 +1116,100 @@ describe('MaestroService.streamMessage', () => {
       expect(assistantSaves(h)).toHaveLength(0);
     });
 
+    /**
+     * A stopped turn is still PAID for.
+     *
+     * The tokens are spent at Anthropic the moment the model runs, so a turn
+     * the user cuts short costs real money. Metering used to sit on the
+     * success path only — and the teardown that skips the save skips that
+     * line too — so pressing Stop was a way to use Maestro for nothing, and
+     * the exploit was "press Stop on every turn".
+     *
+     * The spend is known mid-flight because the runtime reports a running
+     * total as it accrues; without that the service would be charging an
+     * estimate.
+     */
+    const USAGE_EVENT = {
+      type: 'usage',
+      usage: { inputTokens: 400, outputTokens: 200, costUsd: 0 },
+    } as AgentEvent;
+
+    it('bills a stopped turn for what it had really spent', async () => {
+      // The usage lands first — as it does live, where the runtime reports
+      // the running total as each assistant message arrives — and the stop
+      // comes well before the stream would have ended.
+      const h = makeHarness([
+        USAGE_EVENT,
+        ...textDeltas('one ', 'two ', 'three ', 'four ', 'five ', 'six '),
+        DONE_EVENT,
+      ]);
+
+      await stopAfter(h, 2);
+
+      // 400 in + 200 out = 600 real → 6 user tokens, charged even though
+      // `done` never arrived.
+      expect(h.recordUsage).toHaveBeenCalledWith(
+        WORKSPACE_ID,
+        USER_ID,
+        6,
+        'maestro_chat',
+        expect.any(Object),
+        { billable: true },
+      );
+    });
+
+    it('charges a stopped turn once, not twice', async () => {
+      // The `finally` runs on every path, including the one that already
+      // metered — a second charge would bill the same tokens twice.
+      const h = makeHarness([
+        USAGE_EVENT,
+        ...textDeltas('All of it'),
+        DONE_EVENT,
+      ]);
+
+      await run(h);
+
+      expect(h.recordUsage).toHaveBeenCalledTimes(1);
+    });
+
+    it('bills nothing when the turn was stopped before the model ran', async () => {
+      // No usage reported means no tokens were spent — charging the 1-token
+      // floor here would invent a cost the workspace never incurred. No
+      // `done` is scripted precisely because that is the case being pinned:
+      // a turn cut short before any spend was reported at all.
+      const h = makeHarness(
+        textDeltas('one ', 'two ', 'three ', 'four ', 'five ', 'six '),
+      );
+
+      await stopAfter(h, 1);
+
+      expect(h.recordUsage).not.toHaveBeenCalled();
+    });
+
+    it('does not bill a stopped BYOK turn', async () => {
+      // The workspace already paid Anthropic with its own key; the rescue
+      // must honour that the same way the success path does.
+      const h = makeHarness(
+        [
+          USAGE_EVENT,
+          ...textDeltas('one ', 'two ', 'three ', 'four ', 'five ', 'six '),
+          DONE_EVENT,
+        ],
+        { byokKey: 'sk-ant-workspace-key' },
+      );
+
+      await stopAfter(h, 2);
+
+      expect(h.recordUsage).toHaveBeenCalledWith(
+        WORKSPACE_ID,
+        USER_ID,
+        expect.any(Number),
+        'maestro_chat',
+        expect.any(Object),
+        { billable: false },
+      );
+    });
+
     it('does not save the answer twice', async () => {
       // A turn that finishes normally saves below, with its full metadata.
       // If the rescue fired as well, the thread would hold the reply twice.
