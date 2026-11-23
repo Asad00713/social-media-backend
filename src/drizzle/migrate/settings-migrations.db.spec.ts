@@ -1607,6 +1607,7 @@ describeDb('0096 guest seat recount', () => {
  *   0099  two-step sign-in: six users columns, known_devices trust,
  *         user_backup_codes and login_challenges.
  *   0100  the escalating two-step lock: users.mfa_lock_count.
+ *   0101  workspace_brand_voice, filled once from workspace_brand_profiles.
  */
 const FILE_0098 = '0098_user_sessions.sql';
 
@@ -1966,6 +1967,235 @@ describeDb('0100 mfa_lock_escalation', () => {
           userId,
         ]),
       );
+    });
+  });
+});
+
+const FILE_0040 = '0040_home_first_week.sql';
+const FILE_0101 = '0101_brand_voice.sql';
+
+async function seedBrandProfile(
+  client: PoolClient,
+  workspaceId: string,
+  p: {
+    sells?: string | null;
+    audience?: string | null;
+    voice?: string[];
+    source?: 'posts' | 'described';
+    sourcePlatform?: string | null;
+  },
+): Promise<void> {
+  await client.query(
+    `INSERT INTO workspace_brand_profiles
+       (workspace_id, sells, audience, voice, source, source_platform, status)
+     VALUES ($1, $2, $3, $4::text[], $5, $6, 'ready')`,
+    [
+      workspaceId,
+      p.sells ?? null,
+      p.audience ?? null,
+      p.voice ?? [],
+      p.source ?? 'described',
+      p.sourcePlatform ?? null,
+    ],
+  );
+}
+
+async function rerun0101(client: PoolClient): Promise<void> {
+  await client.query(readFileSync(join(MIGRATIONS_DIR, FILE_0101), 'utf8'));
+}
+
+async function voiceRow(
+  client: PoolClient,
+  workspaceId: string,
+): Promise<Record<string, any> | undefined> {
+  const r = await client.query(
+    `SELECT * FROM workspace_brand_voice WHERE workspace_id = $1`,
+    [workspaceId],
+  );
+  return r.rows[0];
+}
+
+describeDb('0101 brand_voice', () => {
+  const MIGRATIONS = [FILE_0040, FILE_0101];
+
+  async function freshWorkspace(client: PoolClient): Promise<string> {
+    return seedWorkspace(client, await seedUser(client));
+  }
+
+  it('creates the table with its defaults', async () => {
+    const row = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const workspaceId = await freshWorkspace(client);
+      await client.query(
+        `INSERT INTO workspace_brand_voice (workspace_id) VALUES ($1)`,
+        [workspaceId],
+      );
+      return voiceRow(client, workspaceId);
+    });
+    expect(row).toMatchObject({
+      tone: [],
+      description: null,
+      words_use: [],
+      words_avoid: [],
+      emoji_level: 'few',
+      hashtags_mode: 'few',
+      channel_tweaks: {},
+      version: 1,
+      previous: null,
+    });
+    expect(row?.created_at).toBeInstanceOf(Date);
+    expect(row?.updated_at).toBeInstanceOf(Date);
+  });
+
+  it.each([
+    ['a tone outside the nine', `tone = '{"Loud"}'`],
+    ['five valid tones', `tone = '{"Warm","Clear","Bold","Calm","Witty"}'`],
+    ['an unknown emoji level', `emoji_level = 'some'`],
+    ['an unknown hashtags mode', `hashtags_mode = 'all'`],
+    ['a 241-character description', `description = repeat('a', 241)`],
+    ['channel_tweaks that is not an object', `channel_tweaks = '[]'::jsonb`],
+    ['version 0', `version = 0`],
+    [
+      '21 words to use',
+      `words_use = (SELECT array_agg('w' || g) FROM generate_series(1, 21) g)`,
+    ],
+    [
+      '21 words to avoid',
+      `words_avoid = (SELECT array_agg('w' || g) FROM generate_series(1, 21) g)`,
+    ],
+  ])('rejects values outside the rules (23514): %s', async (_name, set) => {
+    await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const workspaceId = await freshWorkspace(client);
+      await client.query(
+        `INSERT INTO workspace_brand_voice (workspace_id) VALUES ($1)`,
+        [workspaceId],
+      );
+      await expectPgError(client, '23514', () =>
+        client.query(
+          `UPDATE workspace_brand_voice SET ${set} WHERE workspace_id = $1`,
+          [workspaceId],
+        ),
+      );
+    });
+  });
+
+  it('accepts the edges of the rules', async () => {
+    const row = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const workspaceId = await freshWorkspace(client);
+      await client.query(
+        `INSERT INTO workspace_brand_voice
+           (workspace_id, tone, description, words_use, words_avoid)
+         VALUES ($1, '{"Warm","Clear","Bold","Calm"}', repeat('a', 240),
+           (SELECT array_agg('w' || g) FROM generate_series(1, 20) g),
+           (SELECT array_agg('w' || g) FROM generate_series(1, 20) g))`,
+        [workspaceId],
+      );
+      return voiceRow(client, workspaceId);
+    });
+    expect(row?.tone).toHaveLength(4);
+    expect(row?.description).toHaveLength(240);
+  });
+
+  it('backfills tone and description from the brand profile', async () => {
+    const row = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const workspaceId = await freshWorkspace(client);
+      await seedBrandProfile(client, workspaceId, {
+        voice: ['warm', 'Witty', 'loud', 'WARM', 'clear', 'calm', 'bold'],
+        sells: ' Small-batch  coffee ',
+        audience: 'locals in Karachi',
+      });
+      await rerun0101(client);
+      return voiceRow(client, workspaceId);
+    });
+    expect(row?.tone).toEqual(['Warm', 'Witty', 'Clear', 'Calm']);
+    expect(row?.description).toBe('Small-batch coffee for locals in Karachi');
+    expect(row?.version).toBe(1);
+  });
+
+  it('cuts a long description to 240 code points', async () => {
+    const row = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const workspaceId = await freshWorkspace(client);
+      await seedBrandProfile(client, workspaceId, { sells: 'a'.repeat(300) });
+      await rerun0101(client);
+      const r = await client.query<{ n: number }>(
+        `SELECT char_length(description) AS n FROM workspace_brand_voice
+          WHERE workspace_id = $1`,
+        [workspaceId],
+      );
+      return r.rows[0];
+    });
+    expect(row.n).toBe(240);
+  });
+
+  it('skips a brand learned from Threads', async () => {
+    const row = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const workspaceId = await freshWorkspace(client);
+      await seedBrandProfile(client, workspaceId, {
+        source: 'posts',
+        sourcePlatform: 'threads',
+        sells: 'Coffee',
+        voice: ['Warm'],
+      });
+      await rerun0101(client);
+      return voiceRow(client, workspaceId);
+    });
+    expect(row).toBeUndefined();
+  });
+
+  it('still carries over a brand learned from another platform', async () => {
+    const row = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const workspaceId = await freshWorkspace(client);
+      await seedBrandProfile(client, workspaceId, {
+        source: 'posts',
+        sourcePlatform: 'instagram',
+        sells: 'Coffee',
+      });
+      await rerun0101(client);
+      return voiceRow(client, workspaceId);
+    });
+    expect(row?.description).toBe('Coffee');
+  });
+
+  it('skips a profile with nothing to carry over', async () => {
+    const result = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const empty = await freshWorkspace(client);
+      const toneOnly = await freshWorkspace(client);
+      await seedBrandProfile(client, empty, { sells: null, voice: [] });
+      await seedBrandProfile(client, toneOnly, {
+        sells: null,
+        voice: ['Warm'],
+      });
+      await rerun0101(client);
+      return {
+        empty: await voiceRow(client, empty),
+        toneOnly: await voiceRow(client, toneOnly),
+      };
+    });
+    expect(result.empty).toBeUndefined();
+    expect(result.toneOnly).toMatchObject({
+      tone: ['Warm'],
+      description: null,
+    });
+  });
+
+  it('never overwrites an existing row on a re-run', async () => {
+    const row = await withRollbackDb(MIGRATIONS, async (_db, client) => {
+      const workspaceId = await freshWorkspace(client);
+      await client.query(
+        `INSERT INTO workspace_brand_voice (workspace_id, tone, version)
+         VALUES ($1, '{"Bold"}', 3)`,
+        [workspaceId],
+      );
+      await seedBrandProfile(client, workspaceId, {
+        voice: ['Warm'],
+        sells: 'Coffee',
+      });
+      await rerun0101(client);
+      return voiceRow(client, workspaceId);
+    });
+    expect(row).toMatchObject({
+      tone: ['Bold'],
+      description: null,
+      version: 3,
     });
   });
 });
