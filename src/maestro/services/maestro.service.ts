@@ -479,7 +479,12 @@ export class MaestroService {
           multiSelect: Boolean(q.multiSelect),
         };
       })
-      .filter((q) => q.question && q.options.length > 0);
+      // Option-less questions survive here too, so a bridge user is asked the
+      // same thing a panel user is. The bridge renders options as a reply
+      // keyboard and falls back to plain text without them — which is the
+      // right shape for an open question: they just answer in their next
+      // message. Dropping it here instead made the turn end silently.
+      .filter((q) => q.question);
     return questions.length ? { questions } : null;
   }
 
@@ -1051,6 +1056,61 @@ export class MaestroService {
     let maestroNavigated: { destination: string; reason?: string } | null =
       null;
 
+    // What the assistant has written so far, and whether it has been saved.
+    // Both exist for the `finally` below: a stopped turn is torn down at a
+    // `yield`, so the rescue there cannot see anything scoped inside the
+    // try. `raw` is not usable for it — it is declared inside, and it also
+    // still holds the follow-ups marker.
+    let partialText = '';
+    let savedAssistant = false;
+    // Tells the `finally` whether the spend is already on the books, exactly
+    // as `savedAssistant` does for the text. See `meterTurn` below.
+    let metered = false;
+
+    /**
+     * Charge the workspace for what this turn really spent.
+     *
+     * Called on the normal path AND from the `finally`, because the tokens are
+     * spent at Anthropic the moment the model runs — whether the turn then
+     * completes, is stopped by the user, or dies on an error. Metering only on
+     * success made Stop a way to use Maestro for free, and made a failed turn
+     * a silent loss: real spend, no record.
+     *
+     * The agent's REAL token spend is converted to user tokens at 100:1
+     * (rounded up, min 1) so a ~1,000-token turn costs 10. Raw counts are kept
+     * in the log details.
+     *
+     * `metered` guards it the way `savedAssistant` guards the save: a Stop
+     * landing after the normal call must not charge twice.
+     */
+    const meterTurn = async (outputLength: number): Promise<void> => {
+      if (metered) return;
+      // Nothing ran, nothing to charge — a turn refused before the model (or
+      // aborted during the pre-flight) must not be billed the 1-token floor.
+      if (usage.inputTokens === 0 && usage.outputTokens === 0) return;
+      metered = true;
+      const totalTokens = usage.inputTokens + usage.outputTokens;
+      const billedTokens = Math.max(
+        1,
+        Math.ceil(totalTokens / AGENT_TOKENS_PER_USER_TOKEN),
+      );
+      // BYOK turns are LOGGED but not charged — the workspace already paid
+      // Anthropic directly with its own key.
+      const isByok = auth.keySource === 'byok';
+      await this.tokens.recordUsage(
+        ctx.workspaceId,
+        userId,
+        billedTokens,
+        'maestro_chat',
+        {
+          apiInputTokens: usage.inputTokens,
+          apiOutputTokens: usage.outputTokens,
+          outputLength,
+        },
+        { billable: !isByok },
+      );
+    };
+
     // Both adapters implement the same port, so everything below — the SSE
     // translation, the media/question/reference extraction, persistence — is
     // shared. That is what makes the two tabs comparable.
@@ -1090,6 +1150,12 @@ export class MaestroService {
                 emittedLen = safeEnd;
               }
             }
+            // Mirrored for the abort rescue in `finally`, which cannot see
+            // `raw` — it is declared inside the try. Set HERE, after
+            // `markerIdx` has been resolved for this chunk, so a turn
+            // stopped mid-follow-ups saves its answer rather than one with
+            // "FOLLOWUPS:" trailing it.
+            partialText = markerIdx === -1 ? raw : raw.slice(0, markerIdx);
             break;
           }
           case 'tool_call':
@@ -1164,6 +1230,13 @@ export class MaestroService {
             };
             break;
           }
+          // Running spend, reported as the turn goes. Kept so a turn the user
+          // stops is charged what it actually used — `done` never arrives for
+          // one of those, and the tokens are spent regardless. The event is
+          // cumulative, so this assigns rather than adds.
+          case 'usage':
+            usage = ev.usage;
+            break;
           case 'done':
             usage = ev.usage;
             break;
@@ -1236,34 +1309,16 @@ export class MaestroService {
           model,
           usage.outputTokens,
         );
+        // Tells the abort rescue in `finally` that this turn is already on
+        // disk. Without it, a Stop pressed between this line and the end
+        // of the generator would write the answer a second time.
+        savedAssistant = true;
         yield {
           event: 'message_complete',
           data: { content: displayText, messageId: saved.id },
         };
       }
-      // Meter the spend against the workspace budget. The agent's REAL token
-      // spend is converted to user tokens at 100:1 (rounded up, min 1) so a
-      // ~1,000-token turn costs 10. Raw counts are kept in the log details.
-      const totalTokens = usage.inputTokens + usage.outputTokens;
-      const billedTokens = Math.max(
-        1,
-        Math.ceil(totalTokens / AGENT_TOKENS_PER_USER_TOKEN),
-      );
-      // BYOK turns are LOGGED but not charged — the workspace already paid
-      // Anthropic directly with its own key.
-      const isByok = auth.keySource === 'byok';
-      await this.tokens.recordUsage(
-        ctx.workspaceId,
-        userId,
-        billedTokens,
-        'maestro_chat',
-        {
-          apiInputTokens: usage.inputTokens,
-          apiOutputTokens: usage.outputTokens,
-          outputLength: displayText.length,
-        },
-        { billable: !isByok },
-      );
+      await meterTurn(displayText.length);
 
       if (followups.length > 0) {
         yield { event: 'followups', data: { suggestions: followups } };
@@ -1288,6 +1343,54 @@ export class MaestroService {
           message: err instanceof Error ? err.message : 'Maestro failed',
         },
       };
+    } finally {
+      // A STOPPED turn still keeps what it wrote.
+      //
+      // When the user presses Stop the controller breaks out of its
+      // `for await`, and breaking a for-await calls `.return()` on this
+      // generator — so it dies at whichever `yield` it is sitting on and
+      // the save further down never runs at all. The text was on screen,
+      // and it was gone on reload: a question with no reply.
+      //
+      // `finally` is the only place that survives that teardown, which is
+      // why the save cannot simply be moved earlier. Guarded on `aborted`
+      // so the normal path, which saves below with full metadata and a
+      // `message_complete`, is left untouched — and on `savedAssistant`
+      // so a turn aborted AFTER its save does not write a second row.
+      //
+      // Nothing is yielded here: the consumer has already stopped reading,
+      // and a yield in a finally during teardown is discarded anyway.
+      if (signal.aborted && !savedAssistant && partialText.trim()) {
+        try {
+          await this.conversations.addMessage(
+            conversationId,
+            'assistant',
+            partialText.trim(),
+            { maestroStopped: true },
+            model,
+            usage.outputTokens,
+          );
+        } catch (err) {
+          // Never let the rescue break the teardown it is running inside.
+          this.logger.error(`failed to save stopped turn: ${err}`);
+        }
+      }
+
+      // And it is still PAID for. The tokens were spent at Anthropic the
+      // moment the model ran, so a turn that was stopped, or that died on an
+      // error before reaching the normal call, must still be charged — the
+      // same teardown that skipped the save skips the metering.
+      //
+      // Leaving it on the success path alone made Stop a way to use Maestro
+      // for nothing: press it on every turn and the real cost is ours while
+      // the credit count never moves. `meterTurn` is idempotent, so the
+      // normal path having already charged is simply a no-op here.
+      try {
+        await meterTurn(partialText.trim().length);
+      } catch (err) {
+        // Same rule as the save above: never break the teardown.
+        this.logger.error(`failed to meter turn: ${err}`);
+      }
     }
   }
 }
