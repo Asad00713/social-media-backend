@@ -10,6 +10,12 @@ import {
   fetchPublicHtml,
 } from '../media-library/lib/link-meta';
 import { ComposerAssistService } from './composer-assist.service';
+import {
+  EMPTY_PROMPT_SOURCE,
+  type BrandVoicePromptSource,
+} from '../brand-voice/brand-voice.service';
+import { DEFAULT_BRAND_VOICE_FIELDS } from '../brand-voice/brand-voice.types';
+import { finishPrompt, fitPrompt, linkPrompt } from './lib/composer-assist';
 
 const WS = 'ws-1';
 const USER = 'user-1';
@@ -26,33 +32,62 @@ function dbReturning(...results: unknown[][]) {
   return chain;
 }
 
-function build(opts: { claudeReady?: boolean; db?: any } = {}) {
+/** A voice with a tone, a description and a LinkedIn tweak. */
+const VOICE_SOURCE: BrandVoicePromptSource = {
+  voice: {
+    ...DEFAULT_BRAND_VOICE_FIELDS,
+    tone: ['Warm'],
+    description: 'A small roaster.',
+    channelTweaks: { linkedin: 'More professional' },
+  },
+  savedHashtags: [],
+};
+
+function build(
+  opts: {
+    claudeReady?: boolean;
+    db?: any;
+    source?: BrandVoicePromptSource;
+  } = {},
+) {
   // Both model clients are mocks: no test here reaches a live model.
   const claude = {
     isReady: jest.fn().mockReturnValue(opts.claudeReady ?? true),
-    complete: jest.fn().mockResolvedValue('reply'),
+    complete: jest
+      .fn<Promise<string>, [system: string, user: string]>()
+      .mockResolvedValue('reply'),
   };
   const aiText = { complete: jest.fn().mockResolvedValue('fallback reply') };
+  type Meter = (
+    ws: string,
+    u: string,
+    op: string,
+    p: unknown,
+    s: string,
+    fn: () => Promise<{ result: unknown }>,
+  ) => Promise<{ result: unknown; usage: unknown }>;
   const aiTokens = {
-    executeWithTokens: jest.fn(
-      async (
-        _ws: string,
-        _u: string,
-        _op: string,
-        _p: unknown,
-        _s: string,
-        fn: () => Promise<{ result: unknown }>,
-      ) => ({ result: (await fn()).result, usage: { tokensDeducted: 5 } }),
+    executeWithTokens: jest.fn<ReturnType<Meter>, Parameters<Meter>>(
+      async (_ws, _u, _op, _p, _s, fn) => ({
+        result: (await fn()).result,
+        usage: { tokensDeducted: 5 },
+      }),
     ),
   };
   const db = opts.db ?? dbReturning([], []);
+  const brandVoice = {
+    loadPromptSource: jest.fn(() =>
+      Promise.resolve(opts.source ?? { ...EMPTY_PROMPT_SOURCE }),
+    ),
+  };
   const svc = new ComposerAssistService(
     claude as any,
     aiText as any,
     aiTokens as any,
     db,
+    brandVoice as any,
   );
-  return { svc, claude, aiText, aiTokens, db };
+  return { svc, claude, aiText, aiTokens, db, brandVoice };
 }
 
 describe('ComposerAssistService', () => {
@@ -223,6 +258,144 @@ describe('ComposerAssistService', () => {
       });
       expect(out.values).toEqual({});
       expect(out.left).toEqual(['brand']);
+    });
+  });
+
+  describe('brand voice', () => {
+    const readyPage = () => {
+      (fetchPublicHtml as jest.Mock).mockResolvedValue({
+        html: '<html>',
+        finalUrl: 'https://shop.example/p',
+      });
+      (extractPageMeta as jest.Mock).mockReturnValue({
+        title: 'Lavender candle',
+        description: 'Hand-poured',
+        faviconUrl: '',
+      });
+    };
+
+    it('finishDraft sends the voice for the active platform in the system prompt', async () => {
+      const { svc, claude, brandVoice } = build({ source: VOICE_SOURCE });
+      await svc.finishDraft(WS, USER, {
+        caption: 'We open',
+        platform: 'linkedin',
+      });
+      expect(brandVoice.loadPromptSource).toHaveBeenCalledWith(WS);
+      const system = claude.complete.mock.calls[0][0];
+      expect(system).toContain('## Brand voice');
+      expect(system).toContain('- Tone: Warm.');
+      expect(system).toContain('(linkedin)');
+      expect(claude.complete.mock.calls[0][1]).not.toContain('Brand voice');
+    });
+
+    it('fitChannels gives each channel its own tweak', async () => {
+      const { svc, claude, brandVoice } = build({ source: VOICE_SOURCE });
+      await svc.fitChannels(WS, USER, {
+        caption: 'A caption',
+        channels: [
+          { platform: 'twitter', maxChars: 280 },
+          { platform: 'linkedin', maxChars: 3000 },
+        ],
+      });
+      expect(brandVoice.loadPromptSource).toHaveBeenCalledTimes(1);
+      const systems = claude.complete.mock.calls.map((c) => c[0]);
+      const linkedin = systems.find((x) => x.includes('LinkedIn'))!;
+      const twitter = systems.find((x) => x.includes('X (Twitter)'))!;
+      expect(linkedin).toContain('(linkedin)');
+      expect(linkedin).toContain('More professional');
+      expect(twitter).toContain('## Brand voice');
+      expect(twitter).not.toContain('(linkedin)');
+      expect(twitter).not.toContain('More professional');
+    });
+
+    it('postFromLink sends the voice', async () => {
+      readyPage();
+      const { svc, claude } = build({ source: VOICE_SOURCE });
+      await svc.postFromLink(WS, USER, {
+        url: 'https://shop.example/p',
+        platform: 'linkedin',
+      });
+      const system = claude.complete.mock.calls[0][0];
+      expect(system).toContain('## Brand voice');
+      expect(system).toContain('(linkedin)');
+    });
+
+    it('fillBlanks grounds on the brand description and sends no voice block', async () => {
+      const db = dbReturning(
+        [{ name: 'Acme Candles', description: null }],
+        [{ sells: null, audience: null, voice: [] }],
+      );
+      const { svc, claude } = build({ db, source: VOICE_SOURCE });
+      claude.complete.mockResolvedValue('{"about":"A small roaster."}');
+      const out = await svc.fillBlanks(WS, USER, {
+        caption: 'We are {{about}}',
+        blanks: ['about'],
+      });
+      expect(claude.complete.mock.calls[0][1]).toContain(
+        'How the brand describes itself: A small roaster.',
+      );
+      expect(claude.complete.mock.calls[0][0]).not.toContain('## Brand voice');
+      // The description is a source, so a value copied from it is kept.
+      expect(out.values).toEqual({ about: 'A small roaster.' });
+    });
+
+    it('reads the voice before metering, so a voice read is never charged', async () => {
+      const { svc, aiTokens, brandVoice } = build({ source: VOICE_SOURCE });
+      const order: string[] = [];
+      brandVoice.loadPromptSource.mockImplementation(() => {
+        order.push('voice');
+        return Promise.resolve(VOICE_SOURCE);
+      });
+      aiTokens.executeWithTokens.mockImplementationOnce(
+        async (_ws, _u, _op, _p, _s, fn) => {
+          order.push('meter');
+          return { result: (await fn()).result, usage: {} };
+        },
+      );
+      await svc.finishDraft(WS, USER, { caption: 'We open' });
+      expect(order).toEqual(['voice', 'meter']);
+    });
+
+    it('an empty voice leaves every system prompt as before', async () => {
+      readyPage();
+      const { svc, claude } = build({ source: { ...EMPTY_PROMPT_SOURCE } });
+      await svc.finishDraft(WS, USER, {
+        caption: 'We open',
+        platform: 'linkedin',
+        maxChars: 100,
+      });
+      await svc.fitChannels(WS, USER, {
+        caption: 'A caption',
+        channels: [{ platform: 'linkedin', maxChars: 3000 }],
+      });
+      await svc.postFromLink(WS, USER, {
+        url: 'https://shop.example/p',
+        platform: 'linkedin',
+      });
+      const systems = claude.complete.mock.calls.map((c) => c[0]);
+      expect(systems[0]).toBe(
+        finishPrompt({
+          caption: 'We open',
+          platform: 'linkedin',
+          maxChars: 100,
+        }).system,
+      );
+      expect(systems[1]).toBe(
+        fitPrompt({
+          caption: 'A caption',
+          platform: 'linkedin',
+          maxChars: 3000,
+        }).system,
+      );
+      expect(systems[2]).toBe(
+        linkPrompt({
+          url: 'https://shop.example/p',
+          title: 'Lavender candle',
+          description: 'Hand-poured',
+          platform: 'linkedin',
+        }).system,
+      );
+      for (const s of systems) expect(s).not.toContain('Brand voice');
     });
   });
 });

@@ -186,3 +186,60 @@ describe('groundedValues', () => {
     expect(out.left).toEqual(['price']);
   });
 });
+
+describe('brand voice in the system prompt', () => {
+  const BLOCK = '## Brand voice\n- Tone: Warm.';
+  const builders = {
+    finishPrompt: (voice?: string) => finishPrompt({ caption: 'x', voice }),
+    fitPrompt: (voice?: string) =>
+      fitPrompt({ caption: 'x', platform: 'linkedin', maxChars: 100, voice }),
+    linkPrompt: (voice?: string) =>
+      linkPrompt({ url: 'https://a.b', title: 't', voice }),
+  };
+  const LAST_RULE: Record<string, string> = {
+    finishPrompt: 'No preamble, no quotes, no explanation.',
+    fitPrompt: 'Reply with the adapted caption only. No preamble, no quotes.',
+    linkPrompt: 'Reply with the post only. No preamble, no quotes.',
+  };
+
+  it.each(Object.keys(builders))(
+    '%s: no voice leaves the system as today',
+    (name) => {
+      const build = builders[name as keyof typeof builders];
+      expect(build('').system).toBe(build().system);
+      expect(build().system.endsWith(LAST_RULE[name])).toBe(true);
+    },
+  );
+
+  it.each(Object.keys(builders))(
+    '%s appends the voice after a blank line',
+    (name) => {
+      const build = builders[name as keyof typeof builders];
+      expect(build(BLOCK).system).toBe(`${build().system}\n\n${BLOCK}`);
+      expect(
+        build(BLOCK).system.endsWith('\n\n## Brand voice\n- Tone: Warm.'),
+      ).toBe(true);
+    },
+  );
+
+  it.each(Object.keys(builders))('%s leaves the user turn alone', (name) => {
+    const build = builders[name as keyof typeof builders];
+    expect(build(BLOCK).user).toBe(build().user);
+  });
+
+  it('factLines adds the brand description as a fact, after the voice line', () => {
+    const lines = factLines({
+      voice: ['Warm'],
+      brandDescription: 'A roaster.',
+    });
+    expect(lines).toContain('How the brand describes itself: A roaster.');
+    expect(lines.indexOf('How the brand describes itself: A roaster.')).toBe(
+      lines.indexOf('Brand voice: Warm') + 1,
+    );
+  });
+
+  it('factLines drops an empty or missing brand description', () => {
+    expect(factLines({ brandDescription: null })).toEqual([]);
+    expect(factLines({ brandDescription: '' })).toEqual([]);
+  });
+});

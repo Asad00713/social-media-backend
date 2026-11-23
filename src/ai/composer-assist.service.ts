@@ -30,6 +30,8 @@ import {
   type ComposerPlatform,
 } from './lib/composer-assist';
 import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
+import { BrandVoiceService } from '../brand-voice/brand-voice.service';
+import { brandVoicePrompt } from '../brand-voice/lib/brand-voice-prompt';
 
 export interface FitChannel {
   platform: ComposerPlatform;
@@ -65,6 +67,7 @@ export class ComposerAssistService {
     private readonly aiText: AiTextService,
     private readonly aiTokens: AiTokenService,
     @Inject(DRIZZLE) private readonly db: DbType,
+    private readonly brandVoice: BrandVoiceService,
   ) {}
 
   async finishDraft(
@@ -72,7 +75,12 @@ export class ComposerAssistService {
     userId: string,
     input: { caption: string; platform?: ComposerPlatform; maxChars?: number },
   ): Promise<{ content: string; usage: TokenDeductResult }> {
-    const { system, user } = finishPrompt(input);
+    // Read before metering: a voice read is never charged, and never fails.
+    const source = await this.brandVoice.loadPromptSource(workspaceId);
+    const { system, user } = finishPrompt({
+      ...input,
+      voice: brandVoicePrompt({ ...source, platform: input.platform }),
+    });
     const { result, usage } = await this.aiTokens.executeWithTokens(
       workspaceId,
       userId,
@@ -93,6 +101,7 @@ export class ComposerAssistService {
     userId: string,
     input: { caption: string; channels: FitChannel[] },
   ): Promise<{ variations: FitVariation[]; usage: TokenDeductResult }> {
+    const source = await this.brandVoice.loadPromptSource(workspaceId);
     const { result, usage } = await this.aiTokens.executeWithTokens(
       workspaceId,
       userId,
@@ -107,6 +116,7 @@ export class ComposerAssistService {
               caption: input.caption,
               platform,
               maxChars,
+              voice: brandVoicePrompt({ ...source, platform }),
             });
             const text = (await this.complete(system, user)).trim();
             if (!text) {
@@ -142,7 +152,12 @@ export class ComposerAssistService {
         'That page has no title or description to write from.',
       );
     }
-    const { system, user } = linkPrompt({ ...input, ...page });
+    const source = await this.brandVoice.loadPromptSource(workspaceId);
+    const { system, user } = linkPrompt({
+      ...input,
+      ...page,
+      voice: brandVoicePrompt({ ...source, platform: input.platform }),
+    });
     const { result, usage } = await this.aiTokens.executeWithTokens(
       workspaceId,
       userId,
@@ -178,7 +193,17 @@ export class ComposerAssistService {
     usage: TokenDeductResult;
   }> {
     const blanks = [...new Set(input.blanks)];
-    const facts = factLines(await this.loadFacts(workspaceId));
+    // The description is one more thing the workspace states about itself, so
+    // it grounds a value; no style block goes in (a value is kept only when it
+    // is copied word for word from the sources).
+    const [stated, source] = await Promise.all([
+      this.loadFacts(workspaceId),
+      this.brandVoice.loadPromptSource(workspaceId),
+    ]);
+    const facts = factLines({
+      ...stated,
+      brandDescription: source.voice.description,
+    });
     const { system, user } = fillBlanksPrompt({
       caption: input.caption,
       blanks,
