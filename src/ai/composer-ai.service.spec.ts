@@ -147,6 +147,49 @@ describe('ComposerAiService', () => {
       expect(instagram).not.toContain('Keep it short.');
       expect(instagram).not.toContain('Add a takeaway.');
     });
+
+    describe('hashtags', () => {
+      const run = async (
+        voice: BrandVoiceFields | null,
+        includeHashtags?: boolean,
+      ) => {
+        const { service, groq } = perChannelService({ voice });
+        await service.generatePerChannel('ws-1', 'user-1', {
+          description: 'Launch',
+          platforms: ['twitter', 'linkedin'],
+          includeHashtags,
+        });
+        return groq.buildCaptionPrompt.mock.calls.map(
+          (c) => c[0].includeHashtags,
+        );
+      };
+
+      it('a voice that wants hashtags turns them on when the request did not say', async () => {
+        expect(await run({ ...WARM_VOICE, hashtagsMode: 'few' })).toEqual([
+          true,
+          true,
+        ]);
+      });
+
+      it('a voice with hashtags none keeps them off', async () => {
+        expect(await run({ ...WARM_VOICE, hashtagsMode: 'none' })).toEqual([
+          false,
+          false,
+        ]);
+      });
+
+      it('an explicit false wins over the voice', async () => {
+        expect(
+          await run({ ...WARM_VOICE, hashtagsMode: 'many' }, false),
+        ).toEqual([false, false]);
+      });
+
+      it('with no voice nothing changes: hashtags stay off unless asked', async () => {
+        const off = await run(null);
+        expect(off.every((v) => !v)).toBe(true);
+        expect(await run(null, true)).toEqual([true, true]);
+      });
+    });
   });
 
   describe('generateCaptionVariants', () => {

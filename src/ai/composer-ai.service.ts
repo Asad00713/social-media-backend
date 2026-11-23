@@ -4,7 +4,10 @@ import { AiTextService } from './ai-text.service';
 import { AiTokenService, TokenDeductResult } from './services/ai-token.service';
 import type { Platform, Tone } from './dto/ai.dto';
 import { BrandVoiceService } from '../brand-voice/brand-voice.service';
-import { brandVoicePrompt } from '../brand-voice/lib/brand-voice-prompt';
+import {
+  brandVoicePrompt,
+  hashtagsWanted,
+} from '../brand-voice/lib/brand-voice-prompt';
 
 export interface GeneratePerChannelInput {
   description: string;
@@ -73,7 +76,9 @@ export class ComposerAiService {
               description,
               platform,
               tone,
-              includeHashtags: !!includeHashtags,
+              // The request wins; otherwise the voice decides (undefined with
+              // no voice, which the prompt reads as "no hashtags", as before).
+              includeHashtags: includeHashtags ?? hashtagsWanted(source.voice),
               includeCta: true,
               // Each channel gets its own tweak.
               voice: brandVoicePrompt({ ...source, platform }),
