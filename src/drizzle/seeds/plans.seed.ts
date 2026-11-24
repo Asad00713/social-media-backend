@@ -22,10 +22,11 @@ export async function seedPlans() {
       maxWorkspaces: 1,
       aiTokensPerMonth: 100, // Enough for the first week (about 33) plus a few captions
       features: {
-        // Free sees a week of history (Buffer's free tier gives 30 days,
-        // Metricool 30; a week is the taste, not the product). Read by
+        // Two weeks. Buffer's and Metricool's free tiers both give 30 days,
+        // so a week read as stingy against the market we are priced under;
+        // 14 days is short of them without looking like nothing. Read by
         // `clampHistory` and clamped silently, never refused.
-        insightsHistoryDays: 7,
+        insightsHistoryDays: 14,
         basicScheduling: true,
         analytics: false,
         advancedScheduling: false,
@@ -40,7 +41,7 @@ export async function seedPlans() {
       code: 'BASIC',
       storageBytesPerWorkspace: PLAN_STORAGE_BYTES.BASIC,
       name: 'Basic Plan',
-      basePriceCents: 500, // $5.00
+      basePriceCents: 1200, // $12.00
       channelsPerWorkspace: 5,
       membersPerWorkspace: 2,
       maxWorkspaces: 1,
@@ -62,7 +63,7 @@ export async function seedPlans() {
       code: 'PRO',
       storageBytesPerWorkspace: PLAN_STORAGE_BYTES.PRO,
       name: 'Pro Plan',
-      basePriceCents: 1000, // $10.00
+      basePriceCents: 2900, // $29.00
       channelsPerWorkspace: 8,
       membersPerWorkspace: 5,
       maxWorkspaces: 3,
@@ -86,7 +87,7 @@ export async function seedPlans() {
       code: 'MAX',
       storageBytesPerWorkspace: PLAN_STORAGE_BYTES.MAX,
       name: 'Max Plan',
-      basePriceCents: 5000, // $50.00
+      basePriceCents: 7900, // $79.00
       channelsPerWorkspace: 50,
       membersPerWorkspace: 25,
       maxWorkspaces: 10,
