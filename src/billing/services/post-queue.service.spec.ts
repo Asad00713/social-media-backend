@@ -1,5 +1,7 @@
 import { PostQueueService, buildQueuedTargetJson } from './post-queue.service';
 import { SubscriptionLookupService } from './subscription-lookup.service';
+import { ForbiddenException } from '@nestjs/common';
+import { QUEUE_LIMIT_REACHED } from './queue-limit.error';
 
 describe('buildQueuedTargetJson', () => {
   // posts.targets[].channelId is written as String(channel.id)
@@ -91,6 +93,29 @@ describe('PostQueueService.enforceQueueLimit', () => {
     await expect(
       service.enforceQueueLimit('ws-1', ['channel-A']),
     ).rejects.toThrow(/channel-A/);
+  });
+
+  it('refuses with a machine-readable code and the numbers', async () => {
+    // The code is the whole point: an uncoded 403 is indistinguishable from a
+    // network blip, and the Planner offered a "Try again" button on this
+    // refusal that could never succeed. A client must be able to tell a quota
+    // apart from a transient failure WITHOUT parsing the message.
+    const service = makeService({ queuedPostsPerChannel: 10 });
+    jest.spyOn(service, 'countQueuedForChannel').mockResolvedValue(10);
+
+    const error = await service
+      .enforceQueueLimit('ws-1', ['channel-A'])
+      .then(() => null)
+      .catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(ForbiddenException);
+    expect((error as ForbiddenException).getResponse()).toMatchObject({
+      statusCode: 403,
+      code: QUEUE_LIMIT_REACHED,
+      channelId: 'channel-A',
+      queued: 10,
+      limit: 10,
+    });
   });
 
   it('names the FIRST over-limit channel in caller order, not settle order', async () => {

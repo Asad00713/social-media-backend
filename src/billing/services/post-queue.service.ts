@@ -1,9 +1,10 @@
-import { Injectable, ForbiddenException, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { eq, and, sql, count } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import { posts } from '../../drizzle/schema';
 import { SubscriptionLookupService } from './subscription-lookup.service';
 import { canQueuePost, UNLIMITED } from './limit-resolver.util';
+import { queueLimitReached } from './queue-limit.error';
 import { livePosts } from '../../posts/soft-delete/soft-delete';
 
 /**
@@ -89,9 +90,10 @@ export class PostQueueService {
       const channelId = channelIds[i];
       const queued = queuedCounts[i];
       if (!canQueuePost(plan.queuedPostsPerChannel, queued)) {
-        throw new ForbiddenException(
-          `Scheduling queue full for channel ${channelId}. This channel has ${queued} of ${plan.queuedPostsPerChannel} scheduled posts. ` +
-            'Publish or remove a scheduled post, or upgrade for unlimited scheduling.',
+        throw queueLimitReached(
+          channelId,
+          queued,
+          plan.queuedPostsPerChannel,
         );
       }
     }
