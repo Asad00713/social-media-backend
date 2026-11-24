@@ -12,20 +12,18 @@ import { DrizzleModule } from '../drizzle/drizzle.module';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 import { PostsModule } from '../posts/posts.module';
 import { AiModule } from '../ai/ai.module';
-// For PostQueueService — the per-channel scheduling ceiling, which campaign
-// slots must respect like any other scheduled post. PostsModule imports
-// BillingModule for the same reason but does not re-export the service, and
-// BillingModule reaches only Stripe/Drizzle/Notifications — none of which
-// import CampaignsModule — so this is a plain import, not a forwardRef.
+// Two things need it, both arriving in the same release: PostQueueService for
+// the per-channel scheduling ceiling that campaign slots must respect like any
+// other scheduled post, and SubscriptionLookupService for the PlanFeatureGuard
+// on this module's controllers. PostsModule imports BillingModule for the
+// first reason but does not re-export the service, and BillingModule reaches
+// only Stripe/Drizzle/Notifications — none of which import CampaignsModule —
+// so this is a plain import, not a forwardRef.
 import { BillingModule } from '../billing/billing.module';
 import { QUEUES } from '../queue/queue.module';
-import { BillingModule } from '../billing/billing.module';
 
 @Module({
   imports: [
-    // PlanFeatureGuard (on this module's controllers) needs
-    // SubscriptionLookupService. Plain import, not forwardRef:
-    // nothing in billing imports this module's chain, so no cycle.
     BillingModule,
     DrizzleModule,
     WorkspaceRoleModule,

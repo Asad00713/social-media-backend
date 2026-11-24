@@ -614,14 +614,18 @@ export class ChatbotService {
           // Real token spend from the loop, with the chars/4 estimate only as
           // a fallback when no provider reported usage — same rule as
           // processMessage, so the two paths charge alike.
+          //
+          // `chatbot_messages.content` is a nullable column, so this is read
+          // once as a string: a message whose content is null (media only)
+          // still costs a full agent loop, and must still be charged for it
+          // rather than throwing on the estimate and skipping the bill.
+          const promptText = lastUserMsg.content ?? '';
           const regeneratedTokens =
             event.data.totalTokens ??
-            Math.ceil(
-              (assistantContent.length + lastUserMsg.content.length) / 4,
-            );
+            Math.ceil((assistantContent.length + promptText.length) / 4);
           this.tokenTracking
             .recordUsage(workspaceId, userId, regeneratedTokens, 'chat', {
-              inputSummary: lastUserMsg.content.substring(0, 200),
+              inputSummary: promptText.substring(0, 200),
               outputLength: assistantContent.length,
             })
             .catch((err) =>
