@@ -14,10 +14,13 @@ import { WorkspaceRoleGuard } from '../../workspace-members/workspace-role.guard
 import type { TimelineEntry } from './dto/contract';
 import { CreateNoteDto } from './dto/inbox-notes.dto';
 import { InboxNotesService } from './services/inbox-notes.service';
+import { PlanFeatureGuard } from '../../billing/plan/plan-feature.guard';
+import { RequiresFeature } from '../../billing/plan/requires-feature.decorator';
 
 // No GET: notes reach the client inside the conversation detail timeline.
 @Controller('inbox/workspaces/:workspaceId/conversations/:conversationId/notes')
-@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard, PlanFeatureGuard)
+@RequiresFeature('inbox:use')
 export class InboxNotesController {
   constructor(private readonly notes: InboxNotesService) {}
 

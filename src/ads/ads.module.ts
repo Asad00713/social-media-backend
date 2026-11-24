@@ -14,6 +14,7 @@ import { AdInsightsSyncScheduler } from './schedulers/ad-insights-sync.scheduler
 import { AdMutationsService } from './services/ad-mutations.service';
 import { BoostEditService } from './services/boost-edit.service';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
+import { BillingModule } from '../billing/billing.module';
 
 /**
  * AdsModule — Meta Ads Phase 1
@@ -35,6 +36,10 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
  */
 @Module({
   imports: [
+    // PlanFeatureGuard (on this module's controllers) needs
+    // SubscriptionLookupService. Plain import, not forwardRef:
+    // nothing in billing imports this module's chain, so no cycle.
+    BillingModule,
     WorkspaceRoleModule,
     ChannelsModule,
     RealtimeModule,

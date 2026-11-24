@@ -21,7 +21,17 @@ function make(postRows: unknown[], slots = PLANNER_PREF_DEFAULTS.queueSlots) {
   const prefs = {
     get: jest.fn(async () => ({ ...PLANNER_PREF_DEFAULTS, queueSlots: slots })),
   };
-  return { svc: new QueueSlotsService(db as any, prefs as any), db, prefs };
+  // No cap: these tests are about slot picking, and a headroom of -1 keeps
+  // them reading the same numbers they always did.
+  const postQueue = {
+    queueHeadroom: jest.fn().mockResolvedValue({ limit: -1, queued: {} }),
+  };
+  return {
+    svc: new QueueSlotsService(db as any, prefs as any, postQueue as any),
+    db,
+    prefs,
+    postQueue,
+  };
 }
 
 describe('takenMinuteKeys', () => {
@@ -90,6 +100,7 @@ describe('QueueSlotsService.get', () => {
       slots: [],
       nextFree: null,
       top: null,
+      headroom: { limit: -1, queued: {} },
     });
     expect(db.select).toHaveBeenCalledTimes(1);
   });

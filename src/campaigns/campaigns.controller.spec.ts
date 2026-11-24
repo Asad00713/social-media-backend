@@ -260,6 +260,8 @@ import { CampaignsController } from './campaigns.controller';
 import { CampaignsService } from './campaigns.service';
 // eslint-disable-next-line import/first
 import type { CampaignPublishingService } from './campaign-publishing.service';
+import { PlanFeatureGuard } from '../billing/plan/plan-feature.guard';
+import { SubscriptionLookupService } from '../billing/services/subscription-lookup.service';
 
 const WORKSPACE_ID = randomUUID();
 const USER = { userId: randomUUID(), email: 'owner@example.com' };
@@ -446,6 +448,15 @@ describe('CampaignsController spans over HTTP', () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [CampaignsController],
       providers: [
+        // The controller carries @RequiresFeature, so its guard is a real
+        // dependency now. A stub plan that passes keeps these tests about
+        // what they were written for (roles, validation) rather than
+        // plans; plan-feature.guard.spec.ts covers the gate itself.
+        PlanFeatureGuard,
+        {
+          provide: SubscriptionLookupService,
+          useValue: { findByWorkspaceId: () => Promise.resolve({ planCode: 'MAX' }) },
+        },
         WorkspaceRoleGuard,
         { provide: WorkspaceRoleService, useValue: roles },
         { provide: CampaignsService, useValue: service },

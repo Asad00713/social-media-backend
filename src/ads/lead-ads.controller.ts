@@ -20,6 +20,8 @@ import { leadRoutes, leadForms } from '../drizzle/schema';
 import { signWebhookPayload } from './utils/hmac';
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
+import { PlanFeatureGuard } from '../billing/plan/plan-feature.guard';
+import { RequiresFeature } from '../billing/plan/requires-feature.decorator';
 
 interface AuthUser {
   userId: string;
@@ -43,7 +45,8 @@ interface TestWebhookBody {
 }
 
 @Controller('ads/workspaces/:wid')
-@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard, PlanFeatureGuard)
+@RequiresFeature('ads:use')
 export class LeadAdsController {
   constructor() {}
 

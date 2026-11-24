@@ -12,6 +12,8 @@ import { WorkspaceRoleGuard } from '../../workspace-members/workspace-role.guard
 import { WorkspaceRoleService } from '../../workspace-members/workspace-role.service';
 import { AudienceController } from './audience.controller';
 import { AudienceService } from './audience.service';
+import { PlanFeatureGuard } from '../../billing/plan/plan-feature.guard';
+import { SubscriptionLookupService } from '../../billing/services/subscription-lookup.service';
 
 const WS = '11111111-1111-4111-8111-111111111111';
 const BASE = `/insights/workspaces/${WS}/audience`;
@@ -25,6 +27,20 @@ describe('AudienceController over HTTP', () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [AudienceController],
       providers: [
+        // The controller carries @RequiresFeature, so its guard is a real
+        // dependency now. A stub plan that passes keeps these tests about
+        // what they were written for (roles, validation) rather than
+        // plans; plan-feature.guard.spec.ts covers the gate itself.
+        PlanFeatureGuard,
+        {
+          provide: SubscriptionLookupService,
+          useValue: {
+            findByWorkspaceId: () => Promise.resolve({ planCode: 'MAX' }),
+            // -1 is UNLIMITED_HISTORY: these tests are about routes and
+            // validation, not about how far back a plan may read.
+            getInsightsHistoryDays: () => Promise.resolve(-1),
+          },
+        },
         WorkspaceRoleGuard,
         { provide: WorkspaceRoleService, useValue: roles },
         { provide: AudienceService, useValue: audience },

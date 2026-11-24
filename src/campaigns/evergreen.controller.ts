@@ -25,9 +25,12 @@ import {
   AddVariationDto,
   GenerateVariationsDto,
 } from './dto/evergreen.dto';
+import { PlanFeatureGuard } from '../billing/plan/plan-feature.guard';
+import { RequiresFeature } from '../billing/plan/requires-feature.decorator';
 
 @Controller('campaigns')
-@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard, PlanFeatureGuard)
+@RequiresFeature('campaigns:evergreen')
 export class EvergreenController {
   constructor(
     private readonly evergreen: EvergreenService,

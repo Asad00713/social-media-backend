@@ -30,6 +30,7 @@ import { EmailModule } from '../email/email.module';
 import { NotificationPreferencesModule } from '../notification-preferences/notification-preferences.module';
 import { BillingEmailService } from './services/billing-email.service';
 import { TrialEndingCron } from './services/trial-ending.cron';
+import { PlanFeatureGuard } from './plan/plan-feature.guard';
 
 /**
  * Adapters announce themselves to the registry at boot instead of being
@@ -90,6 +91,10 @@ const PROVIDER_ADAPTER_REGISTRATION = {
     StripeAdapter,
     LemonSqueezyAdapter,
     PROVIDER_ADAPTER_REGISTRATION,
+    // Not an APP_GUARD: plan gating is opt-in per controller via
+    // @RequiresFeature. See requires-feature.decorator.ts for why a global
+    // plan guard would be worse than a per-controller one.
+    PlanFeatureGuard,
   ],
   controllers: [BillingController],
   exports: [
@@ -110,6 +115,7 @@ const PROVIDER_ADAPTER_REGISTRATION = {
     CatalogueService,
     StripeAdapter,
     LemonSqueezyAdapter,
+    PlanFeatureGuard,
   ],
 })
 export class BillingModule {}

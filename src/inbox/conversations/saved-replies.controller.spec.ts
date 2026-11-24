@@ -8,6 +8,8 @@ import { WorkspaceRoleGuard } from '../../workspace-members/workspace-role.guard
 import { WorkspaceRoleService } from '../../workspace-members/workspace-role.service';
 import { SavedRepliesController } from './saved-replies.controller';
 import { SavedRepliesService } from './services/saved-replies.service';
+import { PlanFeatureGuard } from '../../billing/plan/plan-feature.guard';
+import { SubscriptionLookupService } from '../../billing/services/subscription-lookup.service';
 
 const WS = '11111111-1111-4111-8111-111111111111';
 const ID = '22222222-2222-4222-8222-222222222222';
@@ -30,6 +32,15 @@ describe('SavedRepliesController over HTTP', () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [SavedRepliesController],
       providers: [
+        // The controller carries @RequiresFeature, so its guard is a real
+        // dependency now. A stub plan that passes keeps these tests about
+        // what they were written for (roles, validation) rather than
+        // plans; plan-feature.guard.spec.ts covers the gate itself.
+        PlanFeatureGuard,
+        {
+          provide: SubscriptionLookupService,
+          useValue: { findByWorkspaceId: () => Promise.resolve({ planCode: 'MAX' }) },
+        },
         WorkspaceRoleGuard,
         { provide: WorkspaceRoleService, useValue: roles },
         { provide: SavedRepliesService, useValue: svc },

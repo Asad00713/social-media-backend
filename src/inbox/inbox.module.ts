@@ -66,12 +66,17 @@ import {
   MESSAGING_CONTROLLERS,
   MESSAGING_PROVIDERS,
 } from './conversations/messaging.providers';
+import { BillingModule } from '../billing/billing.module';
 
 @Module({
   // ChannelsModule exposes platform services + ChannelService (token decrypt/refresh).
   // BullModule.registerQueue() is needed locally so this module can inject the
   // INBOX_POLLING queue token; the queue itself is configured once in QueueModule.
   imports: [
+    // PlanFeatureGuard (on this module's controllers) needs
+    // SubscriptionLookupService. Plain import, not forwardRef:
+    // nothing in billing imports this module's chain, so no cycle.
+    BillingModule,
     WorkspaceRoleModule,
     // Bell + email notifications (InboxNotifyService). NotificationsModule is
     // global but imports ChannelsModule, which forwardRefs back here.

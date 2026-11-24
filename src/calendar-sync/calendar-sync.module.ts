@@ -18,6 +18,7 @@ import { ExternalEventsService } from './services/external-events.service';
 import { ExternalCalendarsService } from './services/external-calendars.service';
 import { CalendarReconcileProcessor } from './processors/calendar-reconcile.processor';
 import { CalendarRenewalProcessor } from './processors/calendar-renewal.processor';
+import { BillingModule } from '../billing/billing.module';
 
 // CalendarSyncModule — app<->calendar two-way sync.
 // Task A wired the schema + BullMQ queues. Task B adds the app→calendar push
@@ -54,6 +55,10 @@ import { CalendarRenewalProcessor } from './processors/calendar-renewal.processo
 // circular for exactly the same reason PostsModule is → forwardRef on both sides.
 @Module({
   imports: [
+    // PlanFeatureGuard (on this module's controllers) needs
+    // SubscriptionLookupService. Plain import, not forwardRef:
+    // nothing in billing imports this module's chain, so no cycle.
+    BillingModule,
     WorkspaceRoleModule,
     forwardRef(() => ChannelsModule),
     forwardRef(() => PostsModule),

@@ -9,6 +9,8 @@ import { CalendarSyncController } from './calendar-sync.controller';
 import { CalendarPushSyncService } from './services/calendar-push-sync.service';
 import { ExternalCalendarsService } from './services/external-calendars.service';
 import { ExternalEventsService } from './services/external-events.service';
+import { PlanFeatureGuard } from '../billing/plan/plan-feature.guard';
+import { SubscriptionLookupService } from '../billing/services/subscription-lookup.service';
 
 const WS = '11111111-1111-4111-8111-111111111111';
 const CALENDAR = {
@@ -35,6 +37,15 @@ describe('CalendarSyncController over HTTP', () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [CalendarSyncController],
       providers: [
+        // The controller carries @RequiresFeature, so its guard is a real
+        // dependency now. A stub plan that passes keeps these tests about
+        // what they were written for (roles, validation) rather than
+        // plans; plan-feature.guard.spec.ts covers the gate itself.
+        PlanFeatureGuard,
+        {
+          provide: SubscriptionLookupService,
+          useValue: { findByWorkspaceId: () => Promise.resolve({ planCode: 'MAX' }) },
+        },
         WorkspaceRoleGuard,
         { provide: WorkspaceRoleService, useValue: roles },
         { provide: ExternalCalendarsService, useValue: calendars },

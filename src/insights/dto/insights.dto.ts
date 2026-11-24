@@ -47,6 +47,17 @@ export interface InsightsOverviewDto {
     compareFrom: string | null;
     compareTo: string | null;
   };
+  /**
+   * Days of history the plan allows, when the asked-for window reached further
+   * back than that and was shortened; null when nothing was shortened.
+   *
+   * The window is CLAMPED rather than refused, because every plan gets
+   * analytics and only the depth is paid. Without this field a Free workspace
+   * asking for 90 days would see 7 days of data in a chart that looks
+   * complete, with no way to tell why — so the UI reads this to say "older
+   * than 7 days is on Pro" instead of drawing an unexplained gap.
+   */
+  historyLimitedTo?: number | null;
   compare: CompareMode;
   /** The workspace's IANA zone (UTC when the stored one is not a zone). */
   timezone: string;

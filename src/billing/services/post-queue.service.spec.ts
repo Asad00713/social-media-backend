@@ -1,5 +1,7 @@
 import { PostQueueService, buildQueuedTargetJson } from './post-queue.service';
 import { SubscriptionLookupService } from './subscription-lookup.service';
+import { ForbiddenException } from '@nestjs/common';
+import { QUEUE_LIMIT_REACHED } from './queue-limit.error';
 
 describe('buildQueuedTargetJson', () => {
   // posts.targets[].channelId is written as String(channel.id)
@@ -93,6 +95,29 @@ describe('PostQueueService.enforceQueueLimit', () => {
     ).rejects.toThrow(/channel-A/);
   });
 
+  it('refuses with a machine-readable code and the numbers', async () => {
+    // The code is the whole point: an uncoded 403 is indistinguishable from a
+    // network blip, and the Planner offered a "Try again" button on this
+    // refusal that could never succeed. A client must be able to tell a quota
+    // apart from a transient failure WITHOUT parsing the message.
+    const service = makeService({ queuedPostsPerChannel: 10 });
+    jest.spyOn(service, 'countQueuedForChannel').mockResolvedValue(10);
+
+    const error = await service
+      .enforceQueueLimit('ws-1', ['channel-A'])
+      .then(() => null)
+      .catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(ForbiddenException);
+    expect((error as ForbiddenException).getResponse()).toMatchObject({
+      statusCode: 403,
+      code: QUEUE_LIMIT_REACHED,
+      channelId: 'channel-A',
+      queued: 10,
+      limit: 10,
+    });
+  });
+
   it('names the FIRST over-limit channel in caller order, not settle order', async () => {
     const service = makeService({ queuedPostsPerChannel: 5 });
 
@@ -121,5 +146,70 @@ describe('PostQueueService.enforceQueueLimit', () => {
     await expect(
       service.enforceQueueLimit('ws-1', ['1', '2']),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('PostQueueService.queueHeadroom', () => {
+  function makeService(queuedPostsPerChannel: number) {
+    const lookup = {
+      findByWorkspaceId: jest.fn().mockResolvedValue({ planCode: 'FREE' }),
+      getPlanLimits: jest.fn().mockResolvedValue({ queuedPostsPerChannel }),
+    } as unknown as SubscriptionLookupService;
+    return new PostQueueService(lookup);
+  }
+
+  it('reports the cap and a count per channel', async () => {
+    const service = makeService(10);
+    jest
+      .spyOn(service, 'countQueuedForChannel')
+      .mockImplementation(async (_ws, channelId) =>
+        channelId === 'full' ? 10 : 3,
+      );
+
+    await expect(
+      service.queueHeadroom('ws-1', ['full', 'roomy']),
+    ).resolves.toEqual({ limit: 10, queued: { full: 10, roomy: 3 } });
+  });
+
+  it('skips the counts entirely on an uncapped plan', async () => {
+    // -1 is UNLIMITED. Counting would be N queries whose answers are then
+    // thrown away, on the composer's open path.
+    const service = makeService(-1);
+    const count = jest
+      .spyOn(service, 'countQueuedForChannel')
+      .mockResolvedValue(5);
+
+    await expect(service.queueHeadroom('ws-1', ['a', 'b'])).resolves.toEqual({
+      limit: -1,
+      queued: {},
+    });
+    expect(count).not.toHaveBeenCalled();
+  });
+
+  it('asks nothing when the draft has no channels', async () => {
+    const service = makeService(10);
+    const count = jest
+      .spyOn(service, 'countQueuedForChannel')
+      .mockResolvedValue(1);
+
+    await expect(service.queueHeadroom('ws-1', [])).resolves.toEqual({
+      limit: 10,
+      queued: {},
+    });
+    expect(count).not.toHaveBeenCalled();
+  });
+
+  it('agrees with enforceQueueLimit on the same channel', async () => {
+    // The whole point of sharing countQueuedForChannel: if these two ever
+    // disagreed, the composer would promise room the scheduler then refuses.
+    const service = makeService(10);
+    jest.spyOn(service, 'countQueuedForChannel').mockResolvedValue(10);
+
+    const headroom = await service.queueHeadroom('ws-1', ['c1']);
+    expect(headroom.queued.c1).toBe(headroom.limit);
+
+    await expect(service.enforceQueueLimit('ws-1', ['c1'])).rejects.toThrow(
+      ForbiddenException,
+    );
   });
 });

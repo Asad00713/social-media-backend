@@ -1,9 +1,10 @@
-import { Injectable, ForbiddenException, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { eq, and, sql, count } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import { posts } from '../../drizzle/schema';
 import { SubscriptionLookupService } from './subscription-lookup.service';
 import { canQueuePost, UNLIMITED } from './limit-resolver.util';
+import { queueLimitReached } from './queue-limit.error';
 import { livePosts } from '../../posts/soft-delete/soft-delete';
 
 /**
@@ -53,6 +54,42 @@ export class PostQueueService {
   }
 
   /**
+   * The same numbers `enforceQueueLimit` decides on, for a client that wants
+   * to say so BEFORE the person writes the post.
+   *
+   * Read-only and deliberately shares `countQueuedForChannel` with the
+   * enforcement path: two different counts would let the composer promise room
+   * the scheduler then refuses. `limit` is `UNLIMITED` (-1) on a paid plan, and
+   * callers must treat that as no cap rather than as a ceiling of -1.
+   */
+  async queueHeadroom(
+    workspaceId: string,
+    channelIds: string[],
+  ): Promise<{ limit: number; queued: Record<string, number> }> {
+    const subscription = await this.lookup.findByWorkspaceId(workspaceId);
+    const plan = await this.lookup.getPlanLimits(
+      subscription?.planCode ?? 'FREE',
+    );
+    const limit = plan.queuedPostsPerChannel;
+
+    // No cap: the counts would be read and then ignored.
+    if (limit === UNLIMITED || channelIds.length === 0) {
+      return { limit, queued: {} };
+    }
+
+    const counts = await Promise.all(
+      channelIds.map((channelId) =>
+        this.countQueuedForChannel(workspaceId, channelId),
+      ),
+    );
+    const queued: Record<string, number> = {};
+    channelIds.forEach((channelId, i) => {
+      queued[channelId] = counts[i];
+    });
+    return { limit, queued };
+  }
+
+  /**
    * Refuse the schedule if any target channel is already at its queue ceiling.
    *
    * Checked per channel, not per post: a post targeting three channels
@@ -89,9 +126,10 @@ export class PostQueueService {
       const channelId = channelIds[i];
       const queued = queuedCounts[i];
       if (!canQueuePost(plan.queuedPostsPerChannel, queued)) {
-        throw new ForbiddenException(
-          `Scheduling queue full for channel ${channelId}. This channel has ${queued} of ${plan.queuedPostsPerChannel} scheduled posts. ` +
-            'Publish or remove a scheduled post, or upgrade for unlimited scheduling.',
+        throw queueLimitReached(
+          channelId,
+          queued,
+          plan.queuedPostsPerChannel,
         );
       }
     }

@@ -19,9 +19,14 @@ import { AiModule } from '../ai/ai.module';
 // import CampaignsModule — so this is a plain import, not a forwardRef.
 import { BillingModule } from '../billing/billing.module';
 import { QUEUES } from '../queue/queue.module';
+import { BillingModule } from '../billing/billing.module';
 
 @Module({
   imports: [
+    // PlanFeatureGuard (on this module's controllers) needs
+    // SubscriptionLookupService. Plain import, not forwardRef:
+    // nothing in billing imports this module's chain, so no cycle.
+    BillingModule,
     DrizzleModule,
     WorkspaceRoleModule,
     BullModule.registerQueue(
