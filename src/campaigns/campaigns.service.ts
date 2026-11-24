@@ -27,7 +27,10 @@ import {
 } from '../planner/lib/workspace-time';
 import { computeSlotSchedule } from './campaign-schedule.util';
 import { cadenceOf, computeSpan, type Cadence } from './lib/campaign-span';
-import { CampaignPublishingService } from './campaign-publishing.service';
+import {
+  CampaignPublishingService,
+  QueueLimitReachedError,
+} from './campaign-publishing.service';
 import { EvergreenService, type EvergreenCampaignDto } from './evergreen.service';
 import { ApprovalPolicyService } from '../posts/composer/services/approval-policy.service';
 
@@ -1135,18 +1138,40 @@ export class CampaignsService {
         continue;
       }
 
-      const { postId, jobId } = await this.publishing.materializeAndEnqueue({
-        workspaceId,
-        createdById,
-        campaignId: id,
-        date: slot.date,
-        channelId: slot.channelId,
-        time: slot.time,
-        content: slot.content,
-        platform,
-        scheduledAt,
-        destination: slot.content.destination,
-      });
+      let materialized: { postId: string; jobId: string };
+      try {
+        materialized = await this.publishing.materializeAndEnqueue({
+          workspaceId,
+          createdById,
+          campaignId: id,
+          date: slot.date,
+          channelId: slot.channelId,
+          time: slot.time,
+          content: slot.content,
+          platform,
+          scheduledAt,
+          destination: slot.content.destination,
+        });
+      } catch (err) {
+        // At the plan's scheduling cap for this channel. Mark the slot and
+        // keep launching the rest, exactly as an unavailable channel does
+        // above — aborting here would leave the campaign half-launched and
+        // never marked active.
+        if (err instanceof QueueLimitReachedError) {
+          await db
+            .update(campaignSlotContent)
+            .set({
+              slotStatus: 'skipped',
+              lastError: err.message,
+              updatedAt: new Date(),
+            })
+            .where(eq(campaignSlotContent.id, slot.slotId));
+          continue;
+        }
+        throw err;
+      }
+
+      const { postId, jobId } = materialized;
 
       await db
         .update(campaignSlotContent)
@@ -1309,18 +1334,30 @@ export class CampaignsService {
       const platform = channelMap.get(slot.channelId);
       if (!scheduledAt || !platform) continue; // past-due/unavailable stays pending
 
-      const { postId, jobId } = await this.publishing.materializeAndEnqueue({
-        workspaceId,
-        createdById,
-        campaignId: id,
-        date: slot.date,
-        channelId: slot.channelId,
-        time: slot.time,
-        content: slot.content,
-        platform,
-        scheduledAt,
-        destination: slot.content.destination,
-      });
+      let materialized: { postId: string; jobId: string };
+      try {
+        materialized = await this.publishing.materializeAndEnqueue({
+          workspaceId,
+          createdById,
+          campaignId: id,
+          date: slot.date,
+          channelId: slot.channelId,
+          time: slot.time,
+          content: slot.content,
+          platform,
+          scheduledAt,
+          destination: slot.content.destination,
+        });
+      } catch (err) {
+        // At the plan's scheduling cap: leave the slot pending and move on,
+        // the same as a past-due or unavailable channel on the line above. A
+        // later run picks it up once a scheduled post publishes and frees a
+        // slot, which is exactly what the cap means.
+        if (err instanceof QueueLimitReachedError) continue;
+        throw err;
+      }
+
+      const { postId, jobId } = materialized;
 
       await db
         .update(campaignSlotContent)
@@ -1668,22 +1705,43 @@ export class CampaignsService {
           })
           .where(eq(campaignSlotContent.id, slot.id));
       } else {
-        const { postId, jobId } = await this.publishing.materializeAndEnqueue({
-          workspaceId,
-          createdById,
-          campaignId: id,
-          date: slot.date,
-          channelId: slot.channelId,
-          time: effectiveTime,
-          content: mergedContent,
-          platform,
-          scheduledAt,
-          destination: mergedContent.destination,
-        });
-        await db
-          .update(campaignSlotContent)
-          .set({ postId, jobId, scheduledAt, slotStatus: 'scheduled', updatedAt: new Date() })
-          .where(eq(campaignSlotContent.id, slot.id));
+        let materialized: { postId: string; jobId: string } | null = null;
+        try {
+          materialized = await this.publishing.materializeAndEnqueue({
+            workspaceId,
+            createdById,
+            campaignId: id,
+            date: slot.date,
+            channelId: slot.channelId,
+            time: effectiveTime,
+            content: mergedContent,
+            platform,
+            scheduledAt,
+            destination: mergedContent.destination,
+          });
+        } catch (err) {
+          // At the plan's scheduling cap. `updateEvent` edits ONE slot and is
+          // not a loop, so there is nothing to continue to: record why the
+          // slot did not schedule and let the function finish normally, which
+          // returns the reassembled campaign showing the skipped slot.
+          if (!(err instanceof QueueLimitReachedError)) throw err;
+          await db
+            .update(campaignSlotContent)
+            .set({
+              slotStatus: 'skipped',
+              lastError: err.message,
+              updatedAt: new Date(),
+            })
+            .where(eq(campaignSlotContent.id, slot.id));
+        }
+
+        if (materialized) {
+          const { postId, jobId } = materialized;
+          await db
+            .update(campaignSlotContent)
+            .set({ postId, jobId, scheduledAt, slotStatus: 'scheduled', updatedAt: new Date() })
+            .where(eq(campaignSlotContent.id, slot.id));
+        }
       }
     }
 

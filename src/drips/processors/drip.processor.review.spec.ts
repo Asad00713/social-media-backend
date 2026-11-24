@@ -86,6 +86,9 @@ function make(frontendUrl?: string) {
     {} as never,
     notify as never,
     links,
+    // Added last by the drip metering fix: this suite exercises the review
+    // notification branch, which returns before any AI spend.
+    {} as never,
   );
   return { processor, notify, links };
 }

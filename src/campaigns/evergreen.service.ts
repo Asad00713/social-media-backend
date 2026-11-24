@@ -36,7 +36,10 @@ import {
   pickNextPost,
   selectVariation,
 } from './evergreen-rotation.util';
-import { CampaignPublishingService } from './campaign-publishing.service';
+import {
+  CampaignPublishingService,
+  QueueLimitReachedError,
+} from './campaign-publishing.service';
 import { ApprovalPolicyService } from '../posts/composer/services/approval-policy.service';
 import { canonicalJson } from '../posts/lib/draft-approval';
 import { QUEUES } from '../queue/queue.module';
@@ -1100,18 +1103,36 @@ export class EvergreenService {
         caption: variation.caption,
       };
 
-      const { postId, jobId } = await this.publishing.materializeAndEnqueue({
-        workspaceId: campaign.workspaceId,
-        createdById: campaign.createdById,
-        campaignId: campaign.id,
-        date,
-        channelId: occurrence.channelId,
-        time,
-        content,
-        platform: channelRow.platform,
-        scheduledAt: now,
-        destination: content.destination,
-      });
+      let materialized: { postId: string; jobId: string };
+      try {
+        materialized = await this.publishing.materializeAndEnqueue({
+          workspaceId: campaign.workspaceId,
+          createdById: campaign.createdById,
+          campaignId: campaign.id,
+          date,
+          channelId: occurrence.channelId,
+          time,
+          content,
+          platform: channelRow.platform,
+          scheduledAt: now,
+          destination: content.destination,
+        });
+      } catch (err) {
+        // At the plan's scheduling cap for this channel. Skip the occurrence
+        // with the reason recorded, the same way an unavailable channel is
+        // handled above — the rotation continues and does not consume this
+        // post's turn.
+        if (err instanceof QueueLimitReachedError) {
+          await db
+            .update(evergreenOccurrences)
+            .set({ slotStatus: 'skipped', lastError: err.message })
+            .where(eq(evergreenOccurrences.id, occurrenceId));
+          return;
+        }
+        throw err;
+      }
+
+      const { postId, jobId } = materialized;
 
       await db
         .update(evergreenOccurrences)

@@ -782,21 +782,28 @@ describe('EvergreenService.assembleEvergreen', () => {
     const categoryRow = makeCategoryRow({
       schedule: { weekdays: [], times: [] },
     });
+    // Relative to now, not fixed dates. `loadUpNext` keeps only occurrences
+    // with `scheduledAt >= Date.now()`, so the original 2026-08 timestamps
+    // started failing the moment that date passed — the assertion got an
+    // empty array because every "future" row was in the past.
+    const DAY = 24 * 60 * 60 * 1000;
+    const now = Date.now();
     const laterOccurrence = makeOccurrenceRow({
       id: 'occ-later',
-      scheduledAt: new Date('2026-08-20T09:00:00Z'),
+      scheduledAt: new Date(now + 2 * DAY),
     });
     const soonerOccurrence = makeOccurrenceRow({
       id: 'occ-sooner',
-      scheduledAt: new Date('2026-08-19T09:00:00Z'),
+      scheduledAt: new Date(now + 1 * DAY),
     });
     const pastOccurrence = makeOccurrenceRow({
       id: 'occ-past',
-      scheduledAt: new Date('2020-01-01T09:00:00Z'),
+      scheduledAt: new Date(now - 30 * DAY),
     });
     const publishedOccurrence = makeOccurrenceRow({
       id: 'occ-published',
-      scheduledAt: new Date('2026-08-21T09:00:00Z'),
+      // Future, but already published: excluded by slotStatus, not by time.
+      scheduledAt: new Date(now + 3 * DAY),
       slotStatus: 'published',
     });
     const { db } = buildFakeDb({

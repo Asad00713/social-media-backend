@@ -5,8 +5,12 @@ describe('CampaignPublishingService', () => {
     const add = jest.fn().mockResolvedValue({ id: 'job-1' });
     const getJob = jest.fn();
     const queue = { add, getJob } as never;
-    const service = new CampaignPublishingService(queue);
-    return { service, add, getJob };
+    // Allows every schedule by default; a test that cares passes its own.
+    const enforceQueueLimit = jest.fn().mockResolvedValue(undefined);
+    const service = new CampaignPublishingService(queue, {
+      enforceQueueLimit,
+    } as never);
+    return { service, add, getJob, enforceQueueLimit };
   }
 
   it('cancelSlotJob removes the job when present', async () => {
