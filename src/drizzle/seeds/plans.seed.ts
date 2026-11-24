@@ -22,6 +22,10 @@ export async function seedPlans() {
       maxWorkspaces: 1,
       aiTokensPerMonth: 100, // Enough for the first week (about 33) plus a few captions
       features: {
+        // Free sees a week of history (Buffer's free tier gives 30 days,
+        // Metricool 30; a week is the taste, not the product). Read by
+        // `clampHistory` and clamped silently, never refused.
+        insightsHistoryDays: 7,
         basicScheduling: true,
         analytics: false,
         advancedScheduling: false,
@@ -42,6 +46,8 @@ export async function seedPlans() {
       maxWorkspaces: 1,
       aiTokensPerMonth: 10000, // 10k AI tokens per month
       features: {
+        // A month, matching what Buffer and Metricool give free.
+        insightsHistoryDays: 30,
         basicScheduling: true,
         analytics: true,
         advancedScheduling: true,
@@ -62,6 +68,10 @@ export async function seedPlans() {
       maxWorkspaces: 3,
       aiTokensPerMonth: 20000, // 20k AI tokens per month
       features: {
+        // A quarter. Buffer's paid tiers give 2 years; 90 days is what our
+        // rollup tables actually hold today, so promising more would be a
+        // promise the data cannot keep.
+        insightsHistoryDays: 90,
         basicScheduling: true,
         analytics: true,
         advancedScheduling: true,
@@ -82,6 +92,10 @@ export async function seedPlans() {
       maxWorkspaces: 10,
       aiTokensPerMonth: 50000, // 50k AI tokens per month
       features: {
+        // A quarter. Buffer's paid tiers give 2 years; 90 days is what our
+        // rollup tables actually hold today, so promising more would be a
+        // promise the data cannot keep.
+        insightsHistoryDays: 90,
         basicScheduling: true,
         analytics: true,
         advancedScheduling: true,

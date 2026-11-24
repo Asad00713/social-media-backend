@@ -36,7 +36,12 @@ describe('InsightsController over HTTP', () => {
         PlanFeatureGuard,
         {
           provide: SubscriptionLookupService,
-          useValue: { findByWorkspaceId: () => Promise.resolve({ planCode: 'MAX' }) },
+          useValue: {
+            findByWorkspaceId: () => Promise.resolve({ planCode: 'MAX' }),
+            // -1 is UNLIMITED_HISTORY: these tests are about routes and
+            // validation, not about how far back a plan may read.
+            getInsightsHistoryDays: () => Promise.resolve(-1),
+          },
         },
         WorkspaceRoleGuard,
         { provide: WorkspaceRoleService, useValue: roles },
@@ -341,7 +346,12 @@ describe('InsightsController signals over HTTP', () => {
         PlanFeatureGuard,
         {
           provide: SubscriptionLookupService,
-          useValue: { findByWorkspaceId: () => Promise.resolve({ planCode: 'MAX' }) },
+          useValue: {
+            findByWorkspaceId: () => Promise.resolve({ planCode: 'MAX' }),
+            // -1 is UNLIMITED_HISTORY: these tests are about routes and
+            // validation, not about how far back a plan may read.
+            getInsightsHistoryDays: () => Promise.resolve(-1),
+          },
         },
         WorkspaceRoleGuard,
         { provide: WorkspaceRoleService, useValue: roles },
@@ -426,7 +436,12 @@ describe('InsightsController post detail over HTTP', () => {
         PlanFeatureGuard,
         {
           provide: SubscriptionLookupService,
-          useValue: { findByWorkspaceId: () => Promise.resolve({ planCode: 'MAX' }) },
+          useValue: {
+            findByWorkspaceId: () => Promise.resolve({ planCode: 'MAX' }),
+            // -1 is UNLIMITED_HISTORY: these tests are about routes and
+            // validation, not about how far back a plan may read.
+            getInsightsHistoryDays: () => Promise.resolve(-1),
+          },
         },
         WorkspaceRoleGuard,
         { provide: WorkspaceRoleService, useValue: roles },
@@ -497,7 +512,12 @@ describe('InsightsController next-step hiding over HTTP', () => {
         PlanFeatureGuard,
         {
           provide: SubscriptionLookupService,
-          useValue: { findByWorkspaceId: () => Promise.resolve({ planCode: 'MAX' }) },
+          useValue: {
+            findByWorkspaceId: () => Promise.resolve({ planCode: 'MAX' }),
+            // -1 is UNLIMITED_HISTORY: these tests are about routes and
+            // validation, not about how far back a plan may read.
+            getInsightsHistoryDays: () => Promise.resolve(-1),
+          },
         },
         WorkspaceRoleGuard,
         { provide: WorkspaceRoleService, useValue: roles },
@@ -598,5 +618,123 @@ describe('InsightsController next-step hiding over HTTP', () => {
   it('rejects a workspace id that is not a uuid', async () => {
     await hide('format_gap', { reason: 'later' }, 'probe').expect(400);
     expect(insights.hideStep).not.toHaveBeenCalled();
+  });
+});
+
+describe('the plan shortens how far back Insights reads', () => {
+  let app: INestApplication<App>;
+  const roles = { getRole: jest.fn(), isPlatformSuperAdmin: jest.fn() };
+  const insights = {
+    overview: jest.fn(),
+    posts: jest.fn(),
+    csv: jest.fn(),
+    dailyCsv: jest.fn(),
+    signals: jest.fn(),
+    hideStep: jest.fn(),
+    postDetail: jest.fn(),
+    postMetrics: jest.fn(),
+  };
+
+  // Free: a week of history. The point of this block is that the clamp
+  // reaches the service — a unit test of clampHistory cannot show that the
+  // controller actually applies it.
+  const HISTORY_DAYS = 7;
+
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({
+      controllers: [InsightsController],
+      providers: [
+        PlanFeatureGuard,
+        {
+          provide: SubscriptionLookupService,
+          useValue: {
+            findByWorkspaceId: () => Promise.resolve({ planCode: 'FREE' }),
+            getInsightsHistoryDays: () => Promise.resolve(HISTORY_DAYS),
+          },
+        },
+        WorkspaceRoleGuard,
+        { provide: WorkspaceRoleService, useValue: roles },
+        { provide: InsightsService, useValue: insights },
+      ],
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useValue({
+        canActivate: (ctx: {
+          switchToHttp: () => { getRequest: () => { user?: unknown } };
+        }) => {
+          ctx.switchToHttp().getRequest().user = { userId: 'user-1' };
+          return true;
+        },
+      })
+      .compile();
+
+    app = moduleRef.createNestApplication();
+    app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+    await app.init();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    roles.getRole.mockResolvedValue('OWNER');
+    roles.isPlatformSuperAdmin.mockResolvedValue(false);
+    insights.overview.mockResolvedValue({ days: 0, window: {}, compare: 'usual' });
+    insights.posts.mockResolvedValue({ rows: [] });
+  });
+
+  it('hands the service a 7-day window when 90 days are asked for', async () => {
+    await request(app.getHttpServer())
+      .get(`/insights/workspaces/${WS}/overview?days=90`)
+      .expect(200);
+
+    const period = insights.overview.mock.calls[0][1] as {
+      days: number;
+      window: { from: string; to: string };
+    };
+    const expected = windowOf(utcToday(new Date()), HISTORY_DAYS);
+    expect(period.days).toBe(HISTORY_DAYS);
+    expect(period.window.from).toBe(expected.from);
+    // Still ends yesterday: the plan limits the depth, not the end.
+    expect(period.window.to).toBe(expected.to);
+  });
+
+  it('tells the caller the window was shortened, and by how much', async () => {
+    // Without this the chart would look complete with a quarter of the data.
+    const res = await request(app.getHttpServer())
+      .get(`/insights/workspaces/${WS}/overview?days=90`)
+      .expect(200);
+    expect(res.body.historyLimitedTo).toBe(HISTORY_DAYS);
+  });
+
+  it('says nothing when the asked-for window already fits', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/insights/workspaces/${WS}/overview?days=7`)
+      .expect(200);
+    // Absent, not null-and-present: a response that fits must be exactly what
+    // it was before any of this existed.
+    expect(res.body).not.toHaveProperty('historyLimitedTo');
+  });
+
+  it('shortens the Posts table too, not only the overview', async () => {
+    // Every read on this controller goes through the same helper; a gate on
+    // one route and not the others would let the table show what the chart
+    // cannot.
+    await request(app.getHttpServer())
+      .get(`/insights/workspaces/${WS}/posts?days=90`)
+      .expect(200);
+    const period = insights.posts.mock.calls[0][1] as { days: number };
+    expect(period.days).toBe(HISTORY_DAYS);
+  });
+
+  it('does not leak the reason into the period the service receives', async () => {
+    // A service takes a window; why it is that length is the response's
+    // business. Leaking it would make every service signature carry billing.
+    await request(app.getHttpServer())
+      .get(`/insights/workspaces/${WS}/overview?days=90`)
+      .expect(200);
+    expect(insights.overview.mock.calls[0][1]).not.toHaveProperty('limitedTo');
   });
 });

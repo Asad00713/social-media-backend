@@ -24,6 +24,7 @@ import {
   LockableChannel,
 } from './channel-lock.util';
 import { FREE_STORAGE_BYTES } from '../plan-storage';
+import { UNLIMITED_HISTORY } from '../../insights/lib/query';
 import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 /** Limits every account falls back to when it has no subscription row. */
@@ -105,6 +106,43 @@ export class SubscriptionLookupService {
       queuedPostsPerChannel: plan.queuedPostsPerChannel,
       storageBytesPerWorkspace: plan.storageBytesPerWorkspace,
     };
+  }
+
+  /**
+   * Days of Insights history the workspace's plan includes.
+   *
+   * Its own method rather than a field on `PlanLimits`, because that type has
+   * eight readers that all feed `resolveWorkspaceLimits` and the usage
+   * counters — none of which has anything to do with history depth, and all of
+   * which would need updating for a value they ignore.
+   *
+   * Lives in `plans.features` (jsonb) rather than a column: it needed no
+   * migration, the seed already writes the whole object
+   * (`excluded.features`), and the comparison table already reads it from
+   * there.
+   *
+   * Returns `UNLIMITED_HISTORY` whenever the answer is not a positive number —
+   * a missing plan row, a plan whose features predate this key, or a bad
+   * value. Reading any of those as a small number would quietly blank Insights
+   * for everyone on that plan; the permissive direction is the safe one, the
+   * same choice `PlanFeatureGuard` makes when its lookup throws.
+   */
+  async getInsightsHistoryDays(workspaceId: string): Promise<number> {
+    const subscription = await this.findByWorkspaceId(workspaceId);
+    const planCode = subscription?.planCode ?? 'FREE';
+
+    const rows = await db
+      .select({ features: plans.features })
+      .from(plans)
+      .where(eq(plans.code, planCode))
+      .limit(1);
+
+    const features = rows[0]?.features as
+      | { insightsHistoryDays?: unknown }
+      | null
+      | undefined;
+    const days = features?.insightsHistoryDays;
+    return typeof days === 'number' && days > 0 ? days : UNLIMITED_HISTORY;
   }
 
   /** Pure: fold subscription items into add-on quantities. */

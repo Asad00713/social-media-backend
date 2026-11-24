@@ -11,7 +11,13 @@ import type { Response } from 'express';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { RequireCapability } from '../../workspace-members/require-capability.decorator';
 import { WorkspaceRoleGuard } from '../../workspace-members/workspace-role.guard';
-import { periodOf, single } from '../lib/query';
+import {
+  clampHistory,
+  periodOf,
+  single,
+  type ResolvedPeriod,
+} from '../lib/query';
+import { SubscriptionLookupService } from '../../billing/services/subscription-lookup.service';
 import type { AudienceChannelsDto, AudienceGrowthDto } from './audience.dto';
 import { AudienceService } from './audience.service';
 
@@ -26,11 +32,38 @@ type Raw = string | string[];
 @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
 @RequireCapability('analytics:view')
 export class AudienceController {
-  constructor(private readonly audience: AudienceService) {}
+  constructor(
+    private readonly audience: AudienceService,
+    // New parameters go LAST: existing specs construct this positionally.
+    private readonly lookup: SubscriptionLookupService,
+  ) {}
+
+  /**
+   * The window asked for, shortened to the history the plan includes. Mirrors
+   * InsightsController.period: the same plan depth applies to Audience, and
+   * both controllers read it through SubscriptionLookupService rather than
+   * each resolving a plan themselves.
+   */
+  private async period(
+    workspaceId: string,
+    days?: Raw,
+    from?: Raw,
+    to?: Raw,
+  ): Promise<ResolvedPeriod> {
+    const historyDays = await this.lookup.getInsightsHistoryDays(workspaceId);
+    // `limitedTo` is dropped: a service takes a period, not the reason for its
+    // length. See InsightsController.period.
+    const { limitedTo: _limitedTo, ...period } = clampHistory(
+      periodOf(days, from, to),
+      historyDays,
+    );
+    return period;
+  }
+
 
   /** Follower growth per channel and in total, across the window. */
   @Get('growth')
-  growth(
+  async growth(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Query('days') days?: Raw,
     @Query('from') from?: Raw,
@@ -39,7 +72,7 @@ export class AudienceController {
   ): Promise<AudienceGrowthDto> {
     return this.audience.growth(
       workspaceId,
-      periodOf(days, from, to),
+      await this.period(workspaceId, days, from, to),
       single(channels, 'channels'),
     );
   }
@@ -56,7 +89,7 @@ export class AudienceController {
   ): Promise<string> {
     const { filename, body } = await this.audience.csv(
       workspaceId,
-      periodOf(days, from, to),
+      await this.period(workspaceId, days, from, to),
       single(channels, 'channels'),
     );
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
@@ -66,7 +99,7 @@ export class AudienceController {
 
   /** Where each channel's audience is: countries, cities, ages, genders. */
   @Get('channels')
-  channels(
+  async channels(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Query('days') days?: Raw,
     @Query('from') from?: Raw,
@@ -75,7 +108,7 @@ export class AudienceController {
   ): Promise<AudienceChannelsDto> {
     return this.audience.channels(
       workspaceId,
-      periodOf(days, from, to),
+      await this.period(workspaceId, days, from, to),
       single(channels, 'channels'),
     );
   }

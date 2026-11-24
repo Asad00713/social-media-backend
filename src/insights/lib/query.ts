@@ -110,6 +110,63 @@ export const periodOf = (
     utcToday(new Date()),
   );
 
+/** A plan places no ceiling on how far back Insights reads. */
+export const UNLIMITED_HISTORY = -1;
+
+/**
+ * Shorten a window to the history the plan includes.
+ *
+ * The plan limits how far BACK a workspace can look, so only the start moves.
+ * Moving the end instead — or replacing the window with "the last N days" —
+ * would answer a different question than the one asked: a Free workspace
+ * picking last March would silently get last week's numbers, which is worse
+ * than refusing, because the chart would look right.
+ *
+ * Returns the window unchanged when the plan allows it, so the common case
+ * costs nothing and `limitedTo` stays null for every paid plan on a preset.
+ *
+ * Deliberately a clamp, not a refusal. The agreed matrix gives analytics to
+ * every plan and makes only the DEPTH paid, so a 403 here would take a Free
+ * workspace's own numbers away rather than shortening them. `limitedTo` tells
+ * the caller it happened, which is what the UI needs to say "older than 7 days
+ * is on Pro" instead of drawing an unexplained gap.
+ */
+export function clampHistory(
+  period: ResolvedPeriod,
+  historyDays: number,
+  today: Date = utcToday(new Date()),
+): ResolvedPeriod & { limitedTo: number | null } {
+  // `!(x > 0)` rather than `x <= 0`, so undefined and NaN land here too: a
+  // plan row whose features JSONB carries no `insightsHistoryDays` must read
+  // as "no limit", never as zero days, which would blank Insights for every
+  // workspace on that plan.
+  if (historyDays === UNLIMITED_HISTORY || !(historyDays > 0)) {
+    return { ...period, limitedTo: null };
+  }
+
+  // The oldest date the plan may read. `historyDays` counts days INCLUDING
+  // the earliest one, so 7 days of history starting from yesterday reaches
+  // back 7 days, not 8.
+  const earliestMs = today.getTime() - historyDays * DAY_MS;
+  const fromMs = Date.parse(`${period.window.from}T00:00:00Z`);
+  if (fromMs >= earliestMs) return { ...period, limitedTo: null };
+
+  const from = isoDate(new Date(earliestMs));
+  const toMs = Date.parse(`${period.window.to}T00:00:00Z`);
+  // A window entirely older than the plan's history collapses to nothing
+  // readable. Rather than invert it (`from` after `to`), it becomes the
+  // single oldest day the plan can see, so the response is empty-but-valid
+  // and the caller's `limitedTo` explains why.
+  const to = toMs < earliestMs ? from : period.window.to;
+  const days = (Date.parse(`${to}T00:00:00Z`) - earliestMs) / DAY_MS + 1;
+
+  return {
+    days,
+    window: customWindow(from, to),
+    limitedTo: historyDays,
+  };
+}
+
 export const COMPARE_MODES = ['usual', 'previous', 'year', 'none'] as const;
 export type CompareMode = (typeof COMPARE_MODES)[number];
 

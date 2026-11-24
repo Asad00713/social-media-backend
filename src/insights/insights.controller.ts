@@ -1,3 +1,4 @@
+import { SubscriptionLookupService } from '../billing/services/subscription-lookup.service';
 import {
   BadRequestException,
   Body,
@@ -37,6 +38,8 @@ import {
   parseTz,
   periodOf,
   single,
+  clampHistory,
+  type ResolvedPeriod,
 } from './lib/query';
 
 /**
@@ -65,11 +68,43 @@ const tableOf = (raw: {
 @UseGuards(JwtAuthGuard, WorkspaceRoleGuard, PlanFeatureGuard)
 @RequireCapability('analytics:view')
 export class InsightsController {
-  constructor(private readonly insights: InsightsService) {}
+  constructor(
+    private readonly insights: InsightsService,
+    // New parameters go LAST: existing specs construct this positionally.
+    private readonly lookup: SubscriptionLookupService,
+  ) {}
+  /**
+   * The window the caller asked for, shortened to the history their plan
+   * includes.
+   *
+   * Every read on this controller goes through here, so the plan's depth is
+   * applied in one place rather than seven. `clampHistory` returns the window
+   * untouched for a plan that allows it, so the paid path costs one extra
+   * lookup and no change in behaviour.
+   */
+  private async period(
+    workspaceId: string,
+    days?: Raw,
+    from?: Raw,
+    to?: Raw,
+  ): Promise<{ period: ResolvedPeriod; limitedTo: number | null }> {
+    const historyDays = await this.lookup.getInsightsHistoryDays(workspaceId);
+    // `limitedTo` is kept OUT of the period the services receive: they take a
+    // window, and have no business knowing why it is the length it is. It is
+    // returned alongside so `overview` can put it in the response, where the
+    // UI needs it to explain a short window — and so the plan is looked up
+    // once per request rather than twice.
+    const { limitedTo, ...period } = clampHistory(
+      periodOf(days, from, to),
+      historyDays,
+    );
+    return { period, limitedTo };
+  }
+
 
   /** Everything above the content table, for a preset or a picked range. */
   @Get('overview')
-  overview(
+  async overview(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Query('days') days?: Raw,
     @Query('from') from?: Raw,
@@ -78,18 +113,27 @@ export class InsightsController {
     @Query('channels') channels?: Raw,
     @Query('tz') tz?: Raw,
   ): Promise<InsightsOverviewDto> {
-    return this.insights.overview(
+    const { period, limitedTo } = await this.period(
       workspaceId,
-      periodOf(days, from, to),
+      days,
+      from,
+      to,
+    );
+    const dto = await this.insights.overview(
+      workspaceId,
+      period,
       single(channels, 'channels'),
       parseTz(single(tz, 'tz')),
       parseCompare(single(compare, 'compare')),
     );
+    // Only present when something was actually shortened, so a paid plan's
+    // response is byte-for-byte what it was before this existed.
+    return limitedTo === null ? dto : { ...dto, historyLimitedTo: limitedTo };
   }
 
   /** The "All content" table, a page at a time. */
   @Get('posts')
-  posts(
+  async posts(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Query('days') days?: Raw,
     @Query('from') from?: Raw,
@@ -103,7 +147,7 @@ export class InsightsController {
   ): Promise<InsightsPostsDto> {
     return this.insights.posts(
       workspaceId,
-      periodOf(days, from, to),
+      (await this.period(workspaceId, days, from, to)).period,
       single(channels, 'channels'),
       tableOf({ format, sort, order, limit, offset }),
     );
@@ -144,7 +188,7 @@ export class InsightsController {
     const { format: f, sort: s, order: o } = tableOf({ format, sort, order });
     const { filename, body } = await this.insights.csv(
       workspaceId,
-      periodOf(days, from, to),
+      (await this.period(workspaceId, days, from, to)).period,
       single(channels, 'channels'),
       { format: f, sort: s, order: o },
     );
@@ -175,7 +219,7 @@ export class InsightsController {
     }
     const { filename, body } = await this.insights.dailyCsv(
       workspaceId,
-      periodOf(days, from, to),
+      (await this.period(workspaceId, days, from, to)).period,
       single(channels, 'channels'),
     );
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
@@ -185,7 +229,7 @@ export class InsightsController {
 
   /** Best time, What works and Next steps over the last 90 days. */
   @Get('signals')
-  signals(
+  async signals(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @CurrentUser() user: { userId: string },
     @Query('channels') channels?: Raw,
@@ -218,7 +262,7 @@ export class InsightsController {
 
   /** One post on one channel: tiles, verdict, reasons and its first 48 hours. */
   @Get('posts/:postId/channels/:channelId')
-  postDetail(
+  async postDetail(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Param('postId', ParseUUIDPipe) postId: string,
     @Param('channelId', ParseIntPipe) channelId: number,
