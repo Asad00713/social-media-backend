@@ -54,6 +54,42 @@ export class PostQueueService {
   }
 
   /**
+   * The same numbers `enforceQueueLimit` decides on, for a client that wants
+   * to say so BEFORE the person writes the post.
+   *
+   * Read-only and deliberately shares `countQueuedForChannel` with the
+   * enforcement path: two different counts would let the composer promise room
+   * the scheduler then refuses. `limit` is `UNLIMITED` (-1) on a paid plan, and
+   * callers must treat that as no cap rather than as a ceiling of -1.
+   */
+  async queueHeadroom(
+    workspaceId: string,
+    channelIds: string[],
+  ): Promise<{ limit: number; queued: Record<string, number> }> {
+    const subscription = await this.lookup.findByWorkspaceId(workspaceId);
+    const plan = await this.lookup.getPlanLimits(
+      subscription?.planCode ?? 'FREE',
+    );
+    const limit = plan.queuedPostsPerChannel;
+
+    // No cap: the counts would be read and then ignored.
+    if (limit === UNLIMITED || channelIds.length === 0) {
+      return { limit, queued: {} };
+    }
+
+    const counts = await Promise.all(
+      channelIds.map((channelId) =>
+        this.countQueuedForChannel(workspaceId, channelId),
+      ),
+    );
+    const queued: Record<string, number> = {};
+    channelIds.forEach((channelId, i) => {
+      queued[channelId] = counts[i];
+    });
+    return { limit, queued };
+  }
+
+  /**
    * Refuse the schedule if any target channel is already at its queue ceiling.
    *
    * Checked per channel, not per post: a post targeting three channels

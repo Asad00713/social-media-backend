@@ -14,6 +14,7 @@ import { PlannerLookupService } from './services/planner-lookup.service';
 import { PlannerNotesService } from './services/planner-notes.service';
 import { PlannerPreferencesService } from './services/planner-preferences.service';
 import { QueueSlotsService } from './services/queue-slots.service';
+import { BillingModule } from '../billing/billing.module';
 
 @Module({
   imports: [
@@ -21,6 +22,10 @@ import { QueueSlotsService } from './services/queue-slots.service';
     WorkspaceRoleModule,
     PostsModule,
     PostPerformanceModule,
+    // For PostQueueService: the queue endpoint reports the plan's per-channel
+    // cap so the composer can show it before a post is written. Nothing in
+    // billing imports this module's chain, so no cycle.
+    BillingModule,
   ],
   controllers: [
     PlannerController,

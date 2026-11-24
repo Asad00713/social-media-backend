@@ -13,6 +13,7 @@ import {
 } from '../lib/queue-slots';
 import { loadWorkspaceTimezone } from '../lib/workspace-time';
 import { PlannerPreferencesService } from './planner-preferences.service';
+import { PostQueueService } from '../../billing/services/post-queue.service';
 import { livePosts } from '../../posts/soft-delete/soft-delete';
 
 const DAY_MS = 86_400_000;
@@ -24,6 +25,17 @@ export interface QueueDto {
   nextFree: string | null;
   /** ISO instant of the first slot when it is still free; null otherwise. */
   top: string | null;
+  /**
+   * The plan's cap on posts queued per channel, and how many each of the
+   * draft's channels already holds — so the composer can say a channel is
+   * full before the post is written, instead of the schedule being refused
+   * after it.
+   *
+   * `limit` is -1 on a plan with no cap, and `queued` is then empty: the
+   * counts would only be read and ignored. A client must treat -1 as
+   * unlimited rather than as a ceiling of -1.
+   */
+  headroom: { limit: number; queued: Record<string, number> };
 }
 
 export interface QueueQuery {
@@ -45,6 +57,7 @@ export class QueueSlotsService {
   constructor(
     @Inject(DRIZZLE) private readonly db: DbType,
     private readonly preferences: PlannerPreferencesService,
+    private readonly postQueue: PostQueueService,
   ) {}
 
   async get(
@@ -53,14 +66,17 @@ export class QueueSlotsService {
     query: QueueQuery,
     now = new Date(),
   ): Promise<QueueDto> {
-    const [timezone, prefs] = await Promise.all([
+    const [timezone, prefs, headroom] = await Promise.all([
       loadWorkspaceTimezone(this.db, workspaceId),
       this.preferences.get(userId, workspaceId),
+      // Read alongside the slots rather than after them: a composer opening
+      // on a full channel should not wait on a second round-trip to find out.
+      this.postQueue.queueHeadroom(workspaceId, query.channelIds),
     ]);
     const slots = prefs.queueSlots;
     const instants = upcomingSlotInstants(slots, timezone, now);
     if (instants.length === 0) {
-      return { timezone, slots, nextFree: null, top: null };
+      return { timezone, slots, nextFree: null, top: null, headroom };
     }
 
     const taken = await this.takenMinutes(workspaceId, query, now);
@@ -70,6 +86,7 @@ export class QueueSlotsService {
       slots,
       nextFree: pick.nextFree?.toISOString() ?? null,
       top: pick.top?.toISOString() ?? null,
+      headroom,
     };
   }
 

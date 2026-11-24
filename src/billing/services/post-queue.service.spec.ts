@@ -148,3 +148,68 @@ describe('PostQueueService.enforceQueueLimit', () => {
     ).resolves.toBeUndefined();
   });
 });
+
+describe('PostQueueService.queueHeadroom', () => {
+  function makeService(queuedPostsPerChannel: number) {
+    const lookup = {
+      findByWorkspaceId: jest.fn().mockResolvedValue({ planCode: 'FREE' }),
+      getPlanLimits: jest.fn().mockResolvedValue({ queuedPostsPerChannel }),
+    } as unknown as SubscriptionLookupService;
+    return new PostQueueService(lookup);
+  }
+
+  it('reports the cap and a count per channel', async () => {
+    const service = makeService(10);
+    jest
+      .spyOn(service, 'countQueuedForChannel')
+      .mockImplementation(async (_ws, channelId) =>
+        channelId === 'full' ? 10 : 3,
+      );
+
+    await expect(
+      service.queueHeadroom('ws-1', ['full', 'roomy']),
+    ).resolves.toEqual({ limit: 10, queued: { full: 10, roomy: 3 } });
+  });
+
+  it('skips the counts entirely on an uncapped plan', async () => {
+    // -1 is UNLIMITED. Counting would be N queries whose answers are then
+    // thrown away, on the composer's open path.
+    const service = makeService(-1);
+    const count = jest
+      .spyOn(service, 'countQueuedForChannel')
+      .mockResolvedValue(5);
+
+    await expect(service.queueHeadroom('ws-1', ['a', 'b'])).resolves.toEqual({
+      limit: -1,
+      queued: {},
+    });
+    expect(count).not.toHaveBeenCalled();
+  });
+
+  it('asks nothing when the draft has no channels', async () => {
+    const service = makeService(10);
+    const count = jest
+      .spyOn(service, 'countQueuedForChannel')
+      .mockResolvedValue(1);
+
+    await expect(service.queueHeadroom('ws-1', [])).resolves.toEqual({
+      limit: 10,
+      queued: {},
+    });
+    expect(count).not.toHaveBeenCalled();
+  });
+
+  it('agrees with enforceQueueLimit on the same channel', async () => {
+    // The whole point of sharing countQueuedForChannel: if these two ever
+    // disagreed, the composer would promise room the scheduler then refuses.
+    const service = makeService(10);
+    jest.spyOn(service, 'countQueuedForChannel').mockResolvedValue(10);
+
+    const headroom = await service.queueHeadroom('ws-1', ['c1']);
+    expect(headroom.queued.c1).toBe(headroom.limit);
+
+    await expect(service.enforceQueueLimit('ws-1', ['c1'])).rejects.toThrow(
+      ForbiddenException,
+    );
+  });
+});
