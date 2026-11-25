@@ -78,9 +78,13 @@ export class WorkspaceSuspendedGuard implements CanActivate {
     // `request.user`, so when the role is present we honour it, and when it is
     // not the decorator has already exempted the admin routes.
     if (request.user?.role === 'SUPER_ADMIN') return true;
-    // `:workspaceId` everywhere except the analytics module, which uses `:wsId`.
+    // `:workspaceId` everywhere except the analytics module (`:wsId`) and the
+    // lead-ads routes (`:wid`).
     const workspaceId =
-      request.params?.workspaceId ?? request.params?.wsId ?? null;
+      request.params?.workspaceId ??
+      request.params?.wsId ??
+      request.params?.wid ??
+      null;
     if (!workspaceId) return true;
     // Workspace ids are uuid columns. Anything else would reach Postgres as an
     // invalid uuid and come back a 500 — before the route's auth guard, since

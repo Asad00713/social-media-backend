@@ -201,8 +201,9 @@ export class WorkspaceMembersService {
 
     const isOwner = workspaceData.ownerId === currentUserId;
     const isAdmin = await this.isUserAdmin(workspaceId, currentUserId);
+    const isSuperAdmin = await this.isPlatformSuperAdmin(currentUserId);
 
-    if (!isOwner && !isAdmin) {
+    if (!isOwner && !isAdmin && !isSuperAdmin) {
       throw new ForbiddenException(
         'Only workspace owner or admins can invite members',
       );
@@ -337,7 +338,8 @@ export class WorkspaceMembersService {
     if (!workspaceData) throw new NotFoundException('Workspace not found');
     const isOwner = workspaceData.ownerId === currentUserId;
     const isAdmin = await this.isUserAdmin(workspaceId, currentUserId);
-    if (!isOwner && !isAdmin) {
+    const isSuperAdmin = await this.isPlatformSuperAdmin(currentUserId);
+    if (!isOwner && !isAdmin && !isSuperAdmin) {
       throw new ForbiddenException(
         'Only workspace owner or admins can invite members',
       );
@@ -607,8 +609,9 @@ export class WorkspaceMembersService {
 
     const isOwner = workspaceData.ownerId === currentUserId;
     const isAdmin = await this.isUserAdmin(workspaceId, currentUserId);
+    const isSuperAdmin = await this.isPlatformSuperAdmin(currentUserId);
 
-    if (!isOwner && !isAdmin) {
+    if (!isOwner && !isAdmin && !isSuperAdmin) {
       throw new ForbiddenException(
         'Only workspace owner or admins can view invitations',
       );
@@ -1514,11 +1517,12 @@ export class WorkspaceMembersService {
     const invitation = await this.db.query.workspaceInvitation.findFirst({
       where: eq(workspaceInvitation.token, token),
       with: {
-        workspace: { columns: { name: true } },
+        workspace: { columns: { name: true, deletedAt: true } },
         inviter: { columns: { name: true } },
       },
     });
-    if (!invitation) {
+    // A deleted workspace's invitations read as gone, as in acceptInvitation.
+    if (!invitation || invitation.workspace?.deletedAt) {
       throw new NotFoundException('Invitation not found');
     }
     return {

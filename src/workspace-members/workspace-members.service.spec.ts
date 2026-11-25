@@ -1,8 +1,14 @@
-import { ConflictException, Logger, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { socialMediaChannels } from 'src/drizzle/schema';
 import { AppLinks } from 'src/email/links/app-links';
+import { MemberRole } from './dto/add-member.dto';
 import type { EmailResult } from 'src/email/email.service';
 import type { EnqueueEmail } from 'src/email/queue/email-job';
 import type { EmailOutboxService } from 'src/email/queue/email-outbox.service';
@@ -290,6 +296,137 @@ describe('WorkspaceMembersService.previewInvitation', () => {
       expired: true,
     });
     expect((res as any).token).toBeUndefined();
+  });
+});
+
+describe('WorkspaceMembersService.previewInvitation and a deleted workspace', () => {
+  function previewDb(workspaceRow: { name: string; deletedAt: Date | null }) {
+    const findFirst = jest.fn().mockResolvedValue({
+      email: 'new@acme.com',
+      role: 'MEMBER',
+      status: 'PENDING',
+      expiresAt: new Date(Date.now() + DAY_MS),
+      workspace: workspaceRow,
+      inviter: { name: 'Sam' },
+    });
+    return { db: { query: { workspaceInvitation: { findFirst } } }, findFirst };
+  }
+
+  it('an invitation to a soft-deleted workspace is not found', async () => {
+    const { db } = previewDb({ name: 'Gone Inc', deletedAt: new Date() });
+    const service = build(db, {} as never, {} as never, noRole);
+    await expect(service.previewInvitation('tok')).rejects.toThrow(
+      new NotFoundException('Invitation not found'),
+    );
+  });
+
+  it('an invitation to a live workspace still previews', async () => {
+    const { db } = previewDb({ name: 'Acme', deletedAt: null });
+    const service = build(db, {} as never, {} as never, noRole);
+    await expect(service.previewInvitation('tok')).resolves.toMatchObject({
+      workspaceName: 'Acme',
+    });
+  });
+
+  it('asks the database for the workspace deletedAt, since the check depends on it', async () => {
+    const { db, findFirst } = previewDb({ name: 'Acme', deletedAt: null });
+    await build(db, {} as never, {} as never, noRole).previewInvitation('tok');
+    const [query] = findFirst.mock.calls[0] as [
+      { with: { workspace: { columns: Record<string, boolean> } } },
+    ];
+    expect(query.with.workspace.columns).toMatchObject({ deletedAt: true });
+  });
+});
+
+describe('WorkspaceMembersService invitations and platform super admins', () => {
+  const PAST_GATE = new Error('past the permission check');
+  const superAdmin: any = {
+    isPlatformSuperAdmin: jest.fn().mockResolvedValue(true),
+  };
+
+  /**
+   * A live workspace owned by someone else; the caller is neither its owner nor
+   * an admin (no ACCEPTED ADMIN row). Anything that gets past the permission
+   * check reaches `transaction` / `findMany`, which is how the tests tell
+   * "allowed" from "forbidden".
+   */
+  function dbOfOtherWorkspace() {
+    return {
+      query: {
+        workspace: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ id: 'ws1', ownerId: 'owner1', name: 'Acme' }),
+        },
+        workspaceInvitation: {
+          findFirst: jest.fn().mockResolvedValue(undefined),
+          findMany: jest.fn().mockResolvedValue([]),
+        },
+      },
+      transaction: jest.fn().mockRejectedValue(PAST_GATE),
+    };
+  }
+  const invite = { email: 'a@x.com', role: MemberRole.MEMBER };
+
+  describe('a super admin can list pending invitations and invite', () => {
+    it('inviteMember passes the permission check', async () => {
+      const svc = build(
+        dbOfOtherWorkspace(),
+        {} as never,
+        {} as never,
+        superAdmin,
+      );
+      await expect(svc.inviteMember('ws1', invite, 'root')).rejects.toBe(
+        PAST_GATE,
+      );
+    });
+
+    it('batchInvite passes the permission check', async () => {
+      const svc = build(
+        dbOfOtherWorkspace(),
+        {} as never,
+        {} as never,
+        superAdmin,
+      );
+      await expect(svc.batchInvite('ws1', [invite], 'root')).rejects.toBe(
+        PAST_GATE,
+      );
+    });
+
+    it('getPendingInvitations lists', async () => {
+      const svc = build(
+        dbOfOtherWorkspace(),
+        {} as never,
+        {} as never,
+        superAdmin,
+      );
+      await expect(svc.getPendingInvitations('ws1', 'root')).resolves.toEqual(
+        [],
+      );
+    });
+  });
+
+  describe('an admin of another workspace still cannot', () => {
+    it('inviteMember is forbidden', async () => {
+      const svc = build(dbOfOtherWorkspace(), {} as never, {} as never, noRole);
+      await expect(
+        svc.inviteMember('ws1', invite, 'other-admin'),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('batchInvite is forbidden', async () => {
+      const svc = build(dbOfOtherWorkspace(), {} as never, {} as never, noRole);
+      await expect(
+        svc.batchInvite('ws1', [invite], 'other-admin'),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('getPendingInvitations is forbidden', async () => {
+      const svc = build(dbOfOtherWorkspace(), {} as never, {} as never, noRole);
+      await expect(
+        svc.getPendingInvitations('ws1', 'other-admin'),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
   });
 });
 

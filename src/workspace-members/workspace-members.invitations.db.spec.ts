@@ -835,4 +835,36 @@ describeDb('invitations to a soft-deleted workspace (database)', () => {
       expect((await rowState(client, inv.id)).status).toBe('PENDING');
     });
   });
+
+  it('previewing it throws NotFoundException("Invitation not found"); a live workspace still previews', async () => {
+    await run(ROOMY, async (service, client) => {
+      const owner = await seedUser(client, 'Owner');
+      const invitee = await seedUser(client, 'Invitee');
+      const live = await seedWorkspace(client, owner.id);
+      const gone = await seedWorkspace(client, owner.id);
+      const kept = await seedInvitation(client, live, {
+        status: 'PENDING',
+        expiresInMs: 2 * DAY_MS,
+        invitedBy: owner.id,
+        email: invitee.email,
+      });
+      const hidden = await seedInvitation(client, gone, {
+        status: 'PENDING',
+        expiresInMs: 2 * DAY_MS,
+        invitedBy: owner.id,
+        email: invitee.email,
+      });
+      await softDelete(client, gone);
+
+      expect(await service.previewInvitation(kept.token)).toMatchObject({
+        invitedEmail: invitee.email,
+        status: 'PENDING',
+      });
+      const err = await service
+        .previewInvitation(hidden.token)
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(NotFoundException);
+      expect((err as NotFoundException).message).toBe('Invitation not found');
+    });
+  });
 });

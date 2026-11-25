@@ -159,6 +159,27 @@ describe('WorkspaceSuspendedGuard', () => {
     expect(where).toHaveBeenCalled();
   });
 
+  it('a suspended workspace is blocked on a :wid route', async () => {
+    const { db } = mockDb([{ isActive: false, reason: 'abuse' }]);
+    const guard = new WorkspaceSuspendedGuard(db, mockReflector(false));
+
+    await expect(
+      guard.canActivate(mockContext({ wid: WS_1 })),
+    ).rejects.toMatchObject({
+      response: { code: 'WORKSPACE_SUSPENDED', reason: 'abuse' },
+    });
+  });
+
+  it('rejects a malformed :wid with 400 and never queries the DB', async () => {
+    const { db, select } = mockDb([]);
+    const guard = new WorkspaceSuspendedGuard(db, mockReflector(false));
+
+    await expect(
+      guard.canActivate(mockContext({ wid: 'probe' })),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(select).not.toHaveBeenCalled();
+  });
+
   it('blocks a manually-suspended workspace (isActive=false) with reason from suspendedReason', async () => {
     const { db } = mockDb([{ isActive: false, reason: 'policy_violation' }]);
     const guard = new WorkspaceSuspendedGuard(db, mockReflector(false));
