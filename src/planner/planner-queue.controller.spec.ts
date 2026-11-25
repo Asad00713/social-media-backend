@@ -88,7 +88,7 @@ describe('PlannerQueueController over HTTP', () => {
     expect(queue.get).not.toHaveBeenCalled();
   });
 
-  it('lets a GUEST read it (posts:draft) and refuses a non-member', async () => {
+  it('lets a GUEST read it (posts:view) and refuses a non-member', async () => {
     roles.getRole.mockResolvedValue('GUEST');
     await get().expect(200);
     roles.getRole.mockResolvedValue(null);

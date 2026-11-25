@@ -39,7 +39,7 @@ export class ChannelPageController {
     private readonly posts: ChannelPostsService,
   ) {}
 
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get(':channelId/page')
   async getPage(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
@@ -49,7 +49,7 @@ export class ChannelPageController {
     return this.page.getPage(workspaceId, channelId, user.userId);
   }
 
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get(':channelId/posts')
   async listPosts(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,

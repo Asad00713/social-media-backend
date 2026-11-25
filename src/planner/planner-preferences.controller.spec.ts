@@ -167,13 +167,13 @@ describe('PlannerPreferencesController over HTTP', () => {
     await put(body).expect(200);
   });
 
-  it('capability metadata: posts:draft on both', () => {
+  it('capability metadata: posts:view on both', () => {
     const cap = (n: keyof PlannerPreferencesController) =>
       Reflect.getMetadata(
         REQUIRE_CAPABILITY,
         PlannerPreferencesController.prototype[n],
       ) as string | undefined;
-    expect(cap('get')).toBe('posts:draft');
-    expect(cap('update')).toBe('posts:draft');
+    expect(cap('get')).toBe('posts:view');
+    expect(cap('update')).toBe('posts:view');
   });
 });

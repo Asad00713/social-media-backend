@@ -224,8 +224,8 @@ describe('PlannerNotesController over HTTP', () => {
         PlannerNotesController.prototype[name],
       ) as string | undefined;
 
-    it('reads need posts:draft; writes need posts:publish', () => {
-      expect(cap('list')).toBe('posts:draft');
+    it('reads need posts:view; writes need posts:publish', () => {
+      expect(cap('list')).toBe('posts:view');
       expect(cap('create')).toBe('posts:publish');
       expect(cap('update')).toBe('posts:publish');
       expect(cap('remove')).toBe('posts:publish');

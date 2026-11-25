@@ -5,14 +5,14 @@ import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { BrandKitController } from './brand-kit.controller';
 
-type Cap = 'brand:manage' | 'posts:draft';
+type Cap = 'brand:manage' | 'posts:view';
 
 // Every route of BrandKitController and the capability it must demand. A route missing
 // from this table, or carrying a different capability, fails the spec. (The
 // global net in every-workspace-route-guarded.spec.ts only checks that SOME
 // capability is declared; this pins which one.)
 const EXPECTED: Record<string, Cap> = {
-  get: 'posts:draft',
+  get: 'posts:view',
   update: 'brand:manage',
 };
 

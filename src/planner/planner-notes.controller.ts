@@ -31,7 +31,7 @@ import { PlannerNotesService } from './services/planner-notes.service';
 export class PlannerNotesController {
   constructor(private readonly notes: PlannerNotesService) {}
 
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get()
   async list(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,

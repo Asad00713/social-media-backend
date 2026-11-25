@@ -26,15 +26,17 @@ import { PostCommentsService } from './post-comments.service';
 
 /**
  * Team comments on a post — the composer's "Comments" row. Anyone who may
- * see the draft (`posts:draft`, Guest included) may read, write and resolve;
- * deleting someone else's comment is for admins (checked in the service).
+ * see the post (`posts:view`, Guest included) reads the thread. Commenting
+ * (`posts:comment`, also Guest) covers posting a comment, resolving or
+ * reopening one, and deleting your own: resolving is part of commenting.
+ * Deleting someone else's comment is for admins (checked in the service).
  */
 @Controller('posts/workspaces/:workspaceId/:postId/comments')
 @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
 export class PostCommentsController {
   constructor(private readonly comments: PostCommentsService) {}
 
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get()
   async list(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
@@ -45,7 +47,7 @@ export class PostCommentsController {
     return this.comments.list(workspaceId, postId, user.userId, role);
   }
 
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:comment')
   @Post()
   @HttpCode(HttpStatus.CREATED)
   async create(
@@ -64,7 +66,7 @@ export class PostCommentsController {
     );
   }
 
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:comment')
   @Patch(':commentId')
   async update(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
@@ -84,7 +86,7 @@ export class PostCommentsController {
     );
   }
 
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:comment')
   @Delete(':commentId')
   async remove(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,

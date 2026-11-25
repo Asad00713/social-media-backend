@@ -60,7 +60,7 @@ export class DripController {
   /**
    * Get all drip campaigns for a workspace
    */
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('workspaces/:workspaceId')
   async getWorkspaceDripCampaigns(
     @Param('workspaceId') workspaceId: string,
@@ -86,7 +86,7 @@ export class DripController {
   /**
    * Scheduled drip posts across the workspace for the calendar.
    */
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('workspaces/:workspaceId/scheduled-posts')
   async getWorkspaceScheduledDripPosts(
     @Param('workspaceId') workspaceId: string,
@@ -103,7 +103,7 @@ export class DripController {
   /**
    * Get a specific drip campaign
    */
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('workspaces/:workspaceId/:campaignId')
   async getDripCampaign(
     @Param('workspaceId') workspaceId: string,
@@ -239,7 +239,7 @@ export class DripController {
   /**
    * Get all posts for a drip campaign
    */
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('workspaces/:workspaceId/:campaignId/posts')
   async getDripPosts(
     @Param('workspaceId') workspaceId: string,
@@ -263,7 +263,7 @@ export class DripController {
   /**
    * Get a specific drip post
    */
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('workspaces/:workspaceId/posts/:dripPostId')
   async getDripPost(
     @Param('workspaceId') workspaceId: string,
@@ -350,7 +350,7 @@ export class DripController {
   /**
    * Get campaign history (audit log)
    */
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('workspaces/:workspaceId/:campaignId/history')
   async getCampaignHistory(
     @Param('workspaceId') workspaceId: string,
@@ -366,7 +366,7 @@ export class DripController {
   /**
    * Get campaign statistics
    */
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('workspaces/:workspaceId/:campaignId/stats')
   async getCampaignStats(
     @Param('workspaceId') workspaceId: string,

@@ -53,7 +53,7 @@ export class CanvaComposerController {
   ) {}
 
   @Get('status')
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @HttpCode(HttpStatus.OK)
   async status(
     @Param('workspaceId') workspaceId: string,
@@ -117,7 +117,7 @@ export class CanvaComposerController {
    * Create a design at a size this post needs, and hand back the Canva
    * window to finish it in.
    *
-   * `posts:draft` like the rest of this controller: creating a design
+   * `posts:draft` (Member and up): creating a design
    * is part of drafting a post, and it writes nothing of ours — the
    * design lives in the person's own Canva account.
    */

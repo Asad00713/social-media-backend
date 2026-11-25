@@ -77,7 +77,7 @@ export class PostsController {
   /**
    * Get all posts for a workspace
    */
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('workspaces/:workspaceId')
   async getWorkspacePosts(
     @Param('workspaceId') workspaceId: string,
@@ -106,7 +106,7 @@ export class PostsController {
    * matches the literal "calendar" segment as a :postId and the query fails
    * with "invalid input syntax for type uuid: calendar".
    */
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('workspaces/:workspaceId/calendar')
   async getCalendarPosts(
     @Param('workspaceId') workspaceId: string,
@@ -132,7 +132,7 @@ export class PostsController {
    * Paged drafts, ready ones first. MUST be declared before the ':postId'
    * routes, or "drafts" is matched as a post id.
    */
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('workspaces/:workspaceId/drafts')
   async listDrafts(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
@@ -147,7 +147,7 @@ export class PostsController {
   /**
    * Get a single post by ID
    */
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('workspaces/:workspaceId/:postId')
   async getPost(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
@@ -158,7 +158,7 @@ export class PostsController {
   }
 
   /**
-   * Flag a draft ready, or clear the flag. Viewers may flag only their own.
+   * Flag a draft ready, or clear the flag. Needs `posts:draft` (Member and up).
    */
   @RequireCapability('posts:draft')
   @Post('workspaces/:workspaceId/:postId/ready')
@@ -181,7 +181,7 @@ export class PostsController {
   }
 
   /**
-   * Copy a post into a new draft. Any member, Guest included, may copy.
+   * Copy a post into a new draft. Needs `posts:draft` (Member and up).
    */
   @RequireCapability('posts:draft')
   @Post('workspaces/:workspaceId/:postId/duplicate')
@@ -302,7 +302,7 @@ export class PostsController {
   /**
    * Get post history (all status changes and publishing attempts)
    */
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('workspaces/:workspaceId/:postId/history')
   async getPostHistory(
     @Param('workspaceId') workspaceId: string,

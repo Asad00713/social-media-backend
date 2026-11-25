@@ -80,13 +80,11 @@ describe('PlannerBestTimesController over HTTP', () => {
     await request(app.getHttpServer()).get(url('abc')).expect(400);
   });
 
-  it('capability metadata: posts:draft', () => {
+  it('capability metadata: posts:view', () => {
     const handler = Object.getOwnPropertyDescriptor(
       PlannerBestTimesController.prototype,
       'get',
     )?.value as object;
-    expect(Reflect.getMetadata(REQUIRE_CAPABILITY, handler)).toBe(
-      'posts:draft',
-    );
+    expect(Reflect.getMetadata(REQUIRE_CAPABILITY, handler)).toBe('posts:view');
   });
 });

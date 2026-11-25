@@ -5,17 +5,17 @@ import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PostCommentsController } from './post-comments.controller';
 
-type Cap = 'posts:draft';
+type Cap = 'posts:view' | 'posts:comment';
 
 // Every route of PostCommentsController and the capability it must demand. A route missing
 // from this table, or carrying a different capability, fails the spec. (The
 // global net in every-workspace-route-guarded.spec.ts only checks that SOME
 // capability is declared; this pins which one.)
 const EXPECTED: Record<string, Cap> = {
-  list: 'posts:draft',
-  create: 'posts:draft',
-  update: 'posts:draft',
-  remove: 'posts:draft',
+  list: 'posts:view',
+  create: 'posts:comment',
+  update: 'posts:comment',
+  remove: 'posts:comment',
 };
 
 describe('PostCommentsController workspace guard', () => {

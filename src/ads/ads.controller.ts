@@ -131,7 +131,7 @@ export class AdsController {
    * GET /ads/workspaces/:workspaceId/drafts
    */
   @Get('drafts')
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   listDrafts(@Param('workspaceId') wid: string, @CurrentUser() user: AuthUser) {
     return this.drafts.list(wid, user.userId);
   }
@@ -156,7 +156,7 @@ export class AdsController {
    * GET /ads/workspaces/:workspaceId/drafts/:id
    */
   @Get('drafts/:id')
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   getDraft(
     @Param('workspaceId') wid: string,
     @Param('id') id: string,
