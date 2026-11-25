@@ -1,11 +1,10 @@
 import {
-  ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
   Optional,
 } from '@nestjs/common';
-import { isViewer, type CallerRole } from '../../guest-rules';
+import type { CallerRole } from '../../../workspace-members/caller-role';
 import { carryFirstWeekMeta } from '../../../first-week/lib/first-week-metadata';
 import { carryApproval, newApprovalRequest } from '../../lib/draft-approval';
 import { carryScheduleGroup } from '../lib/per-channel-schedule';
@@ -66,10 +65,6 @@ export class DraftStoreService {
         ),
       )
       .limit(1);
-
-    if (existing.length > 0 && isViewer(role)) {
-      this.assertViewerOwnsDraft(existing[0], userId);
-    }
 
     const metadata: Record<string, unknown> = {
       hashtags: dto.base.hashtags,
@@ -184,7 +179,7 @@ export class DraftStoreService {
    * is itself recorded first, so a restore can be undone by restoring the
    * one before it. The post's schedule and other metadata stay as they are;
    * only its content (caption, media, per-channel edits, channels, title)
-   * goes back. Guest rules are the save's own.
+   * goes back.
    */
   async restoreVersion(
     workspaceId: string,
@@ -268,36 +263,13 @@ export class DraftStoreService {
     return (await this.labelCatalogue?.catalogueNames(workspaceId)) ?? [];
   }
 
-  /** A viewer may only change drafts they created themselves. */
-  private assertViewerOwnsDraft(row: any, userId: string): void {
-    if (row.status !== 'draft') {
-      throw new ForbiddenException('Viewers can only change drafts');
-    }
-    if (row.createdById !== userId) {
-      throw new ForbiddenException('Viewers can only change their own drafts');
-    }
-  }
-
   async delete(
     workspaceId: string,
     draftId: string,
     userId?: string,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept so callers need no change; nothing branches on the role now
     role?: CallerRole,
   ): Promise<{ success: true }> {
-    if (isViewer(role)) {
-      const rows = await this.db
-        .select()
-        .from(posts)
-        .where(
-          and(
-            eq(posts.id, draftId),
-            eq(posts.workspaceId, workspaceId),
-            livePosts(),
-          ),
-        )
-        .limit(1);
-      if (rows.length > 0) this.assertViewerOwnsDraft(rows[0], userId ?? '');
-    }
     // Soft delete (migration 0088): a discarded draft is recoverable for 30
     // days. See post.service.deletePost for the same treatment of a post.
     await this.db

@@ -1,9 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call -- test doubles are loosely typed */
-import {
-  BadRequestException,
-  ForbiddenException,
-  NotFoundException,
-} from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { getTableName } from 'drizzle-orm';
 import {
   PostDraftsService,
@@ -16,7 +12,7 @@ const POST = 'post-1';
 const OWNER = 'owner-1';
 const ACTOR = 'actor-1';
 const MEMBER = 'member-1';
-const GUEST = 'guest-1';
+const FORMER_VIEWER = 'former-viewer-1';
 
 interface World {
   post: Record<string, any> | null;
@@ -122,23 +118,8 @@ describe('PostDraftsService.setReady', () => {
     );
   });
 
-  it('refuses a Guest on a draft someone else made', async () => {
-    const { svc, sets } = make(draft({ createdById: MEMBER }));
-    await expect(
-      svc.setReady(WS, POST, GUEST, 'GUEST', true),
-    ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(sets).toHaveLength(0);
-  });
-
-  it('lets a Guest mark their own draft', async () => {
-    const { svc } = make(draft({ createdById: GUEST }));
-    await expect(svc.setReady(WS, POST, GUEST, 'GUEST', true)).resolves.toEqual(
-      { id: POST },
-    );
-  });
-
-  it('lets a Member mark any draft', async () => {
-    const { svc } = make(draft({ createdById: GUEST }));
+  it('lets a Member mark a draft a former Viewer wrote', async () => {
+    const { svc } = make(draft({ createdById: FORMER_VIEWER }));
     await expect(
       svc.setReady(WS, POST, MEMBER, 'MEMBER', true),
     ).resolves.toEqual({ id: POST });

@@ -15,7 +15,7 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentWorkspaceRole } from '../workspace-members/current-workspace-role.decorator';
-import type { CallerRole } from './guest-rules';
+import type { CallerRole } from '../workspace-members/caller-role';
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
 import { SuperAdminGuard } from '../auth/guards/super-admin.guard';

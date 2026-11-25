@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ForbiddenException,
   Inject,
   Injectable,
   Logger,
@@ -25,7 +24,7 @@ import { workspaceInvitation } from '../../drizzle/schema/workspace-invitation.s
 import { NotificationEmitterService } from '../../notifications/notification-emitter.service';
 import type { DraftsPageDto } from '../dto/draft-ops.dto';
 import type { PlannerPostDto } from '../dto/planner-post.dto';
-import { isViewer, type CallerRole } from '../guest-rules';
+import type { CallerRole } from '../../workspace-members/caller-role';
 import { buildDuplicate, type DuplicateOptions } from '../lib/duplicate-post';
 import { decodeDraftCursor, encodeDraftCursor } from '../lib/draft-cursor';
 import { PlannerPostsService } from './planner-posts.service';
@@ -63,6 +62,9 @@ export class PostDraftsService {
    * Drafts panel shows and sorts on "Edited", and a flag is not an edit.
    * Only a real transition records history and notifies, so a repeat call
    * is silent.
+   *
+   * `role` is no longer read: a draft's route needs posts:draft (Member), so
+   * every caller may flag any draft. It keeps its place so the call sites stay put.
    */
   async setReady(
     workspaceId: string,
@@ -84,7 +86,6 @@ export class PostDraftsService {
     if (post.status !== 'draft') {
       throw new BadRequestException('Only drafts can be marked ready');
     }
-    if (isViewer(role)) this.assertViewerOwnsDraft(post, userId);
 
     // The WHERE makes the transition atomic: two concurrent "ready" clicks
     // cannot both see a row come back. The flag and its history commit
@@ -148,16 +149,6 @@ export class PostDraftsService {
       .values(buildDuplicate(source, userId, opts))
       .returning({ id: posts.id });
     return this.planner.getOne(workspaceId, created.id);
-  }
-
-  /** A viewer may only change their own drafts. */
-  private assertViewerOwnsDraft(
-    post: { createdById: string | null },
-    userId: string,
-  ): void {
-    if (post.createdById !== userId) {
-      throw new ForbiddenException('Viewers can only change their own drafts');
-    }
   }
 
   /** Best effort: a notification failure must never undo the flag. */

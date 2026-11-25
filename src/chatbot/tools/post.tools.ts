@@ -268,8 +268,7 @@ export function createPostTools(
         context: ToolContext,
       ): Promise<ToolResult> => {
         try {
-          // WRITE: drafting needs posts:draft; the role then travels into
-          // PostService, which refuses a Viewer's scheduledAt.
+          // WRITE: drafting needs posts:draft, which a Viewer does not have.
           const role = await assertToolAccess(access, context, 'posts:draft');
           const dto: any = {
             content: params.content,

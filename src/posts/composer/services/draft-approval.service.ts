@@ -31,7 +31,7 @@ import { NotifyService } from '../../../notifications/notify.service';
 import { RecipientsService } from '../../../notifications/recipients.service';
 import { assertRoleCan } from '../../../workspace-members/workspace-role.guard';
 import { roleCan } from '../../../workspace-members/role-capabilities';
-import type { CallerRole } from '../../guest-rules';
+import type { CallerRole } from '../../../workspace-members/caller-role';
 import {
   ALLOW_SELF_APPROVAL,
   APPROVE_CAPABILITY,

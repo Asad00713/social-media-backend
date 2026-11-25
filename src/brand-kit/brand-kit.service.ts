@@ -13,7 +13,7 @@ import {
   type AdjustPreset,
 } from '../drizzle/schema/brand-kits.schema';
 import { mediaItems } from '../drizzle/schema/media-library.schema';
-import type { CallerRole } from '../posts/guest-rules';
+import type { CallerRole } from '../workspace-members/caller-role';
 import { roleCan } from '../workspace-members/role-capabilities';
 import type {
   BrandKitDto,

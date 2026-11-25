@@ -10,7 +10,7 @@ import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import { calendarNotes } from '../../drizzle/schema/calendar-notes.schema';
 import { users } from '../../drizzle/schema/users.schema';
-import type { CallerRole } from '../../posts/guest-rules';
+import type { CallerRole } from '../../workspace-members/caller-role';
 import type {
   CreateNoteDto,
   PlannerNoteDto,

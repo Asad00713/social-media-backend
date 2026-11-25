@@ -1,15 +1,15 @@
 import { NotFoundException } from '@nestjs/common';
 import type { Capability } from '../../workspace-members/role-capabilities';
 import type { WorkspaceAccessService } from '../../workspace-members/workspace-access.service';
-import type { CallerRole } from '../../posts/guest-rules';
+import type { CallerRole } from '../../workspace-members/caller-role';
 import type { ToolContext } from './tool.interface';
 
 /**
  * Run a WRITE tool's workspace check and hand back the caller's role.
  *
- * The role is what PostService needs to apply the Guest rules (a Viewer cannot
- * schedule, nor touch someone else's post), so the tool passes it on instead of
- * leaving the service to treat the call as an internal one.
+ * The role is handed on to the service, which no longer branches on it: the
+ * capability check here is the whole gate (a Viewer has no posts:draft, so
+ * they never get this far).
  *
  * Throws a plain Error with a readable message: every chatbot tool wraps its
  * body in try/catch and returns `{ success: false, error }`, so the model sees

@@ -9,7 +9,7 @@ import {
 } from '@nestjs/common';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import type { CallerRole } from '../posts/guest-rules';
+import type { CallerRole } from '../workspace-members/caller-role';
 import { CurrentWorkspaceRole } from '../workspace-members/current-workspace-role.decorator';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';

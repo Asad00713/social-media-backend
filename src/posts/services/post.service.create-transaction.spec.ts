@@ -25,7 +25,7 @@ import { join } from 'node:path';
  * ## Why this is asserted on the source
  *
  * The behavioural specs for `createPost` (`post.service.approval.spec.ts`,
- * `post.service.guest-rules.spec.ts`) drive it through a fake `db` whose
+ * `post.service.member-edits.spec.ts`) drive it through a fake `db` whose
  * `transaction` hands the callback the fake itself. That is the right fake —
  * writes inside land where the assertions can see them — but it means `tx` and
  * `db` are the same object there, so no behavioural assertion in that harness

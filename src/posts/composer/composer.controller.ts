@@ -15,7 +15,7 @@ import {
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { CurrentWorkspaceRole } from '../../workspace-members/current-workspace-role.decorator';
-import type { CallerRole } from '../guest-rules';
+import type { CallerRole } from '../../workspace-members/caller-role';
 import { WorkspaceRoleGuard } from '../../workspace-members/workspace-role.guard';
 import { RequireCapability } from '../../workspace-members/require-capability.decorator';
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
