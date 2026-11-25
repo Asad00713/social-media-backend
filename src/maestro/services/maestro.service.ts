@@ -23,7 +23,6 @@ import { ConversationListService } from '../../inbox/conversations/services/conv
 import { ConversationPresenter } from '../../inbox/conversations/services/conversation-presenter.service';
 import { DripService } from '../../drips/drip.service';
 import { WorkspaceRoleService } from '../../workspace-members/workspace-role.service';
-import { roleCan } from '../../workspace-members/role-capabilities';
 import { PostService } from '../../posts/services/post.service';
 import { CloudflareR2Service } from '../../media/cloudflare-r2.service';
 import {
@@ -386,18 +385,12 @@ export class MaestroService {
   /**
    * Conversations for the history list (most-recent first).
    *
-   * An owner or admin sees the whole workspace's; everyone else sees their
-   * own. The widening is a capability, not a role comparison written here, so
-   * it moves with the rest of the permission model rather than drifting from
-   * it — and a member whose role is later raised gets the wider list without
-   * this file changing.
-   *
-   * A missing role means no membership, which is narrower than MEMBER, so it
-   * falls through to 'own' rather than being treated as a failure.
+   * Until Task 7 lands this is always the caller's own; the owner/admin
+   * widening (`maestro:view-all`) is gone from the capability map.
    */
   async listConversations(userId: string, workspaceId: string) {
-    const role = await this.roles.getRole(workspaceId, userId);
-    const seesEveryone = role ? roleCan(role, 'maestro:view-all') : false;
+    // Task 7: remove this flag; Maestro history is the caller's own for every role.
+    const seesEveryone = false;
     return this.conversations.list(userId, workspaceId, {
       scope: seesEveryone ? 'workspace' : 'own',
     });
