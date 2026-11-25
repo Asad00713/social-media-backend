@@ -4659,15 +4659,6 @@ export class ChannelsController {
     };
   }
 
-  /**
-   * Get Mastodon instance info
-   */
-  @Post('mastodon/instance')
-  @HttpCode(HttpStatus.OK)
-  async getMastodonInstanceInfo(@Body() dto: { instanceUrl: string }) {
-    return await this.mastodonService.getInstanceInfo(dto.instanceUrl);
-  }
-
   // ==========================================================================
   // Google Drive Endpoints
   // ==========================================================================
