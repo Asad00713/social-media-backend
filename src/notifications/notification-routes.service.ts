@@ -22,21 +22,7 @@ export class NotificationRoutesService {
   }
 
   async create(workspaceId: string, dto: CreateNotificationRouteDto) {
-    // Verify the destination channel belongs to this workspace before binding.
-    const [channel] = await db
-      .select()
-      .from(socialMediaChannels)
-      .where(
-        and(
-          eq(socialMediaChannels.id, dto.channelId),
-          eq(socialMediaChannels.workspaceId, workspaceId),
-          // A disconnected channel cannot receive notifications.
-          liveChannel(),
-        ),
-      )
-      .limit(1);
-    if (!channel)
-      throw new ForbiddenException('Channel does not belong to this workspace');
+    await this.assertChannelInWorkspace(workspaceId, dto.channelId);
 
     const [row] = await db
       .insert(notificationRoutes)
@@ -69,6 +55,11 @@ export class NotificationRoutesService {
       .limit(1);
     if (!existing) throw new NotFoundException('Route not found');
 
+    // Moving a route to another channel must not reach across workspaces.
+    if (dto.channelId !== undefined) {
+      await this.assertChannelInWorkspace(workspaceId, dto.channelId);
+    }
+
     const [row] = await db
       .update(notificationRoutes)
       .set({
@@ -100,6 +91,29 @@ export class NotificationRoutesService {
       .returning();
     if (result.length === 0) throw new NotFoundException('Route not found');
     return { ok: true };
+  }
+
+  /**
+   * The destination channel must belong to this workspace and be live. A
+   * disconnected channel cannot receive notifications.
+   */
+  private async assertChannelInWorkspace(
+    workspaceId: string,
+    channelId: number,
+  ): Promise<void> {
+    const [channel] = await db
+      .select({ id: socialMediaChannels.id })
+      .from(socialMediaChannels)
+      .where(
+        and(
+          eq(socialMediaChannels.id, channelId),
+          eq(socialMediaChannels.workspaceId, workspaceId),
+          liveChannel(),
+        ),
+      )
+      .limit(1);
+    if (!channel)
+      throw new ForbiddenException('Channel does not belong to this workspace');
   }
 
   /** Used by the dispatcher to find all enabled routes for a given event. */
