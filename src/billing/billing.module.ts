@@ -27,6 +27,7 @@ import { StripeAdapter } from './providers/stripe.adapter';
 import { LemonSqueezyAdapter } from './providers/lemonsqueezy.adapter';
 import { PaddleClient } from './providers/paddle.client';
 import { PaddleAdapter } from './providers/paddle.adapter';
+import { PaddleWebhookService } from './services/paddle-webhook.service';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 import { EmailModule } from '../email/email.module';
 import { NotificationPreferencesModule } from '../notification-preferences/notification-preferences.module';
@@ -98,6 +99,7 @@ const PROVIDER_ADAPTER_REGISTRATION = {
     CatalogueService,
     LemonSqueezyClient,
     PaddleClient,
+    PaddleWebhookService,
     StripeAdapter,
     LemonSqueezyAdapter,
     PaddleAdapter,

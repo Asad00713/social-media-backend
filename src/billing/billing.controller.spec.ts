@@ -3,6 +3,7 @@ import { BillingController } from './billing.controller';
 import { SubscriptionService } from './services/subscription.service';
 import { WebhookService } from './services/webhook.service';
 import { LemonSqueezyWebhookService } from './services/lemonsqueezy-webhook.service';
+import { PaddleWebhookService } from './services/paddle-webhook.service';
 import { UsageService } from './services/usage.service';
 import { AddonService } from './services/addon.service';
 import { PlanChangeService } from './services/plan-change.service';
@@ -18,6 +19,7 @@ const STUBBED_SERVICES = [
   SubscriptionService,
   WebhookService,
   LemonSqueezyWebhookService,
+  PaddleWebhookService,
   UsageService,
   AddonService,
   PlanChangeService,
