@@ -119,6 +119,10 @@ const EXPECTED: Array<
       syncPaymentMethods: null,
       handleStripeWebhook: null,
       handleLemonSqueezyWebhook: null,
+      // Null, like the other two webhooks: a provider POSTs these, so there is
+      // no member to check a capability against. The signature IS the
+      // authentication, which `paddle-webhook.route.spec.ts` pins.
+      handlePaddleWebhook: null,
       getSubscription: 'team:view',
       getWorkspaceUsage: 'team:view',
       resetBillingState: 'billing:manage',
