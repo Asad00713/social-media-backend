@@ -214,7 +214,9 @@ describe('FeedbackService', () => {
       rating: 5,
       comment: 'great',
       status: 'approved',
+      adminNotes: 'internal: looks like a friend of the founder',
       createdAt: new Date(at),
+      updatedAt: new Date(at),
       // The DB, asked only for `name`, returns just that. The extra fields
       // here simulate a projection regression so the mapping is tested too.
       user: { id: userId, name: 'Ada', email: `${userId}@example.com` },
@@ -248,6 +250,31 @@ describe('FeedbackService', () => {
       expect(Object.keys(result.data[0].user)).toEqual(['name']);
       expect(result.data[0].user.name).toBe('Ada');
       expect(JSON.stringify(result)).not.toContain('@example.com');
+    });
+
+    it('returns only the allow-listed public fields per review', async () => {
+      const db = makeDb();
+      db.query.feedback.findMany = jest
+        .fn()
+        .mockResolvedValue([row('r1', 'user-1', '2025-01-02')]);
+      const service = await build(db);
+
+      const [review] = (await service.findAllPublic()).data;
+
+      expect(Object.keys(review).sort()).toEqual([
+        'comment',
+        'createdAt',
+        'id',
+        'rating',
+        'type',
+        'updatedAt',
+        'user',
+      ]);
+      expect(review).not.toHaveProperty('adminNotes');
+      expect(review).not.toHaveProperty('userId');
+      expect(review).not.toHaveProperty('status');
+      expect(JSON.stringify(review)).not.toContain('internal:');
+      expect(JSON.stringify(review)).not.toContain('user-1');
     });
 
     it('still keeps one row per user, using userId from the feedback row', async () => {

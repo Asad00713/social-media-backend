@@ -30,11 +30,17 @@ export interface FeedbackWithUser extends Feedback {
 }
 
 /**
- * A review as the public (unauthenticated) list shows it: the reviewer's
- * display name only. No email and no user id, so a public page cannot be
- * scraped for reviewers' addresses.
+ * A review as the public (unauthenticated) list shows it: an explicit
+ * allow-list. The reviewer is their display name only; there is no email,
+ * user id, moderation status or admin notes.
  */
-export interface PublicFeedback extends Feedback {
+export interface PublicFeedback {
+  id: string;
+  type: FeedbackType;
+  rating: number;
+  comment: string | null;
+  createdAt: Date;
+  updatedAt: Date;
   user: {
     name: string | null;
   };
@@ -183,11 +189,19 @@ export class FeedbackService {
 
     const latestPerUser = newestPerUser(approvedRows);
     const total = latestPerUser.length;
-    // Rebuild `user` rather than trust the projection alone, so nothing but
-    // the name can reach the public response.
+    // Build each public row field by field rather than spreading the DB row:
+    // `userId`, `status` and `adminNotes` must never reach this response.
     const data: PublicFeedback[] = latestPerUser
       .slice(offset, offset + limit)
-      .map((row) => ({ ...row, user: { name: row.user?.name ?? null } }));
+      .map((row) => ({
+        id: row.id,
+        type: row.type,
+        rating: row.rating,
+        comment: row.comment,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        user: { name: row.user?.name ?? null },
+      }));
 
     return {
       data,
