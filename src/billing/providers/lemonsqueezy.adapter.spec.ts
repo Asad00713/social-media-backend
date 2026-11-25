@@ -27,6 +27,8 @@ type Row = {
   itemType: string;
   providerSubscriptionId: string;
   providerItemId: string;
+  /** Optional, exactly as on the adapter: an older row may not carry it. */
+  providerQuantity?: number;
 };
 
 function fiveRows(): Row[] {
@@ -141,7 +143,9 @@ describe('LemonSqueezyAdapter.purchaseAddon', () => {
   // Verified live 2026-09-07: PATCH with invoice_immediately charged PKR 400
   // at once and left renews_at untouched.
   it('updates quantity in place when the add-on already exists', async () => {
-    const { adapter, client } = makeAdapter(fiveRows());
+    const rows = fiveRows();
+    rows[1].providerQuantity = 2;
+    const { adapter, client } = makeAdapter(rows);
     const result = await adapter.purchaseAddon(1, 'EXTRA_CHANNEL', 5);
     expect(result).toEqual({ status: 'completed', quantity: 5 });
     expect(client.patch).toHaveBeenCalledWith(
@@ -159,8 +163,57 @@ describe('LemonSqueezyAdapter.purchaseAddon', () => {
 });
 
 describe('LemonSqueezyAdapter.changeAddonQuantity', () => {
+  it('does NOT invoice when the quantity goes down', async () => {
+    // This call serves both directions. It used to send
+    // `invoice_immediately: true` unconditionally, so reducing from 4
+    // channels to 2 invoiced the reduction at once and credited back part of
+    // a month the customer had already bought and could still use.
+    const rows = fiveRows();
+    rows[1].providerQuantity = 4;
+    const { adapter, client } = makeAdapter(rows);
+
+    await adapter.changeAddonQuantity(1, 'EXTRA_CHANNEL', 2);
+
+    expect(client.patch).toHaveBeenCalledWith(
+      'subscription-items/901',
+      expect.objectContaining({
+        data: expect.objectContaining({
+          attributes: expect.objectContaining({
+            quantity: 2,
+            invoice_immediately: false,
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('treats an unknown previous quantity as a raise', async () => {
+    // `quantity > undefined` is always false, so a row written before this was
+    // tracked would have read as a cut and stopped invoicing the upgrade.
+    // Billing for capacity the customer now has is recoverable; silently not
+    // billing for it is not.
+    const rows = fiveRows();
+    delete (rows[1] as { providerQuantity?: number }).providerQuantity;
+    const { adapter, client } = makeAdapter(rows);
+
+    await adapter.changeAddonQuantity(1, 'EXTRA_CHANNEL', 3);
+
+    expect(client.patch).toHaveBeenCalledWith(
+      'subscription-items/901',
+      expect.objectContaining({
+        data: expect.objectContaining({
+          attributes: expect.objectContaining({ invoice_immediately: true }),
+        }),
+      }),
+    );
+  });
+
   it('invoices immediately so the charge is not deferred to renewal', async () => {
-    const { adapter, client } = makeAdapter(fiveRows());
+    const rows = fiveRows();
+    // Seeded BELOW the target so this proves a raise, rather than passing on
+    // the undefined fallback.
+    rows[2].providerQuantity = 1;
+    const { adapter, client } = makeAdapter(rows);
     await adapter.changeAddonQuantity(1, 'EXTRA_MEMBER', 4);
     expect(client.patch).toHaveBeenCalledWith(
       'subscription-items/902',

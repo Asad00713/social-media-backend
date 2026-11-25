@@ -273,7 +273,10 @@ describe('changePlan routes a paid→paid change to the account’s provider', (
 
     // The bug: this was skipped, and the FREE→paid branch threw
     // "Upgrading from FREE is not supported directly for lemonsqueezy".
-    expect(adapter.changePlan).toHaveBeenCalledWith(42, 'PRO');
+    // `'up'` is asserted too: it decides whether the rest of the period is
+    // charged now, and an upgrade billed as a downgrade gives the customer
+    // the higher plan for free until renewal.
+    expect(adapter.changePlan).toHaveBeenCalledWith(42, 'PRO', 'up');
   });
 
   it('calls adapter.changePlan on a paid→paid downgrade rather than no-opping', async () => {
@@ -291,7 +294,12 @@ describe('changePlan routes a paid→paid change to the account’s provider', (
 
     // The bug: the local DB was updated to the new plan while the provider was
     // never told, so the customer kept being billed at the old price.
-    expect(adapter.changePlan).toHaveBeenCalledWith(42, 'PRO');
+    //
+    // `'down'` is the other half of that: this path keeps the customer on the
+    // OLD plan until `currentPeriodEnd`, so the adapter must not bill or
+    // credit now. Passing `'up'` here would refund part of a month the
+    // customer goes on using in full.
+    expect(adapter.changePlan).toHaveBeenCalledWith(42, 'PRO', 'down');
 
     // A scheduled downgrade is told as a FUTURE change (it only applies at
     // period end), not as "you're now on ...".

@@ -301,7 +301,7 @@ describe('PaddleAdapter', () => {
         rows: structuredClone(LOADED_ROWS),
         liveItems: LOADED_ITEMS,
       });
-      await adapter.changePlan(1, 'MAX');
+      await adapter.changePlan(1, 'MAX', 'up');
 
       expect(patches).toHaveLength(1);
       expect(patches[0].body.items).toEqual([
@@ -311,17 +311,33 @@ describe('PaddleAdapter', () => {
       ]);
     });
 
-    it('sends a proration mode, which Paddle requires', async () => {
-      // The field is REQUIRED whenever items change; without it the call is a
-      // 400 that reads as a Paddle outage.
+    it('charges the rest of the period on an UPGRADE', async () => {
+      // Buy more capacity on the 15th of a monthly cycle and about half the
+      // difference is collected now, which is what the plan UI promises and
+      // what Stripe does. The field is also REQUIRED whenever items change;
+      // without it the call is a 400 that reads as a Paddle outage.
       const { adapter, patches } = makeAdapter({
         rows: structuredClone(LOADED_ROWS),
         liveItems: LOADED_ITEMS,
       });
-      await adapter.changePlan(1, 'MAX');
+      await adapter.changePlan(1, 'MAX', 'up');
       expect(patches[0].body.proration_billing_mode).toBe(
         'prorated_immediately',
       );
+    });
+
+    it('bills NOTHING on a DOWNGRADE', async () => {
+      // `plan-change.service.ts` swaps the price now but keeps the customer
+      // on the old plan until `currentPeriodEnd`, and its comment says "with
+      // no proration". Prorating here would credit back half a month the
+      // customer then goes on using in full — our loss, and a refund nobody
+      // asked for.
+      const { adapter, patches } = makeAdapter({
+        rows: structuredClone(LOADED_ROWS),
+        liveItems: LOADED_ITEMS,
+      });
+      await adapter.changePlan(1, 'BASIC', 'down');
+      expect(patches[0].body.proration_billing_mode).toBe('do_not_bill');
     });
 
     it('records the new price on our own row', async () => {
@@ -329,7 +345,7 @@ describe('PaddleAdapter', () => {
         rows: structuredClone(LOADED_ROWS),
         liveItems: LOADED_ITEMS,
       });
-      await adapter.changePlan(1, 'MAX');
+      await adapter.changePlan(1, 'MAX', 'up');
       expect(updates[0]).toMatchObject({ providerPriceId: 'pri_resolved' });
     });
 
@@ -342,7 +358,7 @@ describe('PaddleAdapter', () => {
         rows,
         liveItems: [item('pri_resolved', 1)],
       });
-      await adapter.changePlan(1, 'PRO');
+      await adapter.changePlan(1, 'PRO', 'up');
       expect(patches).toEqual([]);
       expect(updates).toEqual([]);
     });
@@ -353,7 +369,7 @@ describe('PaddleAdapter', () => {
       const rows = structuredClone(LOADED_ROWS);
       rows[0].providerPriceId = 'pri_stale';
       const { adapter } = makeAdapter({ rows, liveItems: LOADED_ITEMS });
-      await expect(adapter.changePlan(1, 'MAX')).rejects.toThrow(
+      await expect(adapter.changePlan(1, 'MAX', 'up')).rejects.toThrow(
         /refusing to guess/,
       );
     });
@@ -386,6 +402,19 @@ describe('PaddleAdapter', () => {
         { price_id: 'pri_member', quantity: 2 },
         { price_id: 'pri_resolved', quantity: 2 },
       ]);
+    });
+
+    it('charges the rest of the period for a new add-on', async () => {
+      // A purchase only ever adds or raises a line: buy a $5 channel on the
+      // 15th and about $2.50 is collected, not $5.
+      const { adapter, patches } = makeAdapter({
+        rows: structuredClone(LOADED_ROWS),
+        liveItems: LOADED_ITEMS,
+      });
+      await adapter.purchaseAddon(1, 'EXTRA_WORKSPACE', 2);
+      expect(patches[0].body.proration_billing_mode).toBe(
+        'prorated_immediately',
+      );
     });
 
     it('writes the bookkeeping row with isDefault FALSE', async () => {
@@ -472,6 +501,29 @@ describe('PaddleAdapter', () => {
       expect(updates[0]).toMatchObject({ providerQuantity: 4 });
     });
 
+    it('charges the rest of the period when the quantity goes UP', async () => {
+      const { adapter, patches } = makeAdapter({
+        rows: structuredClone(LOADED_ROWS),
+        liveItems: LOADED_ITEMS,
+      });
+      await adapter.changeAddonQuantity(1, 'EXTRA_CHANNEL', 9);
+      expect(patches[0].body.proration_billing_mode).toBe(
+        'prorated_immediately',
+      );
+    });
+
+    it('bills NOTHING when the quantity goes DOWN', async () => {
+      // Direction is read from what Paddle currently bills, because this one
+      // call serves both. Crediting a reduction would refund part of a month
+      // the customer had already bought and could still use.
+      const { adapter, patches } = makeAdapter({
+        rows: structuredClone(LOADED_ROWS),
+        liveItems: LOADED_ITEMS,
+      });
+      await adapter.changeAddonQuantity(1, 'EXTRA_CHANNEL', 2);
+      expect(patches[0].body.proration_billing_mode).toBe('do_not_bill');
+    });
+
     it('refuses when no price is recorded for the add-on', async () => {
       // The items list cannot be built without it, and guessing would send a
       // line for the wrong product.
@@ -495,6 +547,18 @@ describe('PaddleAdapter', () => {
         { price_id: 'pri_base', quantity: 1 },
         { price_id: 'pri_member', quantity: 2 },
       ]);
+    });
+
+    it('gives no mid-period credit for a removal', async () => {
+      // The month was bought and it runs to the end — Stripe's behaviour and
+      // the industry default. Switching to a pro-rata credit is a one-line
+      // change to PRORATION_DOWN.
+      const { adapter, patches } = makeAdapter({
+        rows: structuredClone(LOADED_ROWS),
+        liveItems: LOADED_ITEMS,
+      });
+      await adapter.removeAddon(1, 'EXTRA_CHANNEL');
+      expect(patches[0].body.proration_billing_mode).toBe('do_not_bill');
     });
 
     it('marks the row canceled, the spelling the liveness deny-list knows', async () => {

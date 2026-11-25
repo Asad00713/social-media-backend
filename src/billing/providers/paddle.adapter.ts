@@ -28,6 +28,7 @@ import type {
 import {
   BillingProfile,
   PaymentProviderAdapter,
+  PlanChangeDirection,
   PortalIntent,
   ProviderInvoice,
   PurchaseResult,
@@ -36,16 +37,32 @@ import {
 const PROVIDER = 'paddle' as const;
 
 /**
- * How a mid-cycle add-on or plan change is billed.
+ * How a mid-cycle change is billed. Paddle REQUIRES the field whenever items
+ * change and documents no default, so every path here states one.
  *
- * `prorated_immediately` matches what the product already promises elsewhere:
- * Stripe's `addSubscriptionItem` invoices at once, and the add-on UI says the
- * charge happens now. Paddle has no documented default and REQUIRES the field
- * whenever items change, so it is stated in one place rather than at each call
- * site — a call that forgot it would 400, and one that reached for
- * `do_not_bill` by accident would hand out a paid add-on for free.
+ * The direction matters, and getting it wrong moves real money:
+ *
+ * **Taking more** (a new add-on, a higher quantity, an upgrade) charges the
+ * part of the period that is left — buy a $5 channel on the 15th of a monthly
+ * cycle and about $2.50 is collected, not $5. That is what Stripe does here
+ * (`addSubscriptionItem` invoices at once) and what the add-on UI already
+ * promises.
+ *
+ * **Taking less** (a downgrade, a lower quantity, a removal) bills NOTHING
+ * now. The current period was already invoiced at the old price, so the next
+ * invoice simply bills less. `plan-change.service.ts` relies on this: its
+ * `scheduleDowngrade` swaps the provider price immediately but keeps the
+ * customer on the old plan until `currentPeriodEnd`, and its comment says
+ * "with no proration". Prorating a downgrade immediately would credit back
+ * half the month while the customer went on using the higher plan for the
+ * rest of it — our loss, and a refund nobody asked for.
+ *
+ * A removal therefore gives no mid-period credit: the month was bought, and
+ * it runs to the end. That is Stripe's behaviour and the industry default.
+ * Switching to a pro-rata credit is a one-line change to `PRORATION_DOWN`.
  */
-const PRORATION: PaddleProrationMode = 'prorated_immediately';
+const PRORATION_UP: PaddleProrationMode = 'prorated_immediately';
+const PRORATION_DOWN: PaddleProrationMode = 'do_not_bill';
 
 /** The subset of a `provider_subscriptions` row this adapter acts on. */
 interface ProviderRow {
@@ -157,7 +174,11 @@ export class PaddleAdapter implements PaymentProviderAdapter {
    * because picking "whichever of these is the plan" out of the array is the
    * guess that would delete an add-on the first time a catalogue id changed.
    */
-  async changePlan(subscriptionId: number, newPlanCode: string): Promise<void> {
+  async changePlan(
+    subscriptionId: number,
+    newPlanCode: string,
+    direction: PlanChangeDirection,
+  ): Promise<void> {
     const rows = await this.rowsFor(subscriptionId);
     const base = this.require(rows, 'BASE_PLAN', subscriptionId);
     const paddleId = this.subscriptionIdOf(base, subscriptionId, 'change');
@@ -180,6 +201,7 @@ export class PaddleAdapter implements PaymentProviderAdapter {
     await this.patchItems(
       paddleId,
       withBasePlanSwapped(live.items, oldPriceId, newPriceId),
+      direction === 'up' ? PRORATION_UP : PRORATION_DOWN,
     );
 
     await this.db
@@ -216,7 +238,13 @@ export class PaddleAdapter implements PaymentProviderAdapter {
     );
 
     const live = await this.fetchSubscription(paddleId);
-    await this.patchItems(paddleId, withItem(live.items, priceId, quantity));
+    // A purchase only ever adds or raises a line, so the rest of the period
+    // is charged now.
+    await this.patchItems(
+      paddleId,
+      withItem(live.items, priceId, quantity),
+      PRORATION_UP,
+    );
 
     // `isDefault` is FALSE here, and that is not a detail: the flag marks the
     // account's default PROVIDER, carried by exactly one row, and migration
@@ -269,13 +297,23 @@ export class PaddleAdapter implements PaymentProviderAdapter {
     const priceId = this.priceIdOf(row, subscriptionId, itemType);
 
     const live = await this.fetchSubscription(paddleId);
-    if (quantityOf(live.items, priceId) === quantity) {
+    const current = quantityOf(live.items, priceId);
+    if (current === quantity) {
       // Nothing to send; keep our own count honest and stop.
       await this.syncQuantity(row.id, quantity);
       return;
     }
 
-    await this.patchItems(paddleId, withItem(live.items, priceId, quantity));
+    // This one call serves both directions — `addon.service.ts` uses it to
+    // raise a quantity AND to lower one — so the direction is read from what
+    // Paddle currently bills rather than assumed. Raising charges the rest of
+    // the period; lowering bills nothing now, because the period was already
+    // invoiced at the higher count.
+    await this.patchItems(
+      paddleId,
+      withItem(live.items, priceId, quantity),
+      quantity > current ? PRORATION_UP : PRORATION_DOWN,
+    );
     await this.syncQuantity(row.id, quantity);
   }
 
@@ -304,7 +342,9 @@ export class PaddleAdapter implements PaymentProviderAdapter {
           'Cancel the subscription instead.',
       );
     }
-    await this.patchItems(paddleId, next);
+    // No mid-period credit: the month was bought and it runs to the end,
+    // which is Stripe's behaviour and the industry default.
+    await this.patchItems(paddleId, next, PRORATION_DOWN);
 
     // `canceled`, NOT `removed`. The liveness check is a DENY-LIST that fails
     // open, so a status it does not recognise reads as STILL BILLING — which
@@ -567,14 +607,20 @@ export class PaddleAdapter implements PaymentProviderAdapter {
   /**
    * The one place the items array is sent, so the required proration mode
    * cannot be forgotten at a call site.
+   *
+   * `mode` has NO default on purpose. Every caller knows whether it is taking
+   * more or less, and a default would silently pick a direction for a future
+   * caller that had not thought about it — which is the whole failure this
+   * comment block exists to prevent.
    */
   private async patchItems(
     paddleId: string,
     items: PaddleItemWrite[],
+    mode: PaddleProrationMode,
   ): Promise<void> {
     await this.paddle.patch(`subscriptions/${paddleId}`, {
       items,
-      proration_billing_mode: PRORATION,
+      proration_billing_mode: mode,
     });
   }
 

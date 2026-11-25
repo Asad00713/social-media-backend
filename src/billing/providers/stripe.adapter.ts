@@ -27,6 +27,7 @@ import {
   PortalIntent,
   ProviderInvoice,
   PurchaseResult,
+  PlanChangeDirection,
 } from './payment-provider.interface';
 
 /** Per-request bound on the Stripe calls a settings page waits for (LS: LS_REQUEST_TIMEOUT_MS). */
@@ -114,7 +115,21 @@ export class StripeAdapter implements PaymentProviderAdapter {
 
   // ------------------------------------------------------------------- plan
 
-  async changePlan(subscriptionId: number, newPlanCode: string): Promise<void> {
+  /**
+   * `direction` is accepted and deliberately unused here.
+   *
+   * Stripe's proration is not decided in this call: the swap is always
+   * `proration_behavior: 'none'`, and an UPGRADE is invoiced by
+   * `invoiceStripeProrationsImmediately` in `plan-change.service.ts` right
+   * afterwards. Taking the argument keeps all three adapters to one signature
+   * — and a future change that moves the invoicing in here has the direction
+   * already to hand instead of having to re-derive it.
+   */
+  async changePlan(
+    subscriptionId: number,
+    newPlanCode: string,
+    _direction: PlanChangeDirection,
+  ): Promise<void> {
     const rows = await this.rowsFor(subscriptionId);
     const base = this.require(rows, 'BASE_PLAN', subscriptionId);
     const priceId = await this.catalogue.resolveRef(
