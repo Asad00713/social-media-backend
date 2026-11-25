@@ -1,5 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 import { BillingController } from './billing.controller';
 import { PaddleWebhookService } from './services/paddle-webhook.service';
 import { paddleSignedPayload } from './providers/paddle-signature.util';
@@ -124,7 +126,10 @@ describe('POST /billing/webhooks/paddle', () => {
       handleEvent: jest.fn().mockResolvedValue(undefined),
     } as never);
 
-    await controller.handlePaddleWebhook({ rawBody: raw } as never, 'ts=1;h1=x');
+    await controller.handlePaddleWebhook(
+      { rawBody: raw } as never,
+      'ts=1;h1=x',
+    );
 
     expect(seen).toHaveLength(1);
     expect(seen[0].equals(raw)).toBe(true);
@@ -151,7 +156,10 @@ describe('POST /billing/webhooks/paddle', () => {
     ).resolves.toEqual({ received: true });
 
     await expect(
-      controller.handlePaddleWebhook({ rawBody: raw } as never, undefined as never),
+      controller.handlePaddleWebhook(
+        { rawBody: raw } as never,
+        undefined as never,
+      ),
     ).rejects.toThrow(BadRequestException);
   });
 
@@ -230,14 +238,17 @@ describe('POST /billing/webhooks/paddle', () => {
  * booting the whole twelve-service controller over HTTP for one string.
  */
 describe('the route bindings', () => {
-  const src = require('fs').readFileSync(
-    require('path').join(__dirname, 'billing.controller.ts'),
+  const src = fs.readFileSync(
+    path.join(__dirname, 'billing.controller.ts'),
     'utf8',
-  ) as string;
+  );
 
   const route = src.slice(
     src.indexOf("@Post('webhooks/paddle')"),
-    src.indexOf('return { received: true };', src.indexOf("@Post('webhooks/paddle')")),
+    src.indexOf(
+      'return { received: true };',
+      src.indexOf("@Post('webhooks/paddle')"),
+    ),
   );
 
   it('finds the route (the reader is not silently empty)', () => {

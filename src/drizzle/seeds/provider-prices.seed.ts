@@ -75,6 +75,124 @@ export const LEMONSQUEEZY_PRICES: readonly PlannedPrice[] = [
   },
 ] as const;
 
+/**
+ * The fifteen rows Paddle can serve: a base plan plus four add-ons on each of
+ * BASIC, PRO and MAX.
+ *
+ * Paddle covers the WHOLE catalogue where Lemon Squeezy covers four rows, so
+ * `missingCatalogueRows('paddle')` should report nothing once these are
+ * seeded. That is the point of listing them all: the add-on paths
+ * (`purchaseAddon`, `changeAddonQuantity`, `removeAddon`) cannot be exercised
+ * at all until a price exists for the pair being bought.
+ *
+ * The add-on rows are per PLAN, not shared, and that is not redundancy: the
+ * same add-on costs different money on different tiers (a channel is $5 on
+ * BASIC and PRO but $3 on MAX), so each tier has its own Paddle price. The
+ * unique constraint is `(provider, plan_code, item_type)`, so these fifteen
+ * are fifteen distinct keys rather than five with three spellings.
+ *
+ * As with Lemon Squeezy, every id comes from the environment. A Paddle price
+ * id is NOT reusable across accounts — the sandbox ids in
+ * `docs/billing/paddle-sandbox-catalogue.md` do not exist on the live account
+ * — so committing one here would point production at a sandbox price, or at a
+ * deleted one. The env var is what makes the same seed correct in both places.
+ */
+export const PADDLE_PRICES: readonly PlannedPrice[] = [
+  // BASIC
+  {
+    provider: 'paddle',
+    planCode: 'BASIC',
+    itemType: 'BASE_PLAN',
+    envVar: 'PADDLE_PRICE_BASIC',
+  },
+  {
+    provider: 'paddle',
+    planCode: 'BASIC',
+    itemType: 'EXTRA_CHANNEL',
+    envVar: 'PADDLE_PRICE_BASIC_EXTRA_CHANNEL',
+  },
+  {
+    provider: 'paddle',
+    planCode: 'BASIC',
+    itemType: 'EXTRA_MEMBER',
+    envVar: 'PADDLE_PRICE_BASIC_EXTRA_MEMBER',
+  },
+  {
+    provider: 'paddle',
+    planCode: 'BASIC',
+    itemType: 'EXTRA_WORKSPACE',
+    envVar: 'PADDLE_PRICE_BASIC_EXTRA_WORKSPACE',
+  },
+  {
+    provider: 'paddle',
+    planCode: 'BASIC',
+    itemType: 'EXTRA_AI_TOKENS',
+    envVar: 'PADDLE_PRICE_BASIC_EXTRA_AI_TOKENS',
+  },
+  // PRO
+  {
+    provider: 'paddle',
+    planCode: 'PRO',
+    itemType: 'BASE_PLAN',
+    envVar: 'PADDLE_PRICE_PRO',
+  },
+  {
+    provider: 'paddle',
+    planCode: 'PRO',
+    itemType: 'EXTRA_CHANNEL',
+    envVar: 'PADDLE_PRICE_PRO_EXTRA_CHANNEL',
+  },
+  {
+    provider: 'paddle',
+    planCode: 'PRO',
+    itemType: 'EXTRA_MEMBER',
+    envVar: 'PADDLE_PRICE_PRO_EXTRA_MEMBER',
+  },
+  {
+    provider: 'paddle',
+    planCode: 'PRO',
+    itemType: 'EXTRA_WORKSPACE',
+    envVar: 'PADDLE_PRICE_PRO_EXTRA_WORKSPACE',
+  },
+  {
+    provider: 'paddle',
+    planCode: 'PRO',
+    itemType: 'EXTRA_AI_TOKENS',
+    envVar: 'PADDLE_PRICE_PRO_EXTRA_AI_TOKENS',
+  },
+  // MAX
+  {
+    provider: 'paddle',
+    planCode: 'MAX',
+    itemType: 'BASE_PLAN',
+    envVar: 'PADDLE_PRICE_MAX',
+  },
+  {
+    provider: 'paddle',
+    planCode: 'MAX',
+    itemType: 'EXTRA_CHANNEL',
+    envVar: 'PADDLE_PRICE_MAX_EXTRA_CHANNEL',
+  },
+  {
+    provider: 'paddle',
+    planCode: 'MAX',
+    itemType: 'EXTRA_MEMBER',
+    envVar: 'PADDLE_PRICE_MAX_EXTRA_MEMBER',
+  },
+  {
+    provider: 'paddle',
+    planCode: 'MAX',
+    itemType: 'EXTRA_WORKSPACE',
+    envVar: 'PADDLE_PRICE_MAX_EXTRA_WORKSPACE',
+  },
+  {
+    provider: 'paddle',
+    planCode: 'MAX',
+    itemType: 'EXTRA_AI_TOKENS',
+    envVar: 'PADDLE_PRICE_MAX_EXTRA_AI_TOKENS',
+  },
+] as const;
+
 /** A row whose env var resolved to a usable provider id. */
 export interface ResolvedPrice extends PlannedPrice {
   providerRef: string;
@@ -247,24 +365,62 @@ export async function missingCatalogueRows(
   return wanted.filter((k) => !have.has(`${k.planCode}/${k.itemType}`));
 }
 
-export async function seedProviderPrices(): Promise<void> {
-  const { resolved, skipped } = resolvePrices(process.env);
+/**
+ * Which provider this run is seeding, and what to echo as the account it is
+ * aimed at.
+ *
+ * The account is ECHOED but the key never is. `stripe-provision.ts` does the
+ * same: a seed that writes payment ids should say out loud which account it is
+ * pointed at, because the failure mode of getting it wrong is billing real
+ * people against the wrong store. For Paddle the account is implied by the API
+ * BASE rather than a store id — sandbox and live are different hosts — so that
+ * is what gets printed.
+ */
+const PROVIDER_PLANS: Record<
+  'lemonsqueezy' | 'paddle',
+  { rows: readonly PlannedPrice[]; account: () => string }
+> = {
+  lemonsqueezy: {
+    rows: LEMONSQUEEZY_PRICES,
+    account: () => `store ${process.env.LEMONSQUEEZY_STORE_ID ?? '(unset)'}`,
+  },
+  paddle: {
+    rows: PADDLE_PRICES,
+    account: () => `api ${process.env.PADDLE_API_BASE ?? '(unset)'}`,
+  },
+};
 
-  // Echo the store, never the key. `stripe-provision.ts` does the same before
-  // it writes: a seed that provisions against a payment provider should say
-  // out loud which account it is aimed at, because the failure mode of getting
-  // it wrong is billing real people against the wrong store.
-  const storeId = process.env.LEMONSQUEEZY_STORE_ID ?? '(unset)';
+/**
+ * Seed one provider's prices.
+ *
+ * The provider comes from argv so the same script serves both, rather than a
+ * second copy of this reporting drifting away from the first:
+ *
+ *   npx ts-node src/drizzle/seeds/provider-prices.seed.ts paddle
+ *
+ * It defaults to lemonsqueezy, which is what every existing invocation of this
+ * file means.
+ */
+export async function seedProviderPrices(
+  provider: 'lemonsqueezy' | 'paddle' = 'lemonsqueezy',
+): Promise<void> {
+  const plan = PROVIDER_PLANS[provider];
+  if (!plan) {
+    throw new Error(
+      `Unknown provider "${provider}". Expected lemonsqueezy or paddle.`,
+    );
+  }
+
+  const { resolved, skipped } = resolvePrices(process.env, plan.rows);
+
   console.log('==========================================');
-  console.log(`Seeding provider_prices — lemonsqueezy store ${storeId}`);
+  console.log(`Seeding provider_prices — ${provider} ${plan.account()}`);
   console.log('==========================================');
 
   await upsertProviderPrices(resolved);
 
   for (const row of resolved) {
-    console.log(
-      `- ${row.planCode} / ${row.itemType}: variant ${row.providerRef}`,
-    );
+    console.log(`- ${row.planCode} / ${row.itemType}: ${row.providerRef}`);
   }
 
   // Skips are logged rather than written. An unset variable means we do not
@@ -276,23 +432,23 @@ export async function seedProviderPrices(): Promise<void> {
     );
   }
 
-  // The outstanding catalogue gap. EXTRA_MEMBER, EXTRA_WORKSPACE and
-  // EXTRA_AI_TOKENS have no Lemon Squeezy product yet, so their adapter paths
-  // cannot be exercised live. Printed, so re-running this seed after creating
-  // those products in the dashboard tells you what is still left.
-  const missing = await missingCatalogueRows('lemonsqueezy');
+  // The outstanding catalogue gap: what a customer could ask to buy that this
+  // provider still cannot sell. Every entry is a live BadRequestException
+  // waiting for the first customer who clicks it, so the seed prints them
+  // rather than exiting 0 and looking finished.
+  const missing = await missingCatalogueRows(provider);
   if (missing.length > 0) {
     console.log('');
     console.log(
-      `${missing.length} catalogue entries have NO lemonsqueezy price. ` +
+      `${missing.length} catalogue entries have NO ${provider} price. ` +
         `Buying one throws "not provisioned" (a clean 400, no charge):`,
     );
     for (const gap of missing) {
       console.log(`  ! ${gap.planCode} / ${gap.itemType}`);
     }
     console.log(
-      'Create the product in the Lemon Squeezy dashboard, add its variant id ' +
-        'to the environment, and re-run this seed.',
+      `Create the price in the ${provider} dashboard, add its id to the ` +
+        'environment, and re-run this seed.',
     );
   }
 
@@ -303,7 +459,14 @@ export async function seedProviderPrices(): Promise<void> {
 }
 
 if (require.main === module) {
-  seedProviderPrices()
+  const arg = process.argv[2];
+  if (arg && arg !== 'lemonsqueezy' && arg !== 'paddle') {
+    console.error(
+      `Unknown provider "${arg}". Expected lemonsqueezy or paddle.`,
+    );
+    process.exit(1);
+  }
+  seedProviderPrices(arg as 'lemonsqueezy' | 'paddle' | undefined)
     .then(() => process.exit(0))
     .catch((error) => {
       console.error('provider_prices seed failed:', error);

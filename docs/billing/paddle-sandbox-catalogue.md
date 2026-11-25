@@ -44,16 +44,41 @@ FREE has no Paddle product: the app never sends a free plan to checkout.
 - **No annual prices.** The app has no annual support (no `interval` column,
   and the billing screen's toggle is disabled on purpose). Annual SKUs would
   be unusable today.
-- **No webhook/notification destination.** There is no Paddle adapter yet, so
-  nothing would receive it.
+- **No webhook/notification destination.** Was blocked on the adapter not
+  existing; the adapter and webhook service now exist, so this is an owner
+  action that is newly unblocked (see Next step 3).
 - **No tax, payout or business-verification settings** — owner decisions.
 
 ## Next
-1. Write the Paddle adapter (12-method `PaymentProviderAdapter` + webhook
-   service). ⚠ Put the API base URL in an env var: Paddle's sandbox and live
-   hosts differ (`sandbox-api.paddle.com` vs `api.paddle.com`). The
-   LemonSqueezy client hard-codes its BASE, which is the shape that let
-   `PINTEREST_USE_SANDBOX=true` reach production once.
-2. Insert these 15 rows into `provider_prices` on the LOCAL/dev database only.
+1. ~~Write the Paddle adapter~~ — DONE. 12-method adapter, client, webhook
+   service and signature verification all landed on `feat/paddle-adapter`.
+   The API base URL is read from `PADDLE_API_BASE` with no default, so the
+   sandbox/live host split cannot be hard-coded the way LemonSqueezy's BASE is.
+2. ~~Insert these 15 rows into `provider_prices`~~ — DONE on the LOCAL dev
+   database (2026-11-25), via `provider-prices.seed.ts`:
+
+   ```
+   npx ts-node src/drizzle/seeds/provider-prices.seed.ts paddle
+   ```
+
+   The seed takes a provider argument (default `lemonsqueezy`) and reads every
+   id from the environment — the ids above are NOT committed to the seed,
+   because a Paddle price id is not reusable across accounts and a committed
+   sandbox id would point production at a price that does not exist there. The
+   variable names are in `.env.example` under the Paddle block.
+
+   Verified after seeding: 15 rows written, re-running adds none (upsert on
+   `(provider, plan_code, item_type)`), LemonSqueezy's own 15 rows untouched,
+   and `CatalogueService.resolveRef('paddle', …)` answers all 15 pairs while
+   `FREE/BASE_PLAN` still throws "not provisioned".
+
+   ⚠ The add-on rows are per PLAN, not shared. The same add-on costs different
+   money per tier ($5 channel on BASIC/PRO, $3 on MAX), so each tier carries
+   its own price id — fifteen distinct unique keys, not five.
 3. Test checkout, plan change, add-on buy/change/remove, cancel, webhooks.
+   Needs a sandbox webhook destination pointing at
+   `POST /billing/webhooks/paddle`, which can be created now that the webhook
+   service exists.
 4. Only then rebuild the catalogue on the live account and capture new ids.
+   ⚠ The live ids will all differ; re-run the seed with the live values in the
+   environment rather than editing anything in the repo.
