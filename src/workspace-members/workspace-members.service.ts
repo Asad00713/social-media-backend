@@ -34,6 +34,7 @@ import { NotifyService } from 'src/notifications/notify.service';
 import { RecipientsService } from 'src/notifications/recipients.service';
 import { UsersService } from 'src/users/users.service';
 import { WorkspaceRoleService } from './workspace-role.service';
+import { AnalyticsEventEmitter } from 'src/realtime/analytics-event-emitter.service';
 import { normalizeEmail } from 'src/users/normalize-email';
 import { lockLiveAccount } from 'src/users/account-live';
 import {
@@ -174,6 +175,11 @@ export class WorkspaceMembersService {
     private notifications: NotificationEmitterService,
     private recipients: RecipientsService,
     private links: AppLinks,
+    // Last: positional specs construct this service directly. Not @Optional -
+    // RealtimeModule is global and always provides it, and a silently missing
+    // emitter would leave a removed member in the live room. Optional in the
+    // type only so a spec that never removes anyone can leave it out.
+    private readonly realtime?: AnalyticsEventEmitter,
   ) {}
 
   // ==================== INVITATION FLOW ====================
@@ -1171,6 +1177,13 @@ export class WorkspaceMembersService {
 
     if (!removed) {
       throw new NotFoundException('Member not found in this workspace');
+    }
+
+    // Straight after the removal, before anything that can fail: the member's
+    // open sockets stop receiving this workspace's live events now, not at
+    // their next reconnect. leaveWorkspace comes through here. Never throws.
+    if (member.userId) {
+      this.realtime?.removeUserFromWorkspace(member.userId, workspaceId);
     }
 
     // Track usage - decrement member count. A guest never took a seat. The

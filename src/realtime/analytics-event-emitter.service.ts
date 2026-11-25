@@ -45,6 +45,21 @@ export class AnalyticsEventEmitter {
     }
   }
 
+  /**
+   * Takes one user's sockets out of a workspace's live room (removed or
+   * left). Never throws: the membership is already gone in the database, and
+   * a socket left in the room is refused at its next subscribe.
+   */
+  removeUserFromWorkspace(userId: string, workspaceId: string): void {
+    try {
+      this.gateway.removeUserFromWorkspace(userId, workspaceId);
+    } catch (err) {
+      this.logger.warn(
+        `Could not remove ${userId} from the realtime room of ${workspaceId}: ${(err as Error).message}`,
+      );
+    }
+  }
+
   emit<K extends AnalyticsEventName>(
     workspaceId: string,
     eventName: K,
