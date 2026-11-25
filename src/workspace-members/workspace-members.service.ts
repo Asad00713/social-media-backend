@@ -34,9 +34,13 @@ import { NotifyService } from 'src/notifications/notify.service';
 import { RecipientsService } from 'src/notifications/recipients.service';
 import { UsersService } from 'src/users/users.service';
 import { WorkspaceRoleService } from './workspace-role.service';
+import { AnalyticsEventEmitter } from 'src/realtime/analytics-event-emitter.service';
 import { normalizeEmail } from 'src/users/normalize-email';
 import { lockLiveAccount } from 'src/users/account-live';
-import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
+import {
+  inLiveWorkspace,
+  liveWorkspaces,
+} from '../posts/soft-delete/soft-delete';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -171,6 +175,11 @@ export class WorkspaceMembersService {
     private notifications: NotificationEmitterService,
     private recipients: RecipientsService,
     private links: AppLinks,
+    // Last: positional specs construct this service directly. Not @Optional -
+    // RealtimeModule is global and always provides it, and a silently missing
+    // emitter would leave a removed member in the live room. Optional in the
+    // type only so a spec that never removes anyone can leave it out.
+    private readonly realtime?: AnalyticsEventEmitter,
   ) {}
 
   // ==================== INVITATION FLOW ====================
@@ -192,8 +201,9 @@ export class WorkspaceMembersService {
 
     const isOwner = workspaceData.ownerId === currentUserId;
     const isAdmin = await this.isUserAdmin(workspaceId, currentUserId);
+    const isSuperAdmin = await this.isPlatformSuperAdmin(currentUserId);
 
-    if (!isOwner && !isAdmin) {
+    if (!isOwner && !isAdmin && !isSuperAdmin) {
       throw new ForbiddenException(
         'Only workspace owner or admins can invite members',
       );
@@ -328,7 +338,8 @@ export class WorkspaceMembersService {
     if (!workspaceData) throw new NotFoundException('Workspace not found');
     const isOwner = workspaceData.ownerId === currentUserId;
     const isAdmin = await this.isUserAdmin(workspaceId, currentUserId);
-    if (!isOwner && !isAdmin) {
+    const isSuperAdmin = await this.isPlatformSuperAdmin(currentUserId);
+    if (!isOwner && !isAdmin && !isSuperAdmin) {
       throw new ForbiddenException(
         'Only workspace owner or admins can invite members',
       );
@@ -417,7 +428,9 @@ export class WorkspaceMembersService {
       },
     });
 
-    if (!invitation) {
+    // A deleted workspace's invitations read as gone: the row outlives the
+    // soft delete, and accepting it would join a workspace nobody can open.
+    if (!invitation || invitation.workspace?.deletedAt) {
       throw new NotFoundException('Invitation not found');
     }
 
@@ -596,8 +609,9 @@ export class WorkspaceMembersService {
 
     const isOwner = workspaceData.ownerId === currentUserId;
     const isAdmin = await this.isUserAdmin(workspaceId, currentUserId);
+    const isSuperAdmin = await this.isPlatformSuperAdmin(currentUserId);
 
-    if (!isOwner && !isAdmin) {
+    if (!isOwner && !isAdmin && !isSuperAdmin) {
       throw new ForbiddenException(
         'Only workspace owner or admins can view invitations',
       );
@@ -808,6 +822,7 @@ export class WorkspaceMembersService {
       where: and(
         sql`lower(${workspaceInvitation.email}) = ${currentUser.email.toLowerCase()}`,
         eq(workspaceInvitation.status, 'PENDING'),
+        inLiveWorkspace(workspaceInvitation.workspaceId),
       ),
       with: {
         workspace: { columns: { id: true, name: true } },
@@ -1167,6 +1182,13 @@ export class WorkspaceMembersService {
       throw new NotFoundException('Member not found in this workspace');
     }
 
+    // Straight after the removal, before anything that can fail: the member's
+    // open sockets stop receiving this workspace's live events now, not at
+    // their next reconnect. leaveWorkspace comes through here. Never throws.
+    if (member.userId) {
+      this.realtime?.removeUserFromWorkspace(member.userId, workspaceId);
+    }
+
     // Track usage - decrement member count. A guest never took a seat. The
     // role is the one the UPDATE just removed, not the one read earlier: a
     // role change that committed in between has already moved the counter, and
@@ -1495,11 +1517,12 @@ export class WorkspaceMembersService {
     const invitation = await this.db.query.workspaceInvitation.findFirst({
       where: eq(workspaceInvitation.token, token),
       with: {
-        workspace: { columns: { name: true } },
+        workspace: { columns: { name: true, deletedAt: true } },
         inviter: { columns: { name: true } },
       },
     });
-    if (!invitation) {
+    // A deleted workspace's invitations read as gone, as in acceptInvitation.
+    if (!invitation || invitation.workspace?.deletedAt) {
       throw new NotFoundException('Invitation not found');
     }
     return {

@@ -1,5 +1,9 @@
 import type { PoolClient } from 'pg';
-import { ConflictException, ForbiddenException } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import {
   describeDb,
   withRollbackDb,
@@ -770,6 +774,97 @@ describeDb('guests use no seat (database)', () => {
         owner.id,
       );
       expect(updated.role).toBe('GUEST');
+    });
+  });
+});
+
+describeDb('invitations to a soft-deleted workspace (database)', () => {
+  async function softDelete(client: PoolClient, workspaceId: string) {
+    await client.query(
+      `UPDATE workspace SET deleted_at = now() WHERE id = $1`,
+      [workspaceId],
+    );
+  }
+
+  it('a pending invitation to a soft-deleted workspace is not listed by getMyInvitations', async () => {
+    await run(ROOMY, async (service, client) => {
+      const owner = await seedUser(client, 'Owner');
+      const invitee = await seedUser(client, 'Invitee');
+      const live = await seedWorkspace(client, owner.id);
+      const gone = await seedWorkspace(client, owner.id);
+      const kept = await seedInvitation(client, live, {
+        status: 'PENDING',
+        expiresInMs: 2 * DAY_MS,
+        invitedBy: owner.id,
+        email: invitee.email,
+      });
+      const hidden = await seedInvitation(client, gone, {
+        status: 'PENDING',
+        expiresInMs: 2 * DAY_MS,
+        invitedBy: owner.id,
+        email: invitee.email,
+      });
+      await softDelete(client, gone);
+
+      const list = await service.getMyInvitations(invitee.id);
+
+      expect(list.map((i) => i.id)).toEqual([kept.id]);
+      expect(list.map((i) => i.id)).not.toContain(hidden.id);
+    });
+  });
+
+  it('accepting it throws NotFoundException("Invitation not found") and the row stays PENDING', async () => {
+    await run(ROOMY, async (service, client) => {
+      const owner = await seedUser(client, 'Owner');
+      const invitee = await seedUser(client, 'Invitee');
+      const ws = await seedWorkspace(client, owner.id);
+      const inv = await seedInvitation(client, ws, {
+        status: 'PENDING',
+        expiresInMs: 2 * DAY_MS,
+        invitedBy: owner.id,
+        email: invitee.email,
+      });
+      await softDelete(client, ws);
+
+      const err = await service
+        .acceptInvitation(inv.token, invitee.id)
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(NotFoundException);
+      expect((err as NotFoundException).message).toBe('Invitation not found');
+      expect((await rowState(client, inv.id)).status).toBe('PENDING');
+    });
+  });
+
+  it('previewing it throws NotFoundException("Invitation not found"); a live workspace still previews', async () => {
+    await run(ROOMY, async (service, client) => {
+      const owner = await seedUser(client, 'Owner');
+      const invitee = await seedUser(client, 'Invitee');
+      const live = await seedWorkspace(client, owner.id);
+      const gone = await seedWorkspace(client, owner.id);
+      const kept = await seedInvitation(client, live, {
+        status: 'PENDING',
+        expiresInMs: 2 * DAY_MS,
+        invitedBy: owner.id,
+        email: invitee.email,
+      });
+      const hidden = await seedInvitation(client, gone, {
+        status: 'PENDING',
+        expiresInMs: 2 * DAY_MS,
+        invitedBy: owner.id,
+        email: invitee.email,
+      });
+      await softDelete(client, gone);
+
+      expect(await service.previewInvitation(kept.token)).toMatchObject({
+        invitedEmail: invitee.email,
+        status: 'PENDING',
+      });
+      const err = await service
+        .previewInvitation(hidden.token)
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(NotFoundException);
+      expect((err as NotFoundException).message).toBe('Invitation not found');
     });
   });
 });

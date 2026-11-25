@@ -11,7 +11,7 @@ import { Logger } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import {
   assertNotDeleted,
   assertSessionTokenShape,
@@ -27,8 +27,6 @@ import type {
   TypingClientEvent,
   UserRef,
 } from '../inbox/conversations/dto/contract';
-import { workspace } from '../drizzle/schema/workspace.schema';
-import { workspaceInvitation } from '../drizzle/schema/workspace-invitation.schema';
 import type {
   AnalyticsEventName,
   AnalyticsEventPayloadMap,
@@ -37,7 +35,6 @@ import type {
   UserEventName,
   UserEventPayloadMap,
 } from './types/user-events.types';
-import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 interface CachedRole {
   role: WorkspaceRole | null;
@@ -265,30 +262,17 @@ export class AnalyticsEventsGateway
     }
   }
 
+  /**
+   * The same answer every HTTP guard reads: a live workspace the user owns
+   * or holds an ACCEPTED membership of. A deleted workspace or a REMOVED
+   * member is null, so neither can (re)join the room.
+   */
   private async userHasWorkspaceAccess(
     workspaceId: string,
     userId: string,
   ): Promise<boolean> {
     try {
-      const owned = await db.query.workspace.findFirst({
-        where: and(
-          eq(workspace.id, workspaceId),
-          eq(workspace.ownerId, userId),
-          liveWorkspaces(),
-        ),
-        columns: { id: true },
-      });
-      if (owned) return true;
-
-      const member = await db.query.workspaceInvitation.findFirst({
-        where: and(
-          eq(workspaceInvitation.workspaceId, workspaceId),
-          eq(workspaceInvitation.userId, userId),
-          eq(workspaceInvitation.status, 'ACCEPTED'),
-        ),
-        columns: { id: true },
-      });
-      return !!member;
+      return (await this.roles.getRole(workspaceId, userId)) !== null;
     } catch (err) {
       this.logger.error(
         `Workspace access check failed for user=${userId} ws=${workspaceId}: ${(err as Error).message}`,
@@ -340,6 +324,18 @@ export class AnalyticsEventsGateway
   /** Drops every socket of one user on this instance (account deleted). */
   disconnectUser(userId: string): void {
     this.server?.in(this.userRoom(userId)).disconnectSockets(true);
+  }
+
+  /**
+   * Takes one user's sockets out of one workspace's room (removed or left),
+   * leaving every other room, the user's own included. A role change does
+   * not call this: the member is still in the workspace. Per instance, like
+   * disconnectUser; a socket on another instance leaves when it reconnects.
+   */
+  removeUserFromWorkspace(userId: string, workspaceId: string): void {
+    this.server
+      ?.in(this.userRoom(userId))
+      .socketsLeave(this.workspaceRoom(workspaceId));
   }
 
   private userRoom(userId: string): string {

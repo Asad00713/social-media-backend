@@ -91,3 +91,61 @@ describe('WorkspaceMembersService.leaveWorkspace', () => {
     expect(removeMember).not.toHaveBeenCalled();
   });
 });
+
+describe('WorkspaceMembersService.leaveWorkspace live room', () => {
+  /** The real removeMember (self path) over fakes, with a recording emitter. */
+  function leaving() {
+    const realtime = { removeUserFromWorkspace: jest.fn() };
+    const db = {
+      query: {
+        workspace: {
+          findFirst: jest.fn().mockResolvedValue({ id: WS, ownerId: OWNER }),
+        },
+        workspaceInvitation: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ id: ROW, userId: MEMBER, status: 'ACCEPTED' }),
+        },
+      },
+      update: () => ({
+        set: () => ({
+          where: () => ({
+            returning: () => Promise.resolve([{ id: ROW, role: 'MEMBER' }]),
+          }),
+        }),
+      }),
+    };
+    const service = new WorkspaceMembersService(
+      db as never,
+      { decrementMemberCount: jest.fn().mockResolvedValue(undefined) } as never,
+      {} as never,
+      {} as never,
+      { isPlatformSuperAdmin: jest.fn().mockResolvedValue(false) } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      realtime as never,
+    );
+    return { service, realtime };
+  }
+
+  it('calls realtime.removeUserFromWorkspace for the leaving user', async () => {
+    const { service, realtime } = leaving();
+
+    await service.leaveWorkspace(WS, MEMBER);
+
+    expect(realtime.removeUserFromWorkspace).toHaveBeenCalledTimes(1);
+    expect(realtime.removeUserFromWorkspace).toHaveBeenCalledWith(MEMBER, WS);
+  });
+
+  it('the owner refused with a 409 is not taken out of the room', async () => {
+    const { service, realtime } = leaving();
+
+    await expect(service.leaveWorkspace(WS, OWNER)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+
+    expect(realtime.removeUserFromWorkspace).not.toHaveBeenCalled();
+  });
+});

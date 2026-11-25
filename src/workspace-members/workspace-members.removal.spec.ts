@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import {
   ConflictException,
   ForbiddenException,
+  Logger,
   NotFoundException,
   ParseUUIDPipe,
 } from '@nestjs/common';
@@ -14,8 +15,10 @@ import {
   WorkspaceMembersService,
 } from './workspace-members.service';
 import { WorkspaceMembersController } from './workspace-members.controller';
+import type { UpdateMemberDto } from './dto/update-member.dto';
 import { REQUIRE_CAPABILITY } from './require-capability.decorator';
 import { WorkspaceRoleService } from './workspace-role.service';
+import { AnalyticsEventEmitter } from 'src/realtime/analytics-event-emitter.service';
 
 // The account-live lock (FOR KEY SHARE on users) is proven against Postgres
 // in workspace.create-vs-delete.db.spec.ts; these fakes have no `select`.
@@ -77,7 +80,14 @@ const links = new AppLinks({
     key === 'FRONTEND_URL' ? 'https://app.schedura.ai' : undefined,
 } as unknown as ConfigService);
 
-function makeService(db: any, over: { usage?: any; mail?: Mail } = {}) {
+function makeService(
+  db: any,
+  over: {
+    usage?: any;
+    mail?: Mail;
+    realtime?: Partial<AnalyticsEventEmitter>;
+  } = {},
+) {
   // Transactions and savepoints run the callback on the same mock; the
   // seat lock is recorded by `execute`. The invitation email counts channels
   // and members through `select`.
@@ -103,6 +113,7 @@ function makeService(db: any, over: { usage?: any; mail?: Mail } = {}) {
     mail.emitter as any,
     mail.recipients as any,
     links,
+    over.realtime as AnalyticsEventEmitter | undefined,
   );
 }
 
@@ -343,6 +354,118 @@ describe('WorkspaceMembersService.removeMember (soft)', () => {
     expect(usage.decrementMemberCount).not.toHaveBeenCalled();
     // The removal that won sends the email; the loser sends nothing.
     expect(mail.notify.notify).not.toHaveBeenCalled();
+  });
+});
+
+describe('a removed member leaves the live room of the workspace', () => {
+  const memberRow = { id: 'm1', userId: MEMBER_USER, status: 'ACCEPTED' };
+
+  function db(updated: unknown[]) {
+    return {
+      query: {
+        workspace: {
+          findFirst: jest.fn().mockResolvedValue({ id: WS, ownerId: ADMIN }),
+        },
+        workspaceInvitation: {
+          findFirst: jest.fn().mockResolvedValue(memberRow),
+        },
+      },
+      update: updateChain(updated).update,
+    };
+  }
+  const usage = {
+    decrementMemberCount: jest.fn().mockResolvedValue(undefined),
+  };
+
+  it('removeMember calls realtime.removeUserFromWorkspace(member.userId, workspaceId) after the removal', async () => {
+    const realtime = { removeUserFromWorkspace: jest.fn() };
+    const dbFake = db([{ id: 'm1', role: 'MEMBER' }]);
+
+    await makeService(dbFake, { usage, realtime }).removeMember(
+      WS,
+      'm1',
+      ADMIN,
+    );
+
+    expect(realtime.removeUserFromWorkspace).toHaveBeenCalledTimes(1);
+    expect(realtime.removeUserFromWorkspace).toHaveBeenCalledWith(
+      MEMBER_USER,
+      WS,
+    );
+  });
+
+  it('is not called when the removal lost the race (the other removal evicts)', async () => {
+    const realtime = { removeUserFromWorkspace: jest.fn() };
+
+    await expect(
+      makeService(db([]), { usage, realtime }).removeMember(WS, 'm1', ADMIN),
+    ).rejects.toBeInstanceOf(NotFoundException);
+
+    expect(realtime.removeUserFromWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('is not called when the caller may not remove the member', async () => {
+    const realtime = { removeUserFromWorkspace: jest.fn() };
+    const dbFake = db([{ id: 'm1', role: 'MEMBER' }]);
+    // The member row first; then the stranger is no admin (isUserAdmin).
+    dbFake.query.workspaceInvitation.findFirst
+      .mockReset()
+      .mockResolvedValueOnce(memberRow)
+      .mockResolvedValue(undefined);
+
+    await expect(
+      makeService(dbFake, { usage, realtime }).removeMember(
+        WS,
+        'm1',
+        'a-stranger',
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    expect(realtime.removeUserFromWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('a role change does NOT remove the user from the room', async () => {
+    const realtime = { removeUserFromWorkspace: jest.fn() };
+    const row = { id: 'm1', role: 'ADMIN', status: 'ACCEPTED' };
+    const dbFake = db([row]);
+    dbFake.query.workspaceInvitation.findFirst.mockResolvedValue(row);
+
+    await makeService(dbFake, { usage, realtime }).updateMemberRole(
+      WS,
+      'm1',
+      { role: 'ADMIN' } as UpdateMemberDto,
+      ADMIN,
+    );
+
+    expect(realtime.removeUserFromWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('the realtime layer failing does not fail the removal', async () => {
+    // The real emitter around a gateway that throws: its wrapper never lets
+    // the error out, so the removal that already committed still answers ok.
+    jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const realtime = new AnalyticsEventEmitter({
+      removeUserFromWorkspace: () => {
+        throw new Error('socket.io down');
+      },
+    } as never);
+
+    await expect(
+      makeService(db([{ id: 'm1', role: 'MEMBER' }]), {
+        usage,
+        realtime,
+      }).removeMember(WS, 'm1', ADMIN),
+    ).resolves.toEqual({ message: 'Member removed successfully' });
+  });
+
+  it('a spec-built service without the emitter still removes', async () => {
+    await expect(
+      makeService(db([{ id: 'm1', role: 'MEMBER' }]), { usage }).removeMember(
+        WS,
+        'm1',
+        ADMIN,
+      ),
+    ).resolves.toEqual({ message: 'Member removed successfully' });
   });
 });
 

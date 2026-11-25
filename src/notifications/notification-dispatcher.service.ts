@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { isDisconnected } from '../channels/lib/live-channel';
 import { db } from '../drizzle/db';
-import { notificationRoutes, socialMediaChannels } from '../drizzle/schema';
+import { socialMediaChannels } from '../drizzle/schema';
 import { NotificationRoutesService } from './notification-routes.service';
 import { ChannelService } from '../channels/services/channel.service';
 import { SlackService } from '../channels/services/slack.service';
@@ -94,6 +94,14 @@ export class NotificationDispatcherService implements OnModuleInit {
     if (!channel) {
       this.logger.warn(
         `Route ${route.id} references missing channel ${route.channelId} — skipping`,
+      );
+      return;
+    }
+    // Defence in depth: a route written before the ownership check existed
+    // may still point at another workspace's channel. Never post through it.
+    if (channel.workspaceId !== route.workspaceId) {
+      this.logger.warn(
+        `Route ${route.id} (ws=${route.workspaceId}) points at channel ${route.channelId} of another workspace — skipping`,
       );
       return;
     }

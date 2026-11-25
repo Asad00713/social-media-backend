@@ -387,7 +387,6 @@ const EXPECTED: Array<
       postImageToMastodon: null,
       postVideoToMastodon: null,
       deleteMastodonPost: null,
-      getMastodonInstanceInfo: null,
       connectGoogleDrive: 'channels:manage',
       getDriveFile: null,
       getDriveUserInfo: null,

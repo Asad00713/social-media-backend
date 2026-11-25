@@ -1,4 +1,6 @@
 import * as bcrypt from 'bcrypt';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { UnauthorizedException } from '@nestjs/common';
 import {
   BadRequestException,
@@ -543,6 +545,37 @@ describe('AuthService A1 / A2 / A5 mail', () => {
       'u1',
       ctx,
       'reset',
+    );
+  });
+});
+
+describe('AuthService.whoAmI memberships', () => {
+  it('omits a soft-deleted workspace the user is an ACCEPTED member of', async () => {
+    const memberFindMany = jest.fn().mockResolvedValue([]);
+    const db = {
+      query: {
+        workspace: {
+          findMany: jest.fn().mockResolvedValue([]),
+          findFirst: jest.fn(),
+        },
+        workspaceInvitation: { findMany: memberFindMany },
+      },
+    };
+    const usersService = {
+      findOne: jest
+        .fn()
+        .mockResolvedValue({ id: 'u-1', email: 'a@b.test', role: 'USER' }),
+    };
+    const { service } = makeAuthService({ db, usersService });
+
+    await service.whoAmI('u-1');
+
+    const { where } = (memberFindMany.mock.calls as [{ where: SQL }][])[0][0];
+    const { sql } = new PgDialect().sqlToQuery(where);
+    // The membership row survives a workspace soft delete, so the read has to
+    // ask the workspace table; dropping this predicate lists the deleted one.
+    expect(sql).toContain(
+      '"workspace_invitations"."workspace_id" in (select "workspace"."id" from "workspace" where "workspace"."deleted_at" is null)',
     );
   });
 });

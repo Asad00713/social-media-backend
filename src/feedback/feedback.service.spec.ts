@@ -206,6 +206,95 @@ describe('FeedbackService', () => {
     });
   });
 
+  describe('findAllPublic', () => {
+    const row = (id: string, userId: string, at: string) => ({
+      id,
+      userId,
+      type: 'app',
+      rating: 5,
+      comment: 'great',
+      status: 'approved',
+      adminNotes: 'internal: looks like a friend of the founder',
+      createdAt: new Date(at),
+      updatedAt: new Date(at),
+      // The DB, asked only for `name`, returns just that. The extra fields
+      // here simulate a projection regression so the mapping is tested too.
+      user: { id: userId, name: 'Ada', email: `${userId}@example.com` },
+    });
+
+    it('asks the DB for the reviewer name only: no email, no id', async () => {
+      const db = makeDb();
+      const findMany = jest.fn().mockResolvedValue([]);
+      db.query.feedback.findMany = findMany;
+      const service = await build(db);
+
+      await service.findAllPublic();
+
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          with: { user: { columns: { name: true } } },
+        }),
+      );
+    });
+
+    it('returns user { name } only, even if the DB row carried more', async () => {
+      const db = makeDb();
+      db.query.feedback.findMany = jest
+        .fn()
+        .mockResolvedValue([row('r1', 'user-1', '2025-01-02')]);
+      const service = await build(db);
+
+      const result = await service.findAllPublic();
+
+      expect(result.data).toHaveLength(1);
+      expect(Object.keys(result.data[0].user)).toEqual(['name']);
+      expect(result.data[0].user.name).toBe('Ada');
+      expect(JSON.stringify(result)).not.toContain('@example.com');
+    });
+
+    it('returns only the allow-listed public fields per review', async () => {
+      const db = makeDb();
+      db.query.feedback.findMany = jest
+        .fn()
+        .mockResolvedValue([row('r1', 'user-1', '2025-01-02')]);
+      const service = await build(db);
+
+      const [review] = (await service.findAllPublic()).data;
+
+      expect(Object.keys(review).sort()).toEqual([
+        'comment',
+        'createdAt',
+        'id',
+        'rating',
+        'type',
+        'updatedAt',
+        'user',
+      ]);
+      expect(review).not.toHaveProperty('adminNotes');
+      expect(review).not.toHaveProperty('userId');
+      expect(review).not.toHaveProperty('status');
+      expect(JSON.stringify(review)).not.toContain('internal:');
+      expect(JSON.stringify(review)).not.toContain('user-1');
+    });
+
+    it('still keeps one row per user, using userId from the feedback row', async () => {
+      const db = makeDb();
+      db.query.feedback.findMany = jest
+        .fn()
+        .mockResolvedValue([
+          row('new', 'user-1', '2025-02-01'),
+          row('old', 'user-1', '2025-01-01'),
+          row('other', 'user-2', '2025-01-15'),
+        ]);
+      const service = await build(db);
+
+      const result = await service.findAllPublic();
+
+      expect(result.data.map((r) => r.id)).toEqual(['new', 'other']);
+      expect(result.pagination.total).toBe(2);
+    });
+  });
+
   describe('create eligibility guard', () => {
     it('rejects a submit while the user is inside the cooldown', async () => {
       const db = makeDb();

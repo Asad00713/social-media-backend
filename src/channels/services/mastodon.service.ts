@@ -830,40 +830,6 @@ export class MastodonService {
     return id;
   }
 
-  /**
-   * Get instance info
-   */
-  async getInstanceInfo(instanceUrl: string): Promise<{
-    name: string;
-    description: string;
-    version: string;
-    maxTootChars: number;
-  }> {
-    const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
-
-    const response = await fetch(`${normalizedUrl}/api/v1/instance`);
-
-    if (!response.ok) {
-      const errorData = await response.text();
-      this.logger.error(`Failed to get Mastodon instance info: ${errorData}`);
-      throw new BadRequestException(
-        'Failed to get Mastodon instance information',
-      );
-    }
-
-    const data = await response.json();
-
-    return {
-      name: data.title || data.uri,
-      description: data.short_description || data.description || '',
-      version: data.version,
-      maxTootChars:
-        data.configuration?.statuses?.max_characters ||
-        data.max_toot_chars ||
-        500,
-    };
-  }
-
   // ==========================================================================
   // Inbox — fetch status context (descendants = the comment thread)
   // ==========================================================================

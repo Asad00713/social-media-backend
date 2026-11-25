@@ -1,4 +1,7 @@
 import { readFileSync } from 'node:fs';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
+import { WorkspaceService } from './workspace.service';
 import { join } from 'node:path';
 
 /**
@@ -63,5 +66,59 @@ describe('deleting a workspace is a soft delete', () => {
       const purge = read('workspace/workspace-purge.service.ts');
       expect(purge).toMatch(/lt\(\s*workspace\.deletedAt,\s*cutoff\s*\)/);
     });
+  });
+});
+
+describe('the owner reads exclude a soft-deleted workspace', () => {
+  const LIVE = '"workspace"."deleted_at" is null';
+  const render = (where: unknown) =>
+    new PgDialect().sqlToQuery(where as SQL).sql;
+
+  function build() {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const findFirst = jest.fn().mockResolvedValue(null);
+    const countWhere = jest.fn().mockResolvedValue([{ count: 0 }]);
+    const db = {
+      query: { workspace: { findMany, findFirst } },
+      select: () => ({ from: () => ({ where: countWhere }) }),
+    };
+    // The reads under test touch `db` only; the other collaborators are inert.
+    const s = {} as never;
+    const service = new WorkspaceService(
+      db as never,
+      s,
+      s,
+      s,
+      s,
+      s,
+      s,
+      s,
+      s,
+      s,
+    );
+    return { service, findMany, findFirst };
+  }
+
+  const whereOf = (mock: jest.Mock) =>
+    (mock.mock.calls as [{ where: unknown }][])[0][0].where;
+
+  it('findAllPaginated lists only live workspaces', async () => {
+    const { service, findMany } = build();
+    await service.findAllPaginated('u-1');
+    expect(render(whereOf(findMany))).toContain(LIVE);
+  });
+
+  it('findAllByUser lists only live workspaces', async () => {
+    const { service, findMany } = build();
+    await service.findAllByUser('u-1');
+    expect(render(whereOf(findMany))).toContain(LIVE);
+  });
+
+  it('findOne does not open a deleted workspace, by id or by slug', async () => {
+    for (const bySlug of [false, true]) {
+      const { service, findFirst } = build();
+      await expect(service.findOne('x', 'u-1', bySlug)).rejects.toThrow();
+      expect(render(whereOf(findFirst))).toContain(LIVE);
+    }
   });
 });

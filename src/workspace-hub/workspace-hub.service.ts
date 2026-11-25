@@ -16,7 +16,10 @@ import {
   type HubMemberRow,
   type HubScheduledRow,
 } from './lib/hub-summary';
-import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
+import {
+  inLiveWorkspace,
+  liveWorkspaces,
+} from '../posts/soft-delete/soft-delete';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -53,6 +56,8 @@ export class WorkspaceHubService {
           and(
             eq(workspaceInvitation.userId, userId),
             eq(workspaceInvitation.status, 'ACCEPTED'),
+            // The membership row outlives a soft delete of its workspace.
+            inLiveWorkspace(workspaceInvitation.workspaceId),
           ),
         ),
     ]);
@@ -86,7 +91,7 @@ export class WorkspaceHubService {
         .select({ workspaceId: workspace.id, ...memberColumns })
         .from(workspace)
         .innerJoin(users, eq(users.id, workspace.ownerId))
-        .where(inArray(workspace.id, ids)),
+        .where(and(inArray(workspace.id, ids), liveWorkspaces())),
       this.db
         .select({
           workspaceId: workspaceInvitation.workspaceId,

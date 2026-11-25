@@ -46,7 +46,10 @@ import {
   MAX_CODE_ATTEMPTS,
   verificationCodeError,
 } from './verification-code-error';
-import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
+import {
+  inLiveWorkspace,
+  liveWorkspaces,
+} from '../posts/soft-delete/soft-delete';
 
 // Columns returned to the client for any workspace row reachable from
 // /auth/me. Deliberately excludes `suspensionNote` (admin-only note) and
@@ -238,6 +241,8 @@ export class AuthService {
       where: and(
         eq(workspaceInvitation.userId, userId),
         eq(workspaceInvitation.status, 'ACCEPTED'),
+        // The membership row outlives a soft delete of its workspace.
+        inLiveWorkspace(workspaceInvitation.workspaceId),
       ),
       with: { workspace: { columns: PUBLIC_WORKSPACE_COLUMNS } },
     });

@@ -338,7 +338,7 @@ export class WorkspaceService {
   ): Promise<GetAllREsponse> {
     const offset = (page - 1) * limit;
 
-    const conditions = [eq(workspace.ownerId, userId)];
+    const conditions = [eq(workspace.ownerId, userId), liveWorkspaces()];
 
     if (typeof isActive === 'boolean') {
       conditions.push(eq(workspace.isActive, isActive));
@@ -356,7 +356,7 @@ export class WorkspaceService {
     const [{ count }] = await this.db
       .select({ count: sql<number>`count(*)` })
       .from(workspace)
-      .where(and(...conditions, liveWorkspaces()));
+      .where(and(...conditions));
 
     return {
       data: workspaces,
@@ -373,7 +373,7 @@ export class WorkspaceService {
     userId: string,
   ): Promise<Omit<Workspace, 'maestroAnthropicKey'>[]> {
     const workspaces = await this.db.query.workspace.findMany({
-      where: eq(workspace.ownerId, userId),
+      where: and(eq(workspace.ownerId, userId), liveWorkspaces()),
       // Never ship the Maestro BYOK credential to a client. See findOne.
       columns: { maestroAnthropicKey: false },
       orderBy: (workspace, { desc }) => [desc(workspace.createdAt)],
@@ -392,7 +392,7 @@ export class WorkspaceService {
       : eq(workspace.id, identifier);
 
     const result = await this.db.query.workspace.findFirst({
-      where: and(condition, eq(workspace.ownerId, userId)),
+      where: and(condition, eq(workspace.ownerId, userId), liveWorkspaces()),
       columns: {
         // Everything EXCEPT the Maestro BYOK credential. This row is returned
         // straight to the client by GET /workspace/:id and /slug/:slug, so the

@@ -29,6 +29,28 @@ export interface FeedbackWithUser extends Feedback {
   };
 }
 
+/**
+ * A review as the public (unauthenticated) list shows it: an explicit
+ * allow-list. The reviewer is their display name only; there is no email,
+ * user id, moderation status or admin notes.
+ */
+export interface PublicFeedback {
+  id: string;
+  type: FeedbackType;
+  rating: number;
+  comment: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  user: {
+    name: string | null;
+  };
+}
+
+export interface PaginatedPublicFeedback {
+  data: PublicFeedback[];
+  pagination: PaginatedFeedback['pagination'];
+}
+
 export interface PaginatedFeedback {
   data: FeedbackWithUser[];
   pagination: {
@@ -136,7 +158,7 @@ export class FeedbackService {
     page: number = 1,
     limit: number = 10,
     type: FeedbackType = 'app',
-  ): Promise<PaginatedFeedback> {
+  ): Promise<PaginatedPublicFeedback> {
     const offset = (page - 1) * limit;
 
     const publicWhere = and(
@@ -154,20 +176,32 @@ export class FeedbackService {
     const approvedRows = await this.db.query.feedback.findMany({
       where: publicWhere,
       with: {
+        // Public and unauthenticated: the reviewer's name only. `userId` for
+        // the one-vote-per-user reduction comes from the feedback row itself.
         user: {
           columns: {
-            id: true,
             name: true,
-            email: true,
           },
         },
       },
       orderBy: [desc(feedback.createdAt)],
     });
 
-    const latestPerUser = newestPerUser(approvedRows as FeedbackWithUser[]);
+    const latestPerUser = newestPerUser(approvedRows);
     const total = latestPerUser.length;
-    const data = latestPerUser.slice(offset, offset + limit);
+    // Build each public row field by field rather than spreading the DB row:
+    // `userId`, `status` and `adminNotes` must never reach this response.
+    const data: PublicFeedback[] = latestPerUser
+      .slice(offset, offset + limit)
+      .map((row) => ({
+        id: row.id,
+        type: row.type,
+        rating: row.rating,
+        comment: row.comment,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        user: { name: row.user?.name ?? null },
+      }));
 
     return {
       data,
