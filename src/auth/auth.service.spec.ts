@@ -570,9 +570,7 @@ describe('AuthService.whoAmI memberships', () => {
 
     await service.whoAmI('u-1');
 
-    const { where } = (
-      memberFindMany.mock.calls as [{ where: SQL }][]
-    )[0][0];
+    const { where } = (memberFindMany.mock.calls as [{ where: SQL }][])[0][0];
     const { sql } = new PgDialect().sqlToQuery(where);
     // The membership row survives a workspace soft delete, so the read has to
     // ask the workspace table; dropping this predicate lists the deleted one.

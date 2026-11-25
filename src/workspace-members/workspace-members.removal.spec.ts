@@ -15,6 +15,7 @@ import {
   WorkspaceMembersService,
 } from './workspace-members.service';
 import { WorkspaceMembersController } from './workspace-members.controller';
+import type { UpdateMemberDto } from './dto/update-member.dto';
 import { REQUIRE_CAPABILITY } from './require-capability.decorator';
 import { WorkspaceRoleService } from './workspace-role.service';
 import { AnalyticsEventEmitter } from 'src/realtime/analytics-event-emitter.service';
@@ -81,7 +82,11 @@ const links = new AppLinks({
 
 function makeService(
   db: any,
-  over: { usage?: any; mail?: Mail; realtime?: any } = {},
+  over: {
+    usage?: any;
+    mail?: Mail;
+    realtime?: Partial<AnalyticsEventEmitter>;
+  } = {},
 ) {
   // Transactions and savepoints run the callback on the same mock; the
   // seat lock is recorded by `execute`. The invitation email counts channels
@@ -108,7 +113,7 @@ function makeService(
     mail.emitter as any,
     mail.recipients as any,
     links,
-    over.realtime,
+    over.realtime as AnalyticsEventEmitter | undefined,
   );
 }
 
@@ -428,7 +433,7 @@ describe('a removed member leaves the live room of the workspace', () => {
     await makeService(dbFake, { usage, realtime }).updateMemberRole(
       WS,
       'm1',
-      { role: 'ADMIN' } as any,
+      { role: 'ADMIN' } as UpdateMemberDto,
       ADMIN,
     );
 
