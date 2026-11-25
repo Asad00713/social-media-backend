@@ -1,4 +1,8 @@
 import { NotFoundException } from '@nestjs/common';
+import {
+  roleCan,
+  type Capability,
+} from '../../workspace-members/role-capabilities';
 import { MaestroService } from './maestro.service';
 import type { AgentEvent } from '../maestro.types';
 
@@ -80,7 +84,7 @@ function makeHarness(
     tone?: 'simple' | 'professional' | 'detailed';
     /** Stands in for the Slack connection the approved tool resolves. */
     slackConn?: unknown;
-    /** Roles the caller holds: 'viewer' may not send; default is a member. */
+    /** Roles the caller holds: 'viewer' may not start a turn; default is a member. */
     role?: 'viewer' | 'removed';
   } = {},
 ): Harness {
@@ -172,13 +176,13 @@ function makeHarness(
     getMaestroTone: jest.fn().mockResolvedValue(opts.tone ?? 'professional'),
   };
   const groq = { isReady: () => false } as never;
-  // A viewer can draft but is refused everything that sends or publishes.
-  // Someone removed from the workspace is refused everything.
+  // A viewer holds only the read capabilities (the real role map), so the turn
+  // gate (posts:draft) refuses them. Someone removed from the workspace is
+  // refused everything.
   const access = {
-    assertCan: jest.fn((_ws: string, _user: string, cap: string) =>
+    assertCan: jest.fn((_ws: string, _user: string, cap: Capability) =>
       opts.role === 'removed' ||
-      (opts.role === 'viewer' &&
-        ['inbox:reply', 'posts:publish', 'channels:manage'].includes(cap))
+      (opts.role === 'viewer' && !roleCan('GUEST', cap))
         ? Promise.reject(new NotFoundException('Not found'))
         : Promise.resolve('MEMBER'),
     ),
@@ -357,9 +361,7 @@ describe('MaestroService.streamMessage', () => {
       expect(order.indexOf('tool_result')).toBeLessThan(
         order.indexOf('message_stream'),
       );
-      expect(
-        events.find((e) => e.event === 'tool_executing')?.data,
-      ).toEqual({
+      expect(events.find((e) => e.event === 'tool_executing')?.data).toEqual({
         tool: 'send_slack_message',
         input: {},
       });
@@ -514,7 +516,9 @@ describe('MaestroService.streamMessage', () => {
       expect(complete?.data.content).toBe('Visible part.');
       expect(h.updateMessage).toHaveBeenLastCalledWith(TURN_ID, {
         content: 'Visible part.',
-        metadata: { maestroTurn: expect.objectContaining({ status: 'complete' }) },
+        metadata: {
+          maestroTurn: expect.objectContaining({ status: 'complete' }),
+        },
         tokenCount: expect.any(Number),
       });
     });
@@ -528,9 +532,7 @@ describe('MaestroService.streamMessage', () => {
      * what used to be the insert's 4th argument is now the update's `metadata`.
      */
     function savedMeta<T>(h: Harness): T | undefined {
-      const calls = h.updateMessage.mock.calls.filter(
-        (c) => c[0] === TURN_ID,
-      );
+      const calls = h.updateMessage.mock.calls.filter((c) => c[0] === TURN_ID);
       const last = calls[calls.length - 1];
       return (last?.[1] as { metadata?: T } | undefined)?.metadata;
     }
@@ -714,9 +716,7 @@ describe('MaestroService.streamMessage', () => {
 
       await run(h);
 
-      const opened = h.addMessage.mock.calls.find(
-        (c) => c[1] === 'assistant',
-      );
+      const opened = h.addMessage.mock.calls.find((c) => c[1] === 'assistant');
       expect(opened?.[3]).toMatchObject({
         maestroTurn: { status: 'running' },
       });
@@ -836,6 +836,25 @@ describe('MaestroService.streamMessage', () => {
       expect(h.addMessage).not.toHaveBeenCalled();
     });
 
+    it('a viewer (GUEST) cannot start a Maestro turn, and nothing is saved', async () => {
+      const h = makeHarness([...textDeltas('should not run'), DONE_EVENT], {
+        role: 'viewer',
+      });
+
+      const events = await run(h);
+
+      expect(names(events)).toEqual(['error']);
+      expect(h.addMessage).not.toHaveBeenCalled();
+    });
+
+    it('a member can start a Maestro turn', async () => {
+      const h = makeHarness([...textDeltas('Hi'), DONE_EVENT]);
+
+      const events = await run(h);
+
+      expect(names(events)).not.toContain('error');
+    });
+
     it('refuses an approval once the caller has left the workspace, and runs nothing', async () => {
       const h = makeHarness([DONE_EVENT], {
         messages: [cardMessage()],
@@ -901,10 +920,10 @@ describe('MaestroService.streamMessage', () => {
         option: YES,
       });
 
-      const results = events.filter((e) => e.event === 'tool_result');
-      expect(JSON.stringify(results)).toContain('does not allow');
+      // A viewer is stopped at the turn gate (posts:draft), before the
+      // approval runs anything.
+      expect(names(events)).toEqual(['error']);
       expect(h.inbox.sendDm).not.toHaveBeenCalled();
-      expect(names(events)[names(events).length - 1]).toBe('done');
     });
 
     it('emits no second confirm card', async () => {

@@ -146,7 +146,7 @@ export class MaestroController {
     @Query('q') q?: string,
     @Query('type') type?: string,
   ) {
-    await this.access.assertCan(workspaceId, user.userId, 'posts:draft');
+    await this.access.assertCan(workspaceId, user.userId, 'posts:view');
     return this.mentions.search({
       workspaceId,
       userId: user.userId,

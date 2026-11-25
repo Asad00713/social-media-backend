@@ -2,6 +2,7 @@ import { NotFoundException } from '@nestjs/common';
 import type { AgentToolDefinition } from '../maestro.types';
 import { assembleMaestroTools } from './assemble';
 import { TOOL_ACCESS, gateTools } from './capability-gate';
+import { roleCan } from '../../workspace-members/role-capabilities';
 import { runTool } from './run-tool';
 
 const CTX = { userId: 'u1', workspaceId: 'ws1' };
@@ -52,9 +53,16 @@ function fakeAccess(allowed: string[]) {
   };
 }
 
-const VIEWER = ['posts:draft', 'inbox:view', 'analytics:view', 'team:view'];
+const VIEWER = [
+  'posts:view',
+  'posts:comment',
+  'inbox:view',
+  'analytics:view',
+  'team:view',
+];
 const MEMBER = [
   ...VIEWER,
+  'posts:draft',
   'posts:publish',
   'inbox:reply',
   'channels:manage',
@@ -127,6 +135,24 @@ describe('every Maestro tool is classified READ or WRITE', () => {
   });
 });
 
+describe('TOOL_ACCESS as a table', () => {
+  it('every entry is READ or a capability a viewer does not hold', () => {
+    for (const [name, cap] of Object.entries(TOOL_ACCESS)) {
+      if (cap === 'read') continue;
+      expect([name, roleCan('GUEST', cap)]).toEqual([name, false]);
+      expect([name, roleCan('MEMBER', cap)]).toEqual([name, true]);
+    }
+  });
+
+  it('no write tool is gated by a viewer capability', () => {
+    const viewerCaps = ['posts:view', 'posts:comment'];
+    const weak = Object.entries(TOOL_ACCESS).filter(([, c]) =>
+      viewerCaps.includes(c),
+    );
+    expect(weak).toEqual([]);
+  });
+});
+
 describe('gateTools', () => {
   const writes = Object.entries(TOOL_ACCESS).filter(([, c]) => c !== 'read');
 
@@ -136,11 +162,6 @@ describe('gateTools', () => {
       const access = fakeAccess(VIEWER);
       const tool = fakeTool(name);
       const [gated] = gateTools([tool], access);
-      if (cap === 'posts:draft') {
-        // A viewer may draft, so this one passes for them.
-        await expect(gated.handler({}, CTX)).resolves.toEqual({ ok: true });
-        return;
-      }
       await expect(gated.handler({ a: 1 }, CTX)).rejects.toThrow(
         /does not allow/,
       );
