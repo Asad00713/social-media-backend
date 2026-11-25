@@ -1,4 +1,5 @@
-import { and, eq, isNull, sql, type SQL } from 'drizzle-orm';
+import { and, eq, getTableName, isNull, sql, type SQL } from 'drizzle-orm';
+import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import type { DbType } from '../../drizzle/db';
 import { posts, workspace } from '../../drizzle/schema';
 
@@ -28,6 +29,31 @@ export function livePosts(): SQL {
 /** The same, for `workspace`. */
 export function liveWorkspaces(): SQL {
   return isNull(workspace.deletedAt);
+}
+
+/**
+ * The same, for a table that only points at a workspace: `<col> IN (live
+ * workspace ids)`.
+ *
+ * Membership and invitation rows survive their workspace's soft delete (the
+ * 30-day window exists so the whole workspace can be brought back intact), so
+ * a read of them that never asks the `workspace` table lists a workspace the
+ * owner deleted. Use `liveWorkspaces()` when the query is already on
+ * `workspace`; use this when it is on anything else.
+ *
+ * Names come from the `workspace` table object, so a rename follows - but as
+ * IDENTIFIERS, not column objects. Drizzle's relational query builder
+ * (`db.query.x.findMany({ where })`) rewrites every column object in a
+ * `where` to the ROOT table's alias; `liveWorkspaces()` or `workspace.id`
+ * interpolated here would render as `"workspaceInvitation"."deleted_at"`
+ * and fail at run time. Only `workspaceIdColumn`, which belongs to the root
+ * table, is meant to be re-aliased.
+ */
+export function inLiveWorkspace(workspaceIdColumn: AnyPgColumn): SQL {
+  const table = sql.identifier(getTableName(workspace));
+  const id = sql.identifier(workspace.id.name);
+  const deletedAt = sql.identifier(workspace.deletedAt.name);
+  return sql`${workspaceIdColumn} in (select ${table}.${id} from ${table} where ${table}.${deletedAt} is null)`;
 }
 
 /**

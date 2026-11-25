@@ -36,7 +36,10 @@ import { UsersService } from 'src/users/users.service';
 import { WorkspaceRoleService } from './workspace-role.service';
 import { normalizeEmail } from 'src/users/normalize-email';
 import { lockLiveAccount } from 'src/users/account-live';
-import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
+import {
+  inLiveWorkspace,
+  liveWorkspaces,
+} from '../posts/soft-delete/soft-delete';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -417,7 +420,9 @@ export class WorkspaceMembersService {
       },
     });
 
-    if (!invitation) {
+    // A deleted workspace's invitations read as gone: the row outlives the
+    // soft delete, and accepting it would join a workspace nobody can open.
+    if (!invitation || invitation.workspace?.deletedAt) {
       throw new NotFoundException('Invitation not found');
     }
 
@@ -808,6 +813,7 @@ export class WorkspaceMembersService {
       where: and(
         sql`lower(${workspaceInvitation.email}) = ${currentUser.email.toLowerCase()}`,
         eq(workspaceInvitation.status, 'PENDING'),
+        inLiveWorkspace(workspaceInvitation.workspaceId),
       ),
       with: {
         workspace: { columns: { id: true, name: true } },
