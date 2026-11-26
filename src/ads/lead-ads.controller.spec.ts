@@ -1,15 +1,23 @@
 /* eslint-disable @typescript-eslint/require-await -- db double */
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { fetch as undiciFetch } from 'undici';
 
-// The lead form always belongs to the workspace; writes are recorded.
+// The lead form always belongs to the workspace; writes are recorded. The
+// whole-row select is the form lookup; a select of fields is the stored
+// route's type (`storedType`, null for no such route).
+let storedType: string | null = 'webhook';
 const inserts: Record<string, unknown>[] = [];
 const updates: Record<string, unknown>[] = [];
 const mockDb = {
-  select: jest.fn(() => ({
+  select: jest.fn((fields?: object) => ({
     from: () => ({
       where: () => ({
-        limit: async () => [{ id: 'form-1', workspaceId: 'ws-1' }],
+        limit: async () =>
+          fields === undefined
+            ? [{ id: 'form-1', workspaceId: 'ws-1' }]
+            : storedType === null
+              ? []
+              : [{ type: storedType }],
       }),
     }),
   })),
@@ -63,6 +71,7 @@ async function refusal(p: Promise<unknown>): Promise<BadRequestException> {
 
 let controller: LeadAdsController;
 beforeEach(() => {
+  storedType = 'webhook';
   inserts.length = 0;
   updates.length = 0;
   mockedFetch.mockReset();
@@ -159,7 +168,7 @@ describe('LeadAdsController saving a webhook route', () => {
   it('stores an email route untouched', async () => {
     await controller.createRoute('ws-1', 'form-1', USER, {
       type: 'email',
-      config: { to: 'owner@example.com' },
+      config: { email: 'owner@example.com' },
     });
     expect(inserts).toHaveLength(1);
   });
@@ -182,5 +191,43 @@ describe('LeadAdsController saving a webhook route', () => {
       enabled: false,
     });
     expect(updates).toHaveLength(2);
+  });
+});
+
+describe('LeadAdsController updating a route config against its stored type', () => {
+  it.each([
+    ['email', { url: PUBLIC_URL }],
+    ['email', { email: 'not-an-email' }],
+    ['inbox', { url: PUBLIC_URL }],
+    ['webhook', { email: 'owner@example.com' }],
+    ['webhook', { url: PUBLIC_URL, extra: 1 }],
+  ])(
+    'refuses a %s route given %j, and writes nothing',
+    async (type, config) => {
+      storedType = type;
+      await refusal(
+        controller.updateRoute('ws-1', 'form-1', 'route-1', USER, { config }),
+      );
+      expect(updates).toEqual([]);
+      expect(mockedFetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it('updates an email route to a new address', async () => {
+    storedType = 'email';
+    await controller.updateRoute('ws-1', 'form-1', 'route-1', USER, {
+      config: { email: 'new@example.com' },
+    });
+    expect(updates).toEqual([{ config: { email: 'new@example.com' } }]);
+  });
+
+  it('404s a config change to a route that is not there', async () => {
+    storedType = null;
+    await expect(
+      controller.updateRoute('ws-1', 'form-1', 'route-x', USER, {
+        config: { url: PUBLIC_URL },
+      }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(updates).toEqual([]);
   });
 });

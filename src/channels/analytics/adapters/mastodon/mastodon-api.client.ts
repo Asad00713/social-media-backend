@@ -5,6 +5,13 @@ import {
 } from '../../../../common/net/public-fetch';
 import type { MastodonAccount, MastodonStatus } from './mastodon.types';
 
+/**
+ * A sync job's deadline per call: the server is user-named, and without one a
+ * stalled server holds the job for undici's 300 s defaults. The signal covers
+ * the body read as well as the headers.
+ */
+export const MASTODON_ANALYTICS_TIMEOUT_MS = 15_000;
+
 /** One HTTP request; injectable so tests can stub the network. */
 type FetchLike = (url: string, init?: PublicRequestInit) => Promise<Response>;
 
@@ -73,6 +80,7 @@ export class MastodonApiClient {
     try {
       res = await this.fetchImpl(url, {
         headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(MASTODON_ANALYTICS_TIMEOUT_MS),
       });
     } catch (err) {
       if (err instanceof UnsafeUrlError) {

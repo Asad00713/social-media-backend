@@ -1,3 +1,19 @@
+// renderPayload inlines images through the SSRF guard (undici): no test here
+// may make a real request, so both fetches are stubbed.
+jest.mock('undici', () => {
+  const actual = jest.requireActual<typeof import('undici')>('undici');
+  return {
+    ...actual,
+    fetch: jest.fn(() => Promise.reject(new Error('undici fetch was called'))),
+  };
+});
+beforeEach(() => {
+  jest
+    .spyOn(global, 'fetch')
+    .mockRejectedValue(new Error('unguarded global fetch was called'));
+});
+afterEach(() => jest.restoreAllMocks());
+
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';

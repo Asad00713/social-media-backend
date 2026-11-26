@@ -18,6 +18,12 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { db } from '../drizzle/db';
 import { leadRoutes, leadForms } from '../drizzle/schema';
+import {
+  assertRouteConfig,
+  CreateLeadRouteDto,
+  TestWebhookDto,
+  UpdateLeadRouteDto,
+} from './dto/lead-route.dto';
 import { signWebhookPayload } from './utils/hmac';
 import {
   assertWebhookUrl,
@@ -33,22 +39,6 @@ import { RequiresFeature } from '../billing/plan/requires-feature.decorator';
 interface AuthUser {
   userId: string;
   email: string;
-}
-
-interface CreateRouteBody {
-  type: 'inbox' | 'email' | 'webhook';
-  config: Record<string, unknown>;
-  enabled?: boolean;
-}
-
-interface UpdateRouteBody {
-  enabled?: boolean;
-  config?: Record<string, unknown>;
-}
-
-interface TestWebhookBody {
-  url: string;
-  secret?: string;
 }
 
 @Controller('ads/workspaces/:wid')
@@ -106,7 +96,7 @@ export class LeadAdsController {
     @Param('wid') wid: string,
     @Param('formId') formId: string,
     @CurrentUser() _user: AuthUser,
-    @Body() body: CreateRouteBody,
+    @Body() body: CreateLeadRouteDto,
   ) {
     await this.resolveForm(wid, formId);
     if (body.type === 'webhook' || body.config?.url !== undefined) {
@@ -138,11 +128,21 @@ export class LeadAdsController {
     @Param('formId') formId: string,
     @Param('id') id: string,
     @CurrentUser() _user: AuthUser,
-    @Body() body: UpdateRouteBody,
+    @Body() body: UpdateLeadRouteDto,
   ) {
     await this.resolveForm(wid, formId);
-    if (body.config?.url !== undefined) {
-      await assertWebhookUrl(body.config.url);
+    if (body.config !== undefined) {
+      // The body carries no type: the config must fit the stored route's.
+      const [route] = await db
+        .select({ type: leadRoutes.type })
+        .from(leadRoutes)
+        .where(and(eq(leadRoutes.id, id), eq(leadRoutes.leadFormId, formId)))
+        .limit(1);
+      if (!route) throw new NotFoundException('Route not found');
+      await assertRouteConfig(route.type, body.config);
+      if (route.type === 'webhook') {
+        await assertWebhookUrl(body.config.url);
+      }
     }
 
     // Build update payload — only include fields that were provided
@@ -203,7 +203,7 @@ export class LeadAdsController {
     @Param('wid') wid: string,
     @Param('formId') formId: string,
     @CurrentUser() _user: AuthUser,
-    @Body() body: TestWebhookBody,
+    @Body() body: TestWebhookDto,
   ) {
     await this.resolveForm(wid, formId);
     await assertWebhookUrl(body.url);
