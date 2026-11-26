@@ -26,6 +26,7 @@ import {
   GotenbergError,
   pdfFailureMessage,
 } from './gotenberg.client';
+import { inlineReportMedia } from './lib/inline-report-media';
 import { nextRunAt, sendNowJobId } from './lib/next-run';
 import {
   normalizeSettings,
@@ -347,7 +348,10 @@ export class ReportsService {
 
   /**
    * The payload behind a short-lived render token, which the PDF job opens
-   * the print page with. It works while the share link is off.
+   * the print page with. It works while the share link is off. Gotenberg's
+   * Chromium loads it from inside our network, so its images (logo, post
+   * thumbnails) are inlined as data: URIs through the SSRF guard: Chromium
+   * is never handed a user-supplied image URL.
    */
   async renderPayload(
     token: string,
@@ -356,7 +360,7 @@ export class ReportsService {
     const reportId = this.tokens.verifyRender(token);
     const record = reportId ? await this.repo.getById(reportId) : null;
     if (!record) throw new NotFoundException(LINK_OFF);
-    return this.payloadOf(record.row, now);
+    return inlineReportMedia(await this.payloadOf(record.row, now));
   }
 
   /** For the unsubscribe GET: reads only. Null for a bad token or a deleted report. */
