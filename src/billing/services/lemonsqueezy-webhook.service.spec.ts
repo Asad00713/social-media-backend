@@ -75,6 +75,24 @@ function camel(sqlName: string): string {
   return sqlName.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
 }
 
+/** The order comparisons `predicateFrom` understands. */
+type Ordering = '>' | '>=' | '<' | '<=';
+
+/**
+ * A value an order comparison can use. Dates and the ISO strings drizzle
+ * binds for a timestamp column both become epoch milliseconds, so a Date in a
+ * seed row compares correctly against the string the query bound.
+ */
+function scalarOf(value: unknown): number | string | null {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') {
+    const asDate = Date.parse(value);
+    return Number.isNaN(asDate) ? value : asDate;
+  }
+  return null;
+}
+
 /** Depth-first flatten of drizzle's nested `queryChunks`. */
 function flatten(chunks: unknown[], out: unknown[] = []): unknown[] {
   for (const chunk of chunks) {
@@ -98,6 +116,8 @@ function predicateFrom(condition: unknown): Predicate {
     value: unknown;
     nullCheck?: 'is' | 'not';
     oneOf?: unknown[];
+    /** `gt`/`gte`/`lt`/`lte`: compare by order, not equality. */
+    compare?: { op: Ordering; bound: unknown };
   }[] = [];
   for (let i = 0; i < chunks.length; i++) {
     const chunk: any = chunks[i];
@@ -119,17 +139,52 @@ function predicateFrom(condition: unknown): Predicate {
         continue;
       }
 
-      // `inArray(col, [a, b])` binds ONE Param holding the whole array.
+      // `inArray(col, [a, b])` serialises its list as a raw ARRAY OF PARAMS
+      // in the chunk stream — not as one Param whose value is the array, the
+      // way `eq` binds a single value. Reading `.value` off the array itself
+      // yields `undefined`, so `oneOf` became `[undefined]` and the clause
+      // matched nothing: every `inArray` query silently returned no rows.
+      // The three callers that had one were all DELETEs and UPDATEs whose
+      // "no rows matched" nothing asserted, which is why it went unnoticed.
       if (opText.includes(' in ')) {
-        const listParam = chunks[i + 2] as any;
-        const list =
-          listParam && typeof listParam === 'object' && 'value' in listParam
-            ? listParam.value
-            : listParam;
+        const bound = chunks[i + 2];
+        const list = Array.isArray(bound) ? bound : [bound];
         pairs.push({
           column: camel(chunk.name),
           value: null,
-          oneOf: Array.isArray(list) ? list : [list],
+          oneOf: list.map((entry) =>
+            entry && typeof entry === 'object' && 'value' in entry
+              ? (entry as any).value
+              : entry,
+          ),
+        });
+        i += 2;
+        continue;
+      }
+
+      // `gt`/`gte`/`lt`/`lte` bind a value like `eq` but compare by ORDER, and
+      // the operator text of `<=` and `>=` CONTAINS '=' — so without this
+      // branch the equality check below would swallow them and match only an
+      // exact hit. A date window built from `gt`/`lte` would then select
+      // nothing, and widening it would be untestable.
+      //
+      // Drizzle maps a timestamp column's bound value through its own
+      // serialiser, so the Param here holds an ISO STRING even though the
+      // caller passed a Date. Both sides are coerced to a number before
+      // comparing.
+      const ordering = [' >= ', ' <= ', ' > ', ' < '].find((o) =>
+        opText.includes(o),
+      );
+      if (ordering) {
+        const param = chunks[i + 2] as any;
+        const bound =
+          param && typeof param === 'object' && 'value' in param
+            ? param.value
+            : param;
+        pairs.push({
+          column: camel(chunk.name),
+          value: null,
+          compare: { op: ordering.trim() as Ordering, bound },
         });
         i += 2;
         continue;
@@ -161,6 +216,25 @@ function predicateFrom(condition: unknown): Predicate {
       // column counts as NULL — the same as a fresh row in Postgres.
       if (p.nullCheck === 'is') return actual === null || actual === undefined;
       if (p.nullCheck === 'not') return actual !== null && actual !== undefined;
+
+      // An order comparison. A missing column is NULL in Postgres and NULL
+      // compares to nothing, so an absent value matches neither bound.
+      if (p.compare) {
+        if (actual === null || actual === undefined) return false;
+        const left = scalarOf(actual);
+        const right = scalarOf(p.compare.bound);
+        if (left === null || right === null) return false;
+        switch (p.compare.op) {
+          case '>':
+            return left > right;
+          case '>=':
+            return left >= right;
+          case '<':
+            return left < right;
+          default:
+            return left <= right;
+        }
+      }
 
       if (p.oneOf) return p.oneOf.some((v) => v === actual);
 

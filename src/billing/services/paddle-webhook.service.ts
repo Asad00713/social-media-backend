@@ -436,6 +436,22 @@ export class PaddleWebhookService {
     };
     const periodEnd = dateOf(sub.next_billed_at);
     if (periodEnd) subPatch.currentPeriodEnd = periodEnd;
+
+    // The trial end, which `TrialEndingCron` is the only reader of.
+    //
+    // It filters on `subscriptions.trial_end` (`> now` and `<= now + 3
+    // days`), so a Paddle subscription that never records one is invisible to
+    // the sweep: no warning mail, then a charge. Nothing wrote this column on
+    // the Paddle path at all until 2026-11-26.
+    //
+    // Written the same way as `currentPeriodEnd` just above — only when the
+    // event actually carries a date. Paddle sends `trial_dates: null` on
+    // every item once a trial is over, and `subscription.updated` fires for
+    // reasons of its own, so clearing the column on an event that merely
+    // omits it would erase the date before the sweep next ran: the same
+    // outage by a different route.
+    const trialEnd = trialEndOf(sub);
+    if (trialEnd) subPatch.trialEnd = trialEnd;
     if (terminal) {
       subPatch.planCode = 'FREE';
       subPatch.cancelAtPeriodEnd = false;
@@ -760,6 +776,31 @@ function intOf(value: string | null | undefined): number | null {
   if (!value) return null;
   const n = Number.parseInt(value, 10);
   return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * The latest trial end across a Paddle subscription's items.
+ *
+ * Paddle carries trial dates PER ITEM (`items[].trial_dates.ends_at`), with
+ * no top-level field, and an item without a trial has `trial_dates: null`.
+ * The base plan is not guaranteed to be `items[0]` — an add-on bought during
+ * the trial can come first — so every item is scanned rather than trusting
+ * position the way the price and quantity reads above do. Those two are a
+ * best-effort refresh of a column; this one decides whether a customer is
+ * warned before being charged, so the cost of reading the wrong item is not
+ * the same.
+ *
+ * The LATEST end is taken when more than one item carries a trial: the
+ * account is still trialling until the last of them expires, and warning on
+ * the earliest would send the mail while the trial still has days to run.
+ */
+function trialEndOf(sub: PaddleSubscription): Date | null {
+  let latest: Date | null = null;
+  for (const item of sub.items ?? []) {
+    const ends = dateOf(item.trial_dates?.ends_at);
+    if (ends && (!latest || ends.getTime() > latest.getTime())) latest = ends;
+  }
+  return latest;
 }
 
 function dateOf(value: string | null | undefined): Date | null {
