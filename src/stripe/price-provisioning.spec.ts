@@ -17,14 +17,33 @@ describe('lookup key helpers', () => {
     expect(addonLookupKey('PRO', 'EXTRA_CHANNEL')).toBe(
       'addon_extra_channel_pro',
     );
-    expect(addonLookupKey('MAX', 'AI_TOKENS')).toBe('addon_ai_tokens_max');
+    // `EXTRA_AI_TOKENS`, not `AI_TOKENS`. The bare form is an OBSOLETE addon
+    // type: `plans.seed.ts` says "older seeds used 'AI_TOKENS'; the canonical
+    // addon type is EXTRA_AI_TOKENS" and deletes any `addon_pricing` row still
+    // carrying it, and `EXTRA_AI_TOKENS` is what the schema enum lists.
+    //
+    // This assertion passed anyway, because the key is just a lowercased
+    // join — so it never revealed that it was describing a type the product
+    // no longer has. Its sibling below did reveal it.
+    expect(addonLookupKey('MAX', 'EXTRA_AI_TOKENS')).toBe(
+      'addon_extra_ai_tokens_max',
+    );
   });
 
   it('produces human display names for all addon types', () => {
     expect(addonDisplayName('EXTRA_CHANNEL', 'PRO')).toBe(
       'Extra Channel (PRO)',
     );
-    expect(addonDisplayName('AI_TOKENS', 'MAX')).toBe('AI Tokens (MAX)');
+    // Was `addonDisplayName('AI_TOKENS', 'MAX')` expecting 'AI Tokens (MAX)'.
+    // `ADDON_DISPLAY_NAMES` is keyed on the canonical `EXTRA_AI_TOKENS`, so the
+    // obsolete name missed the map and fell through to the raw-code fallback —
+    // 'AI_TOKENS (MAX)'. The CODE was right; the test was asserting a product
+    // concept that had been renamed out from under it.
+    expect(addonDisplayName('EXTRA_AI_TOKENS', 'MAX')).toBe(
+      'Extra AI Tokens (MAX)',
+    );
+    // The fallback itself still matters: an addon type with no display name
+    // must render as its code rather than as `undefined (PRO)`.
     expect(addonDisplayName('UNKNOWN_X', 'PRO')).toBe('UNKNOWN_X (PRO)');
   });
 });
