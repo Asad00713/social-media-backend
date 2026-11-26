@@ -50,34 +50,23 @@ export class ConversationService {
   }
 
   /**
-   * A workspace's conversations, scoped to what the caller may see.
+   * The caller's own conversations in a workspace. There is no wider scope:
+   * nobody reads another member's chats through this service.
    *
-   * `scope: 'workspace'` widens this to every member's conversations, for an
-   * owner or admin who is accountable for what the agent is being asked to do.
-   * The CALLER decides that, having checked the capability — this method does
-   * not re-derive permission from a role handed to it, because a service that
-   * both grants and enforces its own access is one refactor away from granting
-   * too much.
-   *
-   * Every row carries who held the conversation, in both scopes. A widened
-   * list without it is a pile of titles with no way to tell whose work is
-   * whose; and sending the field only sometimes would leave the frontend
-   * guessing which shape it got.
+   * Every row carries who held the conversation, so the shape is the same
+   * wherever the list is shown.
    */
   async list(
     userId: string,
     workspaceId: string,
-    opts: { limit?: number; offset?: number; scope?: 'own' | 'workspace' } = {},
+    opts: { limit?: number; offset?: number } = {},
   ) {
-    const { limit = 20, offset = 0, scope = 'own' } = opts;
+    const { limit = 20, offset = 0 } = opts;
     const results = await this.db.query.conversations.findMany({
-      where:
-        scope === 'workspace'
-          ? eq(conversations.workspaceId, workspaceId)
-          : and(
-              eq(conversations.userId, userId),
-              eq(conversations.workspaceId, workspaceId),
-            ),
+      where: and(
+        eq(conversations.userId, userId),
+        eq(conversations.workspaceId, workspaceId),
+      ),
       orderBy: [desc(conversations.isPinned), desc(conversations.updatedAt)],
       limit,
       offset,

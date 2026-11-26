@@ -1126,7 +1126,7 @@ async function bulkItemsAs(
 }
 
 describeLibraryDb('items bulk: permanentDelete needs posts:publish', () => {
-  it('a posts:draft-only member is denied like any capability failure', async () => {
+  it('a Viewer is denied by the route capability, for a purge and for a star alike', async () => {
     await withLibraryDb(async (db, client) => {
       const { workspaceId, ownerId } = await seedWorkspace(client);
       const guestId = await seedMember(client, workspaceId, 'GUEST');
@@ -1156,10 +1156,17 @@ describeLibraryDb('items bulk: permanentDelete needs posts:publish', () => {
       );
       expect(still.rowCount).toBe(1);
 
-      // A guest may still star; a member (posts:publish) may purge.
+      // No role holds posts:draft without posts:publish any more: the route
+      // capability refuses a Viewer for every bulk action, a star included.
+      // A Member (posts:draft and posts:publish) may do both.
       const [live] = await seedManyItems(client, workspaceId, ownerId, 1);
       const star = await toDto(BulkActionDto, { ids: [live], action: 'star' });
-      expect(await bulkItemsAs(db, workspaceId, guestId, star)).toEqual({
+      await expect(bulkItemsAs(db, workspaceId, guestId, star)).rejects.toThrow(
+        new ForbiddenException(
+          'You do not have permission to perform this action in this workspace',
+        ),
+      );
+      expect(await bulkItemsAs(db, workspaceId, memberId, star)).toEqual({
         affectedCount: 1,
       });
       expect(await bulkItemsAs(db, workspaceId, memberId, purge)).toEqual({

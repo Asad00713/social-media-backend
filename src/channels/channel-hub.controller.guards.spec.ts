@@ -20,7 +20,7 @@ const EXPECTED: Record<
   string,
   { cap: Capability; method: string; path: string }
 > = {
-  summary: { cap: 'posts:draft', method: 'GET', path: 'summary' },
+  summary: { cap: 'posts:view', method: 'GET', path: 'summary' },
   pause: { cap: 'channels:manage', method: 'POST', path: ':channelId/pause' },
   resume: {
     cap: 'channels:manage',

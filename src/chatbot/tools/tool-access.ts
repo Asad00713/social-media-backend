@@ -1,15 +1,19 @@
 import { NotFoundException } from '@nestjs/common';
 import type { Capability } from '../../workspace-members/role-capabilities';
 import type { WorkspaceAccessService } from '../../workspace-members/workspace-access.service';
-import type { CallerRole } from '../../posts/guest-rules';
+import type { CallerRole } from '../../workspace-members/caller-role';
 import type { ToolContext } from './tool.interface';
+
+/** What a member whose role is too low is told when the assistant refuses. */
+export const CHATBOT_ROLE_REFUSAL =
+  'Your role in this workspace does not allow this action. Ask a workspace admin to change your role.';
 
 /**
  * Run a WRITE tool's workspace check and hand back the caller's role.
  *
- * The role is what PostService needs to apply the Guest rules (a Viewer cannot
- * schedule, nor touch someone else's post), so the tool passes it on instead of
- * leaving the service to treat the call as an internal one.
+ * The role is handed on to the service, which no longer branches on it: the
+ * capability check here is the whole gate (a Viewer has no posts:draft, so
+ * they never get this far).
  *
  * Throws a plain Error with a readable message: every chatbot tool wraps its
  * body in try/catch and returns `{ success: false, error }`, so the model sees
@@ -29,9 +33,7 @@ export async function assertToolAccess(
     );
   } catch (err) {
     if (err instanceof NotFoundException) {
-      throw new Error(
-        'Your role in this workspace does not allow this action. Ask a workspace admin to change your role.',
-      );
+      throw new Error(CHATBOT_ROLE_REFUSAL);
     }
     throw err;
   }

@@ -95,10 +95,10 @@ describe('ChannelPageController guards', () => {
   >;
 
   it.each(['getPage', 'listPosts'])(
-    '%s needs posts:draft behind both guards',
+    '%s needs posts:view behind both guards',
     (handler) => {
       expect(Reflect.getMetadata(REQUIRE_CAPABILITY, proto[handler])).toBe(
-        'posts:draft',
+        'posts:view',
       );
       const guards = Reflect.getMetadata(
         '__guards__',

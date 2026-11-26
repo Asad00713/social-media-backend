@@ -49,7 +49,7 @@ export class ChannelHubController {
   ) {}
 
   /** Every card's numbers in one request. Anyone who can see the channels. */
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('summary')
   async summary(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,

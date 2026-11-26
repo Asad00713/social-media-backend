@@ -622,8 +622,8 @@ export class ComposerSchedulingService {
       );
     }
 
-    // The rows. New siblings belong to whoever owns the draft, so a Viewer
-    // who wrote it still owns every part of it.
+    // The rows. New siblings belong to whoever owns the draft, so its author
+    // still owns every part of it.
     for (const sibling of siblings) {
       const row = {
         content: dto.base.text,

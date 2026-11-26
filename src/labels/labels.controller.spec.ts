@@ -10,7 +10,7 @@ import { LabelsController } from './labels.controller';
 // §5.9). A route missing from this table, or carrying a different
 // capability, fails the spec. Handler names are the ones Task 22 asserts.
 const EXPECTED: Record<string, Capability> = {
-  list: 'posts:draft',
+  list: 'posts:view',
   create: 'labels:manage',
   update: 'labels:manage',
   merge: 'labels:manage',

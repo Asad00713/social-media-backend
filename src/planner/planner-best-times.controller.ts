@@ -17,7 +17,7 @@ import { BestTimesService } from './services/best-times.service';
 export class PlannerBestTimesController {
   constructor(private readonly bestTimes: BestTimesService) {}
 
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get()
   async get(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,

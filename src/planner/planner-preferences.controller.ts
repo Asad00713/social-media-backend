@@ -16,16 +16,17 @@ import type { PlannerPrefs } from './lib/planner-prefs';
 import { PlannerPreferencesService } from './services/planner-preferences.service';
 
 /**
- * Personal view settings: every role that can see the Planner (`posts:draft`,
- * so Guests too) reads and writes its own row. The row is chosen by the JWT
- * user, never by anything in the request body.
+ * Personal view settings: every role that can see the Planner (`posts:view`,
+ * so Guests too) reads and writes its own row. The write stays at `posts:view`
+ * because it changes nothing shared. The row is chosen by the JWT user, never
+ * by anything in the request body.
  */
 @Controller('planner/workspaces/:workspaceId/preferences')
 @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
 export class PlannerPreferencesController {
   constructor(private readonly preferences: PlannerPreferencesService) {}
 
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get()
   async get(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
@@ -35,7 +36,7 @@ export class PlannerPreferencesController {
   }
 
   /** Merges the patch (the View menu writes one key at a time). */
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Put()
   async update(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,

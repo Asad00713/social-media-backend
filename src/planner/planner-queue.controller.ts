@@ -30,7 +30,7 @@ const MAX_CHANNELS = 50;
 export class PlannerQueueController {
   constructor(private readonly queue: QueueSlotsService) {}
 
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get()
   async get(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,

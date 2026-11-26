@@ -34,6 +34,9 @@ import { SendDmTemplateDto } from './dto/send-dm-template.dto';
 import { toSendOptions } from './dto/send-options.dto';
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
+import { CurrentWorkspaceRole } from '../workspace-members/current-workspace-role.decorator';
+import type { WorkspaceRole } from '../workspace-members/role-capabilities';
+import { mayChangeReadState } from './read-state-access';
 import { PlanFeatureGuard } from '../billing/plan/plan-feature.guard';
 import { RequiresFeature } from '../billing/plan/requires-feature.decorator';
 
@@ -230,7 +233,11 @@ export class InboxController {
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Param('threadKey') threadKey: string,
     @CurrentUser() user: AuthUser,
+    @CurrentWorkspaceRole() role?: WorkspaceRole | 'SUPER_ADMIN',
   ) {
+    // Read state is shared, so a role that cannot reply opens the thread
+    // without clearing it for the team.
+    if (!mayChangeReadState(role)) return { updatedCount: 0 };
     return this.inboxService.markThreadRead(
       workspaceId,
       user.userId,
@@ -370,7 +377,9 @@ export class InboxController {
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Param('threadKey') threadKey: string,
     @CurrentUser() user: AuthUser,
+    @CurrentWorkspaceRole() role?: WorkspaceRole | 'SUPER_ADMIN',
   ) {
+    if (!mayChangeReadState(role)) return { updatedCount: 0 };
     return this.inboxService.markDmConversationRead(
       workspaceId,
       user.userId,

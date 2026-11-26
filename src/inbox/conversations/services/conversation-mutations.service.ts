@@ -135,6 +135,19 @@ export class ConversationMutationsService {
     return { row: await this.rowOf(workspaceId, conversationId) };
   }
 
+  /**
+   * The row as it stands, with nothing written. What a role that cannot reply
+   * gets back from the read route. Same 404 as markRead for a missing or
+   * foreign conversation.
+   */
+  async peekRow(
+    workspaceId: string,
+    conversationId: string,
+  ): Promise<ConversationRow> {
+    await this.requireConversation(workspaceId, conversationId);
+    return await this.rowOf(workspaceId, conversationId);
+  }
+
   async markUnread(
     workspaceId: string,
     conversationId: string,

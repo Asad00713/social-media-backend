@@ -1,5 +1,4 @@
 /* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return, @typescript-eslint/require-await -- test doubles are loosely typed */
-import { ForbiddenException } from '@nestjs/common';
 import { DraftStoreService } from './draft-store.service';
 
 const WS = 'w1';
@@ -56,71 +55,34 @@ const row = (over: any = {}) => ({
   ...over,
 });
 
-describe('DraftStoreService.upsert Guest rules', () => {
-  it('refuses a draft someone else created, and writes nothing', async () => {
-    const { db, calls } = fakeDb([row({ createdById: 'other' })]);
-    await expect(
-      new DraftStoreService(db).upsert(WS, 'u1', dto, 'GUEST'),
-    ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(calls.updated).toBe(0);
-  });
-
-  it.each(['scheduled', 'published', 'failed'])(
-    'refuses a row whose status is %s',
-    async (status) => {
-      const { db, calls } = fakeDb([row({ status })]);
-      await expect(
-        new DraftStoreService(db).upsert(WS, 'u1', dto, 'GUEST'),
-      ).rejects.toBeInstanceOf(ForbiddenException);
-      expect(calls.updated).toBe(0);
-    },
-  );
-
-  it('allows editing their own draft', async () => {
-    const { db, calls } = fakeDb([row()]);
-    await new DraftStoreService(db).upsert(WS, 'u1', dto, 'GUEST');
+describe("DraftStoreService: members and other people's drafts", () => {
+  it('a MEMBER saves over a draft a former Viewer wrote', async () => {
+    const { db, calls } = fakeDb([row({ createdById: 'former-viewer' })]);
+    await new DraftStoreService(db).upsert(WS, 'u1', dto, 'MEMBER');
     expect(calls.updated).toBe(1);
   });
 
-  it('allows creating a new draft', async () => {
-    const { db, calls } = fakeDb([]);
-    await new DraftStoreService(db).upsert(WS, 'u1', dto, 'GUEST');
-    expect(calls.inserted).toBe(1);
-  });
-
-  it('a MEMBER still overwrites a colleague row, as today', async () => {
+  it('a MEMBER still overwrites a colleague row', async () => {
     const { db, calls } = fakeDb([
       row({ createdById: 'other', status: 'scheduled' }),
     ]);
     await new DraftStoreService(db).upsert(WS, 'u1', dto, 'MEMBER');
     expect(calls.updated).toBe(1);
   });
-});
 
-describe('DraftStoreService.delete Guest rules', () => {
-  it("refuses someone else's draft", async () => {
-    const { db, calls } = fakeDb([row({ createdById: 'other' })]);
-    await expect(
-      new DraftStoreService(db).delete(WS, 'd1', 'u1', 'GUEST'),
-    ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(calls.deleted).toBe(0);
+  it('a MEMBER creates a new draft', async () => {
+    const { db, calls } = fakeDb([]);
+    await new DraftStoreService(db).upsert(WS, 'u1', dto, 'MEMBER');
+    expect(calls.inserted).toBe(1);
   });
 
-  it('refuses a non-draft', async () => {
-    const { db, calls } = fakeDb([row({ status: 'scheduled' })]);
-    await expect(
-      new DraftStoreService(db).delete(WS, 'd1', 'u1', 'GUEST'),
-    ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(calls.deleted).toBe(0);
-  });
-
-  it('allows deleting their own draft', async () => {
-    const { db, calls } = fakeDb([row()]);
-    await new DraftStoreService(db).delete(WS, 'd1', 'u1', 'GUEST');
+  it('a MEMBER deletes a draft a former Viewer wrote', async () => {
+    const { db, calls } = fakeDb([row({ createdById: 'former-viewer' })]);
+    await new DraftStoreService(db).delete(WS, 'd1', 'u1', 'MEMBER');
     expect(calls.deleted).toBe(1);
   });
 
-  it('a MEMBER can delete any row, as today', async () => {
+  it('a MEMBER can delete any row', async () => {
     const { db, calls } = fakeDb([
       row({ createdById: 'other', status: 'scheduled' }),
     ]);

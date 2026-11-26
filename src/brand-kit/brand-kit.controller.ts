@@ -9,7 +9,7 @@ import {
 } from '@nestjs/common';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import type { CallerRole } from '../posts/guest-rules';
+import type { CallerRole } from '../workspace-members/caller-role';
 import { CurrentWorkspaceRole } from '../workspace-members/current-workspace-role.decorator';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
@@ -17,7 +17,7 @@ import { BrandKitService } from './brand-kit.service';
 import { UpdateBrandKitDto, type BrandKitDto } from './dto/brand-kit.dto';
 
 /**
- * The workspace brand kit. Anyone who can draft reads it (the photo editor
+ * The workspace brand kit. Anyone who can view posts reads it (the photo editor
  * offers its colours, logo and presets); ADMIN and OWNER change it.
  */
 @Controller('brand-kit/workspaces/:workspaceId')
@@ -25,7 +25,7 @@ import { UpdateBrandKitDto, type BrandKitDto } from './dto/brand-kit.dto';
 export class BrandKitController {
   constructor(private readonly brandKit: BrandKitService) {}
 
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get()
   async get(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,

@@ -58,9 +58,14 @@ describe('channel analytics routes require workspace membership', () => {
     [AnalyticsController, 'getSyncState'],
     [AnalyticsController, 'getDemographics'],
     [AnalyticsController, 'getTrafficSources'],
-    [ChannelRefreshController, 'refresh'],
   ] as const)('%p.%s requires analytics:view', (controller, method) => {
     expect(capabilityOf(controller, method)).toBe('analytics:view');
+  });
+
+  it('ChannelRefreshController.refresh requires channels:manage', () => {
+    expect(capabilityOf(ChannelRefreshController, 'refresh')).toBe(
+      'channels:manage',
+    );
   });
 });
 
@@ -137,6 +142,22 @@ describe('channel analytics over HTTP', () => {
         .expect(403);
       expect(analytics.requestManualRefresh).not.toHaveBeenCalled();
     });
+  });
+
+  it('cannot spend the refresh quota as a GUEST', async () => {
+    roles.getRole.mockResolvedValue('GUEST');
+    await request(app.getHttpServer())
+      .post(`/channels/workspaces/${WS}/${CHANNEL}/refresh`)
+      .expect(403);
+    expect(analytics.requestManualRefresh).not.toHaveBeenCalled();
+  });
+
+  it('lets a MEMBER refresh', async () => {
+    roles.getRole.mockResolvedValue('MEMBER');
+    await request(app.getHttpServer())
+      .post(`/channels/workspaces/${WS}/${CHANNEL}/refresh`)
+      .expect(201);
+    expect(analytics.requestManualRefresh).toHaveBeenCalledWith(CHANNEL, WS);
   });
 
   it('lets a guest, the lowest role, read the overview', async () => {

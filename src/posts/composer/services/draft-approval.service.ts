@@ -31,7 +31,7 @@ import { NotifyService } from '../../../notifications/notify.service';
 import { RecipientsService } from '../../../notifications/recipients.service';
 import { assertRoleCan } from '../../../workspace-members/workspace-role.guard';
 import { roleCan } from '../../../workspace-members/role-capabilities';
-import type { CallerRole } from '../../guest-rules';
+import type { CallerRole } from '../../../workspace-members/caller-role';
 import {
   ALLOW_SELF_APPROVAL,
   APPROVE_CAPABILITY,
@@ -66,12 +66,18 @@ export interface DraftApprovalView {
   canApprove: boolean;
   /** The caller may switch the requirement off. */
   canTurnOff: boolean;
+  /**
+   * The caller may switch the requirement on: the draft's author or an
+   * approver. The same rule setRequired enforces when it would write.
+   */
+  canRequest: boolean;
 }
 
 type ApprovalRow = Pick<
   typeof posts.$inferSelect,
   | 'id'
   | 'status'
+  | 'createdById'
   | 'content'
   | 'mediaItems'
   | 'platformContent'
@@ -118,6 +124,17 @@ interface PostCardFacts {
   campaignName: string | null;
 }
 
+/**
+ * Who may switch approval on for a draft: its author or an approver. One rule
+ * for the write (setRequired) and for the view's `canRequest`, so the two
+ * cannot drift.
+ */
+const mayRequestApproval = (
+  row: Pick<ApprovalRow, 'createdById'>,
+  userId: string,
+  role: CallerRole,
+): boolean => row.createdById === userId || may(role, APPROVE_CAPABILITY);
+
 const may = (role: CallerRole, cap: typeof APPROVE_CAPABILITY): boolean =>
   role === 'SUPER_ADMIN' || (role !== undefined && roleCan(role, cap));
 
@@ -154,12 +171,12 @@ export class DraftApprovalService {
   }
 
   /**
-   * Switch the requirement on (any member who may draft) or off (approvers
-   * only: otherwise the person waiting for approval could simply turn it off
-   * and schedule). Turning it on again after it was on is a no-op, except for
-   * a request the workspace approval policy wrote, which tells the approvers
-   * the first time. A policy request cannot be switched off while the policy
-   * still covers its author.
+   * Switch the requirement on (the draft's author or an approver) or off
+   * (approvers only: otherwise the person waiting for approval could simply
+   * turn it off and schedule). Turning it on again after it was on is a
+   * no-op, except for a request the workspace approval policy wrote, which
+   * tells the approvers the first time. A policy request cannot be switched
+   * off while the policy still covers its author.
    */
   async setRequired(
     workspaceId: string,
@@ -178,10 +195,23 @@ export class DraftApprovalService {
     const current = readApproval(row.metadata);
 
     if (required) {
+      // Asking is not drafting: it is a request to the team's approvers, so
+      // it comes from the draft's author or from an approver, not from any
+      // member who can see the draft. Only a call that would write is gated:
+      // when approval is already on and nothing would change, anyone who
+      // reaches this route (posts:draft) gets the current view back.
+      const policyNotSentYet =
+        !!current?.byPolicy && !current.notifiedAt && !current.approvedAt;
+      const wouldWrite = !current || policyNotSentYet;
+      if (wouldWrite && !mayRequestApproval(row, userId, role)) {
+        throw new ForbiddenException(
+          'Only the author or an approver can ask for approval on this draft.',
+        );
+      }
       // A request the policy wrote silently on the first save: sending it
       // for approval tells the approvers, once. Not once it is approved
       // (an approver can approve before the author sends it).
-      if (current?.byPolicy && !current.notifiedAt && !current.approvedAt) {
+      if (current && policyNotSentYet) {
         const stamped = await this.stampNotified(workspaceId, postId, userId);
         if (stamped) {
           // Not awaited, like below. The author is the requester.
@@ -336,6 +366,7 @@ export class DraftApprovalService {
       .select({
         id: posts.id,
         status: posts.status,
+        createdById: posts.createdById,
         content: posts.content,
         mediaItems: posts.mediaItems,
         platformContent: posts.platformContent,
@@ -479,6 +510,8 @@ export class DraftApprovalService {
         approvedAt: null,
         canApprove: false,
         canTurnOff,
+        // Nothing saved yet: whoever saves it is its author.
+        canRequest: !row || mayRequestApproval(row, userId, role),
       };
     }
     const state = approvalState(approval, contentFingerprint(row));
@@ -504,6 +537,7 @@ export class DraftApprovalService {
         may(role, APPROVE_CAPABILITY) &&
         (ALLOW_SELF_APPROVAL || approval.requestedById !== userId),
       canTurnOff,
+      canRequest: mayRequestApproval(row, userId, role),
     };
   }
 

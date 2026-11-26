@@ -15,7 +15,7 @@ import {
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { CurrentWorkspaceRole } from '../../workspace-members/current-workspace-role.decorator';
-import type { CallerRole } from '../guest-rules';
+import type { CallerRole } from '../../workspace-members/caller-role';
 import { WorkspaceRoleGuard } from '../../workspace-members/workspace-role.guard';
 import { RequireCapability } from '../../workspace-members/require-capability.decorator';
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
@@ -62,7 +62,7 @@ export class ComposerController {
     return this.drafts.upsert(wsId, user.userId, dto, role);
   }
 
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('drafts')
   async listDrafts(
     @Param('wsId') wsId: string,
@@ -72,7 +72,7 @@ export class ComposerController {
     return this.drafts.listDrafts(wsId, limit);
   }
 
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('drafts/:draftId')
   async getDraft(
     @Param('wsId') wsId: string,
@@ -82,7 +82,7 @@ export class ComposerController {
   }
 
   /** Saved versions of a post, newest first (at most 50). */
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('drafts/:draftId/versions')
   async listVersions(
     @Param('wsId') wsId: string,
@@ -111,7 +111,7 @@ export class ComposerController {
   }
 
   /** "Needs approval": the draft's approval state, for the caller. */
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('drafts/:draftId/approval')
   async getApproval(
     @Param('wsId', ParseUUIDPipe) wsId: string,
@@ -123,8 +123,8 @@ export class ComposerController {
   }
 
   /**
-   * Switch "Needs approval" on (anyone who may draft; approvers are told) or
-   * off (approvers only). The draft must be saved first.
+   * Switch "Needs approval" on (the draft's author or an approver; approvers
+   * are told) or off (approvers only). The draft must be saved first.
    */
   @RequireCapability('posts:draft')
   @Put('drafts/:draftId/approval')
@@ -207,7 +207,7 @@ export class ComposerController {
   }
 
   /** The workspace's live label names, for the composer's Labels picker. */
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('labels')
   async listLabels(@Param('wsId') wsId: string) {
     return { labels: await this.drafts.listLabels(wsId) };

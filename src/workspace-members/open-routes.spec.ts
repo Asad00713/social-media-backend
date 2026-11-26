@@ -1,5 +1,10 @@
+/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call, @typescript-eslint/unbound-method -- test doubles are loosely typed (make() builds controllers over partial mocks) */
 import 'reflect-metadata';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import { GUARDS_METADATA } from '@nestjs/common/constants';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -11,6 +16,11 @@ import { LibraryUploadController } from '../media-library/library-upload.control
 import { PostsController } from '../posts/posts.controller';
 import { MaestroController } from '../maestro/maestro.controller';
 import { CanvaController } from '../canva/canva.controller';
+import {
+  roleCan,
+  type Capability,
+  type WorkspaceRole,
+} from './role-capabilities';
 import {
   JoinLinkController,
   ParseInviteCodePipe,
@@ -25,11 +35,41 @@ const user = { userId: 'u1', email: 'u@x.com' };
 function guardsOf(proto: any, method: string): unknown[] {
   return Reflect.getMetadata(GUARDS_METADATA, proto[method]) ?? [];
 }
+/**
+ * Answers like WorkspaceAccessService.assertCanOrExplain: whatever assertCan
+ * says, except that a refusal for someone who is still a member is a 403 with
+ * the route's role copy.
+ */
+function explaining(assertCan: jest.Mock, stillMember: boolean) {
+  return jest.fn(
+    async (w: string, u: string, cap: Capability, roleMessage: string) => {
+      try {
+        return await assertCan(w, u, cap);
+      } catch (err) {
+        if (err instanceof NotFoundException && stillMember) {
+          throw new ForbiddenException(roleMessage);
+        }
+        throw err;
+      }
+    },
+  );
+}
 function noAccess() {
-  return { assertCan: jest.fn().mockRejectedValue(new NotFoundException()) };
+  const assertCan = jest.fn().mockRejectedValue(new NotFoundException());
+  return { assertCan, assertCanOrExplain: explaining(assertCan, false) };
 }
 function okAccess() {
-  return { assertCan: jest.fn().mockResolvedValue('MEMBER') };
+  const assertCan = jest.fn().mockResolvedValue('MEMBER');
+  return { assertCan, assertCanOrExplain: explaining(assertCan, true) };
+}
+/** Answers like WorkspaceAccessService: NotFound for a role without the cap. */
+function accessFor(role: WorkspaceRole) {
+  const assertCan = jest.fn((_w: string, _u: string, cap: Capability) =>
+    roleCan(role, cap)
+      ? Promise.resolve(role)
+      : Promise.reject(new NotFoundException()),
+  );
+  return { assertCan, assertCanOrExplain: explaining(assertCan, true) };
 }
 function make(Ctor: any, deps: Record<string, unknown>) {
   const c: any = Object.create(Ctor.prototype);
@@ -82,14 +122,14 @@ describe('ChatbotController (workspace id in body/query)', () => {
     [
       'getSharedConversations',
       (c) => c.getSharedConversations(user, 'w'),
-      'posts:draft',
+      'posts:view',
     ],
     [
       'getSharedConversation',
       (c) => c.getSharedConversation(user, 'id', 'w'),
-      'posts:draft',
+      'posts:view',
     ],
-    ['getProviders', (c) => c.getProviders(user, 'w'), 'posts:draft'],
+    ['getProviders', (c) => c.getProviders(user, 'w'), 'posts:view'],
     [
       'getUsage',
       (c) => c.getUsage(user, { workspaceId: 'w' }),
@@ -128,6 +168,89 @@ describe('ChatbotController (workspace id in body/query)', () => {
       expect(access.assertCan).toHaveBeenCalledWith('w', 'u1', cap);
     },
   );
+});
+
+describe('ChatbotController for a Viewer (GUEST)', () => {
+  const svc = {
+    createConversation: jest.fn().mockResolvedValue({ id: 'c' }),
+    listSharedConversations: jest.fn().mockResolvedValue([]),
+    getSharedConversation: jest.fn().mockResolvedValue({}),
+    getProviderPreference: jest.fn().mockResolvedValue(null),
+    getConversation: jest.fn().mockResolvedValue({ id: 'c', workspaceId: 'w' }),
+    shareConversation: jest.fn().mockResolvedValue({ id: 'c' }),
+    unshareConversation: jest.fn().mockResolvedValue({ id: 'c' }),
+  };
+  const router = { getAvailableProviders: jest.fn().mockReturnValue([]) };
+  beforeEach(() => jest.clearAllMocks());
+
+  it('a GUEST cannot start a chatbot conversation, and is told why', async () => {
+    const c = make(ChatbotController, {
+      chatbotService: svc,
+      access: accessFor('GUEST'),
+    });
+    await expect(
+      c.createConversation(user, { workspaceId: 'w' }),
+    ).rejects.toThrow(
+      new ForbiddenException(
+        'Your role in this workspace does not allow this action. Ask a workspace admin to change your role.',
+      ),
+    );
+    expect(svc.createConversation).not.toHaveBeenCalled();
+  });
+
+  it('a MEMBER can start a chatbot conversation', async () => {
+    const c = make(ChatbotController, {
+      chatbotService: svc,
+      access: accessFor('MEMBER'),
+    });
+    await expect(
+      c.createConversation(user, { workspaceId: 'w' }),
+    ).resolves.toBeDefined();
+  });
+
+  it('a GUEST may still read the workspace shared conversations and providers', async () => {
+    const c = make(ChatbotController, {
+      chatbotService: svc,
+      llmRouter: router,
+      access: accessFor('GUEST'),
+    });
+    await expect(c.getSharedConversations(user, 'w')).resolves.toBeDefined();
+    await expect(
+      c.getSharedConversation(user, 'id', 'w'),
+    ).resolves.toBeDefined();
+    await expect(c.getProviders(user, 'w')).resolves.toBeDefined();
+  });
+
+  describe('share re-checks posts:draft on the conversation workspace (R7)', () => {
+    it('a demoted user cannot publish an old conversation to the workspace', async () => {
+      const access = accessFor('GUEST');
+      const c = make(ChatbotController, { chatbotService: svc, access });
+      await expect(c.shareConversation(user, 'c')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(access.assertCan).toHaveBeenCalledWith('w', 'u1', 'posts:draft');
+      expect(svc.shareConversation).not.toHaveBeenCalled();
+    });
+
+    it('a member can share', async () => {
+      const access = accessFor('MEMBER');
+      const c = make(ChatbotController, { chatbotService: svc, access });
+      await expect(c.shareConversation(user, 'c')).resolves.toEqual({
+        conversation: { id: 'c' },
+      });
+      expect(access.assertCan).toHaveBeenCalledWith('w', 'u1', 'posts:draft');
+      expect(svc.shareConversation).toHaveBeenCalledWith('c', 'u1');
+    });
+
+    it('a demoted user can still take their conversation back (unshare)', async () => {
+      const c = make(ChatbotController, {
+        chatbotService: svc,
+        access: accessFor('GUEST'),
+      });
+      await expect(c.unshareConversation(user, 'c')).resolves.toBeDefined();
+      expect(svc.unshareConversation).toHaveBeenCalledWith('c', 'u1');
+    });
+  });
 });
 
 // Owning a conversation is not enough: its workspace may have removed the
@@ -204,7 +327,7 @@ describe('MaestroController', () => {
       (c) => c.presignAttachment(user, { workspaceId: 'w' }),
       'posts:draft',
     ],
-    ['searchMentions', (c) => c.searchMentions(user, 'w', 'q'), 'posts:draft'],
+    ['searchMentions', (c) => c.searchMentions(user, 'w', 'q'), 'posts:view'],
     ['getUsage', (c) => c.getUsage(user, 'w'), 'analytics:view'],
   ];
 
@@ -226,6 +349,42 @@ describe('MaestroController', () => {
     const c = make(MaestroController, { maestro, mentions, access });
     await expect(run(c)).resolves.toBeDefined();
     expect(access.assertCan).toHaveBeenCalledWith('w', 'u1', cap);
+  });
+});
+
+describe('MaestroController for a Viewer (GUEST)', () => {
+  const maestro = {
+    createConversation: jest.fn().mockResolvedValue({ id: 'c' }),
+    presignAttachment: jest.fn().mockResolvedValue({ url: 'x' }),
+  };
+  const mentions = { search: jest.fn().mockResolvedValue([]) };
+  beforeEach(() => jest.clearAllMocks());
+
+  it('a GUEST cannot start a Maestro conversation or presign an attachment', async () => {
+    const c = make(MaestroController, {
+      maestro,
+      mentions,
+      access: accessFor('GUEST'),
+    });
+    await expect(
+      c.createConversation(user, { workspaceId: 'w' }),
+    ).rejects.toThrow(
+      new ForbiddenException("Your role can't use Maestro in this workspace."),
+    );
+    await expect(
+      c.presignAttachment(user, { workspaceId: 'w' }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(maestro.createConversation).not.toHaveBeenCalled();
+    expect(maestro.presignAttachment).not.toHaveBeenCalled();
+  });
+
+  it('a GUEST can still search the @ mentions (a read)', async () => {
+    const c = make(MaestroController, {
+      maestro,
+      mentions,
+      access: accessFor('GUEST'),
+    });
+    await expect(c.searchMentions(user, 'w', 'q')).resolves.toBeDefined();
   });
 });
 
@@ -260,6 +419,35 @@ describe('LibraryUploadController.presignComposerVideo', () => {
     const c = make(LibraryUploadController, { r2Service: r2, quota, access });
     await expect(c.presignComposerVideo(dto, user)).resolves.toEqual({ ok: 1 });
     expect(access.assertCan).toHaveBeenCalledWith('w', 'u1', 'posts:draft');
+  });
+});
+
+describe('LibraryUploadController for a Viewer (GUEST)', () => {
+  const r2 = { createPresignedUpload: jest.fn().mockResolvedValue({ ok: 1 }) };
+  const quota = {
+    assertCanStore: jest.fn().mockResolvedValue({ used: 0, limit: 10 }),
+  };
+  beforeEach(() => jest.clearAllMocks());
+
+  it('a GUEST cannot presign an upload and no quota is touched', async () => {
+    const c = make(LibraryUploadController, {
+      r2Service: r2,
+      quota,
+      access: accessFor('GUEST'),
+    });
+    await expect(
+      c.presignComposerVideo(
+        {
+          workspaceId: 'w',
+          contentType: 'video/mp4',
+          sizeBytes: 1,
+          filename: 'a.mp4',
+        },
+        user,
+      ),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(r2.createPresignedUpload).not.toHaveBeenCalled();
+    expect(quota.assertCanStore).not.toHaveBeenCalled();
   });
 });
 

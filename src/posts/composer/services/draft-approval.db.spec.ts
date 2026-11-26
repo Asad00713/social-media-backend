@@ -184,7 +184,18 @@ describeDb('Draft approvals (database)', () => {
         required: false,
         state: 'none',
         canTurnOff: false,
+        canRequest: true,
       });
+      // An approver who did not write it may ask too; another member may not.
+      expect(
+        (await h.approvals.get(ws, id, admin, 'ADMIN')).canRequest,
+      ).toBe(true);
+      const otherMember = await seedMember(client, ws, 'MEMBER', {
+        name: 'Zoya',
+      });
+      expect(
+        (await h.approvals.get(ws, id, otherMember, 'MEMBER')).canRequest,
+      ).toBe(false);
 
       const asked = await h.approvals.setRequired(
         ws,

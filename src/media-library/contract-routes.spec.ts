@@ -24,23 +24,24 @@ function only(key: string) {
 }
 
 /** Workspace Library routes: `[method path under BASE, capability]`. */
-const CAPABILITIES: [string, 'posts:draft' | 'posts:publish'][] = [
-  ['GET stats', 'posts:draft'],
-  ['GET categories', 'posts:draft'],
-  ['POST categories/:categoryId/zip-ticket', 'posts:draft'],
-  ['GET templates', 'posts:draft'],
+type Cap = 'posts:view' | 'posts:draft' | 'posts:publish';
+const CAPABILITIES: [string, Cap][] = [
+  ['GET stats', 'posts:view'],
+  ['GET categories', 'posts:view'],
+  ['POST categories/:categoryId/zip-ticket', 'posts:view'],
+  ['GET templates', 'posts:view'],
   ['POST templates/bulk', 'posts:draft'],
-  ['GET snippets', 'posts:draft'],
+  ['GET snippets', 'posts:view'],
   ['POST snippets/bulk', 'posts:draft'],
-  ['GET links', 'posts:draft'],
+  ['GET links', 'posts:view'],
   ['POST links/bulk', 'posts:draft'],
-  ['GET items', 'posts:draft'],
+  ['GET items', 'posts:view'],
   ['PUT items/:itemId', 'posts:draft'],
   ['POST items/:itemId/use', 'posts:draft'],
-  ['GET items/:itemId/usage', 'posts:draft'],
+  ['GET items/:itemId/usage', 'posts:view'],
   ['POST items/:itemId/alt-text', 'posts:draft'],
   ['POST items/bulk', 'posts:draft'],
-  ['GET recycle-bin', 'posts:draft'],
+  ['GET recycle-bin', 'posts:view'],
   ['POST recycle-bin/restore', 'posts:draft'],
   ['POST recycle-bin/delete', 'posts:publish'],
   ['POST recycle-bin/empty', 'posts:publish'],

@@ -7,6 +7,7 @@ import {
   ParseUUIDPipe,
 } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
+import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { ROUTE_ARGS_METADATA } from '@nestjs/common/constants';
 import { AppLinks } from 'src/email/links/app-links';
@@ -55,9 +56,7 @@ function updateChain(rows: unknown[]) {
 
 /** The SQL of every statement run through `db.execute` (the seat lock). */
 const executed = (db: any): string[] =>
-  db.execute.mock.calls.map(
-    (c: any[]) => dialect.sqlToQuery(c[0]).sql as string,
-  );
+  db.execute.mock.calls.map((c: any[]) => dialect.sqlToQuery(c[0]).sql);
 
 /** The email and notification collaborators, faked; tests read the calls. */
 function makeMail() {
@@ -154,7 +153,7 @@ describe('WorkspaceMembersService.getInvitationLink', () => {
       .mockResolvedValue({ token: 'tok123', expiresAt: future });
     const svc = makeService({ query: { workspaceInvitation: { findFirst } } });
 
-    await expect(svc.getInvitationLink(WS, 'inv1')).resolves.toEqual({
+    await expect(svc.getInvitationLink(WS, 'inv1', ADMIN)).resolves.toEqual({
       url: 'https://app.schedura.ai/invite/accept?token=tok123',
       expiresAt: future,
     });
@@ -171,9 +170,9 @@ describe('WorkspaceMembersService.getInvitationLink', () => {
         },
       },
     });
-    await expect(svc.getInvitationLink(WS, 'other')).rejects.toBeInstanceOf(
-      NotFoundException,
-    );
+    await expect(
+      svc.getInvitationLink(WS, 'other', ADMIN),
+    ).rejects.toBeInstanceOf(NotFoundException);
   });
 
   it('404s an expired one, even while it still reads PENDING', async () => {
@@ -187,9 +186,9 @@ describe('WorkspaceMembersService.getInvitationLink', () => {
         },
       },
     });
-    await expect(svc.getInvitationLink(WS, 'inv1')).rejects.toBeInstanceOf(
-      NotFoundException,
-    );
+    await expect(
+      svc.getInvitationLink(WS, 'inv1', ADMIN),
+    ).rejects.toBeInstanceOf(NotFoundException);
   });
 });
 
@@ -492,7 +491,7 @@ describe('WorkspaceMembersService.restoreMember', () => {
     workspaceId: WS,
     userId: MEMBER_USER,
     email: 'Sana@X.pk',
-    role: 'ADMIN',
+    role: 'MEMBER',
     status: 'REMOVED',
     token: 'secret',
     removedBy: ADMIN,
@@ -500,33 +499,59 @@ describe('WorkspaceMembersService.restoreMember', () => {
     ...over,
   });
 
+  /** The fake restoreMember reads and writes through. */
+  interface RestoreFakeDb {
+    query: {
+      workspace: { findFirst: jest.Mock };
+      workspaceInvitation: { findFirst: jest.Mock; findMany: jest.Mock };
+    };
+    update: ReturnType<typeof updateChain>['update'];
+    delete: jest.Mock;
+    execute: jest.Mock;
+  }
+
   function restoreDb(
     row: unknown,
     opts: {
       alreadyMember?: boolean;
       pending?: { email: string }[];
       dropped?: unknown[];
+      /** A PENDING ADMIN invitation to the same address exists. */
+      pendingAdminInvite?: boolean;
     } = {},
   ) {
     const restored = { ...(row as object), status: 'ACCEPTED' };
     const { update, calls } = updateChain([restored]);
-    const deleted: any[] = [];
-    const db: any = {
+    const deleted: SQL[] = [];
+    const db: RestoreFakeDb = {
       query: {
         workspace: {
           findFirst: jest.fn().mockResolvedValue({ id: WS, ownerId: OWNER }),
         },
         workspaceInvitation: {
+          // The first call reads the REMOVED row; the pending-ADMIN-invite
+          // lookup asks for `id` only; every other call is the membership check.
           findFirst: jest
             .fn()
             .mockResolvedValueOnce(row)
-            .mockResolvedValue(opts.alreadyMember ? { id: 'm2' } : undefined),
+            .mockImplementation((args?: { columns?: { id?: boolean } }) =>
+              Promise.resolve(
+                args?.columns?.id
+                  ? opts.pendingAdminInvite
+                    ? { id: 'inv-admin' }
+                    : undefined
+                  : opts.alreadyMember
+                    ? { id: 'm2' }
+                    : undefined,
+              ),
+            ),
           findMany: jest.fn().mockResolvedValue(opts.pending ?? []),
         },
       },
       update,
+      execute: jest.fn().mockResolvedValue(undefined),
       delete: jest.fn(() => ({
-        where: (w: any) => {
+        where: (w: SQL) => {
           deleted.push(w);
           return { returning: () => Promise.resolve(opts.dropped ?? []) };
         },
@@ -558,7 +583,7 @@ describe('WorkspaceMembersService.restoreMember', () => {
     expect(calls[0].set.role).toBeUndefined();
     expect(res.member).toMatchObject({
       id: 'm1',
-      role: 'ADMIN',
+      role: 'MEMBER',
       status: 'ACCEPTED',
     });
     expect(res.droppedInvitations).toEqual([]);
@@ -617,6 +642,51 @@ describe('WorkspaceMembersService.restoreMember', () => {
     ).resolves.toMatchObject({ message: 'Member restored' });
   });
 
+  it('restoring an ADMIN is owner-only: the ADMIN who removed them gets 403 and nothing is written', async () => {
+    const t = restoreDb(removedRow({ role: 'ADMIN' }));
+    const err = await makeService(t.db, { usage: usageWith(5, 1) })
+      .restoreMember(WS, 'm1', ADMIN)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ForbiddenException);
+    expect((err as Error).message).toBe(
+      'Only the workspace owner can manage admins.',
+    );
+    expect(t.calls).toHaveLength(0);
+    expect(t.db.execute).not.toHaveBeenCalled();
+  });
+
+  it('the OWNER and a platform super admin can restore an ADMIN', async () => {
+    const byOwner = restoreDb(removedRow({ role: 'ADMIN' }));
+    await expect(
+      makeService(byOwner.db, { usage: usageWith(5, 1) }).restoreMember(
+        WS,
+        'm1',
+        OWNER,
+      ),
+    ).resolves.toMatchObject({ member: { role: 'ADMIN' } });
+
+    roleService.isPlatformSuperAdmin.mockResolvedValue(true);
+    const bySupport = restoreDb(removedRow({ role: 'ADMIN' }));
+    await expect(
+      makeService(bySupport.db, { usage: usageWith(5, 1) }).restoreMember(
+        WS,
+        'm1',
+        OTHER_ADMIN,
+      ),
+    ).resolves.toMatchObject({ member: { role: 'ADMIN' } });
+  });
+
+  it('an ADMIN who removed a MEMBER can still restore them', async () => {
+    const t = restoreDb(removedRow());
+    await expect(
+      makeService(t.db, { usage: usageWith(5, 1) }).restoreMember(
+        WS,
+        'm1',
+        ADMIN,
+      ),
+    ).resolves.toMatchObject({ message: 'Member restored' });
+  });
+
   it('refuses after the 15-minute window: 409 RESTORE_WINDOW_PASSED', async () => {
     const { db, calls } = restoreDb(
       removedRow({
@@ -663,9 +733,65 @@ describe('WorkspaceMembersService.restoreMember', () => {
     expect(q.params).toEqual(
       expect.arrayContaining([WS, 'PENDING', 'sana@x.pk']),
     );
-    // Deliberate: the restored membership (role ADMIN) replaces the GUEST re-invite.
-    expect(res.member).toMatchObject({ role: 'ADMIN' });
+    // Deliberate: the restored membership (role MEMBER) replaces the GUEST re-invite.
+    expect(res.member).toMatchObject({ role: 'MEMBER' });
     expect(res.droppedInvitations).toEqual([reinvite]);
+  });
+
+  describe('a pending ADMIN invitation to the same address', () => {
+    it('an ADMIN restoring them gets 403 and nothing is locked or written', async () => {
+      const t = restoreDb(removedRow(), { pendingAdminInvite: true });
+      const err = await makeService(t.db, { usage: usageWith(5, 1) })
+        .restoreMember(WS, 'm1', ADMIN)
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ForbiddenException);
+      expect((err as Error).message).toBe(
+        'Only the workspace owner can manage admins.',
+      );
+      expect(t.calls).toHaveLength(0);
+      expect(t.deleted).toHaveLength(0);
+      expect(t.db.execute).not.toHaveBeenCalled();
+      // The lookup is scoped to this workspace, PENDING, ADMIN and the address.
+      const [asked] = t.db.query.workspaceInvitation.findFirst.mock
+        .calls[1] as [{ where: SQL }];
+      expect(dialect.sqlToQuery(asked.where).params).toEqual(
+        expect.arrayContaining([WS, 'PENDING', 'ADMIN', 'sana@x.pk']),
+      );
+    });
+
+    it('the OWNER still restores and drops it', async () => {
+      const invite = { id: 'inv-admin', email: 'sana@x.pk', role: 'ADMIN' };
+      const t = restoreDb(removedRow(), {
+        pendingAdminInvite: true,
+        dropped: [invite],
+      });
+      const res = await makeService(t.db, {
+        usage: usageWith(5, 1),
+      }).restoreMember(WS, 'm1', OWNER);
+      expect(res.droppedInvitations).toEqual([invite]);
+      expect(t.deleted).toHaveLength(1);
+    });
+
+    it('a platform super admin still restores and drops it', async () => {
+      roleService.isPlatformSuperAdmin.mockResolvedValue(true);
+      const t = restoreDb(removedRow(), { pendingAdminInvite: true });
+      await expect(
+        makeService(t.db, { usage: usageWith(5, 1) }).restoreMember(
+          WS,
+          'm1',
+          ADMIN,
+        ),
+      ).resolves.toMatchObject({ message: 'Member restored' });
+    });
+
+    it('an ADMIN restoring them with only a MEMBER invitation pending still works', async () => {
+      const invite = { id: 'inv-9', email: 'sana@x.pk', role: 'MEMBER' };
+      const t = restoreDb(removedRow(), { dropped: [invite] });
+      const res = await makeService(t.db, {
+        usage: usageWith(5, 1),
+      }).restoreMember(WS, 'm1', ADMIN);
+      expect(res.droppedInvitations).toEqual([invite]);
+    });
   });
 
   it('leaving on your own is not restorable: 404', async () => {
@@ -723,8 +849,10 @@ describe('WorkspaceMembersService.restoreMember', () => {
     const usage = usageWith(5, 1);
     const err = await makeService(db, { usage })
       .restoreMember(WS, 'm1', ADMIN)
-      .catch((e) => e);
-    expect(err.getResponse()).toMatchObject({ code: 'RESTORE_WINDOW_PASSED' });
+      .catch((e: unknown) => e);
+    expect((err as ConflictException).getResponse()).toMatchObject({
+      code: 'RESTORE_WINDOW_PASSED',
+    });
     expect(usage.incrementMemberCount).not.toHaveBeenCalled();
   });
 
@@ -735,13 +863,16 @@ describe('WorkspaceMembersService.restoreMember', () => {
     db.query.workspaceInvitation.findFirst = jest
       .fn()
       .mockResolvedValueOnce(removedRow())
-      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined) // no pending ADMIN invitation
+      .mockResolvedValueOnce(undefined) // not a member yet
       .mockResolvedValueOnce({ id: 'm2' });
     const usage = usageWith(5, 1);
     const err = await makeService(db, { usage })
       .restoreMember(WS, 'm1', ADMIN)
-      .catch((e) => e);
-    expect(err.getResponse()).toMatchObject({ code: 'ALREADY_MEMBER' });
+      .catch((e: unknown) => e);
+    expect((err as ConflictException).getResponse()).toMatchObject({
+      code: 'ALREADY_MEMBER',
+    });
     expect(usage.incrementMemberCount).not.toHaveBeenCalled();
   });
 });
@@ -878,5 +1009,357 @@ describe('cancelInvitation cannot reach a member row', () => {
     const q = whereOf(findFirst.mock.calls[0][0]);
     expect(q.params).toEqual(['m1', WS, 'PENDING', 'REJECTED', 'EXPIRED']);
     expect(del).not.toHaveBeenCalled();
+  });
+});
+
+describe('only the workspace owner manages admins', () => {
+  const REFUSAL = 'Only the workspace owner can manage admins.';
+  const ROOT = 'root-user';
+  const future = new Date(Date.now() + 86_400_000);
+
+  /** A member row (ACCEPTED), by id. */
+  const member = (id: string, role: string, userId = MEMBER_USER) => ({
+    id,
+    userId,
+    role,
+    email: `${id}@x.pk`,
+    status: 'ACCEPTED',
+  });
+  /** An invitation row (PENDING), by id. */
+  const invitation = (id: string, role: string) => ({
+    id,
+    role,
+    email: `${id}@x.pk`,
+    status: 'PENDING',
+    token: 'tok',
+    expiresAt: future,
+    invitedBy: OWNER,
+    userId: null,
+  });
+
+  /**
+   * A workspace owned by OWNER where ADMIN is an ADMIN member. `rows` answers a
+   * lookup by id; the "is this caller an admin" lookup is told apart by its
+   * trailing 'ADMIN' param. Every write is recorded, so a refusal can be
+   * proven to have written nothing.
+   */
+  function policyDb(rows: Record<string, any>, updateRows?: unknown[]) {
+    // What any UPDATE ... RETURNING answers: enough of a row for a role
+    // change, a removal and a resend alike.
+    const writes = updateChain(
+      updateRows ?? [
+        { id: 'm1', role: 'MEMBER', status: 'PENDING', expiresAt: future },
+      ],
+    );
+    const insert = jest.fn(() => ({
+      values: (v: { email: string; role: string }) => ({
+        returning: () =>
+          Promise.resolve([
+            {
+              id: `inv-${v.email}`,
+              email: v.email,
+              role: v.role,
+              token: 't',
+              expiresAt: new Date(),
+            },
+          ]),
+      }),
+    }));
+    const del = jest.fn(() => ({ where: () => Promise.resolve() }));
+    const lookup = jest.fn((arg: unknown): Promise<unknown> => {
+      const { params } = whereOf(arg);
+      if (params[params.length - 1] === 'ADMIN') {
+        return Promise.resolve(
+          params.includes(ADMIN) ? { id: 'caller-row' } : undefined,
+        );
+      }
+      const id = Object.keys(rows).find((k) => params.includes(k));
+      return Promise.resolve(id ? rows[id] : undefined);
+    });
+    const db = {
+      query: {
+        workspace: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ id: WS, ownerId: OWNER, name: 'Acme' }),
+        },
+        users: { findFirst: jest.fn().mockResolvedValue(undefined) },
+        workspaceInvitation: {
+          findMany: jest.fn().mockResolvedValue([]),
+          findFirst: lookup,
+        },
+      },
+      update: writes.update,
+      insert,
+      delete: del,
+    };
+    return { db, insert, del, lookup, updates: writes.calls };
+  }
+
+  const usage = {
+    getWorkspaceUsage: jest
+      .fn()
+      .mockResolvedValue({ membersLimit: 50, membersCount: 1 }),
+    incrementMemberCount: jest.fn().mockResolvedValue(undefined),
+    decrementMemberCount: jest.fn().mockResolvedValue(undefined),
+  };
+  const noWrite = (t: ReturnType<typeof policyDb>) => {
+    expect(t.updates).toHaveLength(0);
+    expect(t.insert).not.toHaveBeenCalled();
+    expect(t.del).not.toHaveBeenCalled();
+  };
+  const refused = (p: Promise<unknown>) =>
+    expect(p).rejects.toMatchObject({
+      constructor: ForbiddenException,
+      message: REFUSAL,
+    });
+  const svcOf = (t: ReturnType<typeof policyDb>) =>
+    makeService(t.db, { usage, mail: makeMail() });
+
+  beforeEach(() => {
+    roleService.isPlatformSuperAdmin.mockResolvedValue(false);
+    // The email paths log what these bare fakes cannot answer.
+    jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+  });
+
+  it('an ADMIN cannot invite with role ADMIN (single and batch)', async () => {
+    const one = policyDb({});
+    await refused(
+      svcOf(one).inviteMember(
+        WS,
+        { email: 'a@x.pk', role: 'ADMIN' } as any,
+        ADMIN,
+      ),
+    );
+    // Before the seat lock and before any write.
+    expect(executed(one.db)).toHaveLength(0);
+    noWrite(one);
+
+    const batch = policyDb({});
+    await refused(
+      svcOf(batch).batchInvite(
+        WS,
+        [
+          { email: 'a@x.pk', role: 'MEMBER' },
+          { email: 'b@x.pk', role: 'ADMIN' },
+        ],
+        ADMIN,
+      ),
+    );
+    expect(executed(batch.db)).toHaveLength(0);
+    noWrite(batch);
+  });
+
+  it("an ADMIN cannot change an ADMIN's role", async () => {
+    const t = policyDb({ m1: member('m1', 'ADMIN') });
+    await refused(
+      svcOf(t).updateMemberRole(WS, 'm1', { role: 'MEMBER' } as any, ADMIN),
+    );
+    expect(executed(t.db)).toHaveLength(0);
+    noWrite(t);
+  });
+
+  it('an ADMIN cannot promote a MEMBER to ADMIN', async () => {
+    const t = policyDb({ m1: member('m1', 'MEMBER') });
+    await refused(
+      svcOf(t).updateMemberRole(WS, 'm1', { role: 'ADMIN' } as any, ADMIN),
+    );
+    expect(executed(t.db)).toHaveLength(0);
+    noWrite(t);
+  });
+
+  it('a member made ADMIN between the first read and the write is judged by the row inside the lock', async () => {
+    const t = policyDb({ m1: member('m1', 'MEMBER') });
+    const { lookup } = t;
+    const first = lookup.getMockImplementation()!;
+    // The third read is the one inside the seat lock.
+    lookup.mockImplementation((arg: unknown) =>
+      lookup.mock.calls.length > 2
+        ? Promise.resolve(member('m1', 'ADMIN'))
+        : first(arg),
+    );
+    await refused(
+      svcOf(t).updateMemberRole(WS, 'm1', { role: 'GUEST' } as any, ADMIN),
+    );
+    noWrite(t);
+  });
+
+  it('an ADMIN cannot remove an ADMIN', async () => {
+    const t = policyDb({ m1: member('m1', 'ADMIN') });
+    await refused(svcOf(t).removeMember(WS, 'm1', ADMIN));
+    noWrite(t);
+  });
+
+  it('an ADMIN removing a member who was made ADMIN since it was read: the UPDATE matches nothing and the answer is the 403', async () => {
+    const t = policyDb({ m1: member('m1', 'MEMBER') }, []);
+    const { lookup } = t;
+    const first = lookup.getMockImplementation()!;
+    // Reads: the caller's admin check, the member, then the re-read after the
+    // UPDATE matched no row.
+    lookup.mockImplementation((arg: unknown) =>
+      lookup.mock.calls.length > 2
+        ? Promise.resolve(member('m1', 'ADMIN'))
+        : first(arg),
+    );
+    const usageSpy = { ...usage, decrementMemberCount: jest.fn() };
+    await refused(
+      makeService(t.db, { usage: usageSpy, mail: makeMail() }).removeMember(
+        WS,
+        'm1',
+        ADMIN,
+      ),
+    );
+    // The UPDATE itself carried the role guard, so it could not have removed them.
+    expect(t.updates).toHaveLength(1);
+    expect(dialect.sqlToQuery(t.updates[0].where).params).toContain('ADMIN');
+    expect(usageSpy.decrementMemberCount).not.toHaveBeenCalled();
+  });
+
+  it('a removal that matched nothing for another reason is still a 404, for an ADMIN caller', async () => {
+    const t = policyDb({ m1: member('m1', 'MEMBER') }, []);
+    await expect(svcOf(t).removeMember(WS, 'm1', ADMIN)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+  });
+
+  it('the owner, a super admin and a self-removal carry no role guard in the UPDATE', async () => {
+    const paramsOf = async (caller: string, row: ReturnType<typeof member>) => {
+      roleService.isPlatformSuperAdmin.mockResolvedValue(caller === ROOT);
+      const t = policyDb({ m1: row });
+      await svcOf(t).removeMember(WS, 'm1', caller);
+      return dialect.sqlToQuery(t.updates[0].where).params;
+    };
+    expect(await paramsOf(OWNER, member('m1', 'ADMIN'))).not.toContain('ADMIN');
+    expect(await paramsOf(ROOT, member('m1', 'ADMIN'))).not.toContain('ADMIN');
+    expect(await paramsOf(ADMIN, member('m1', 'ADMIN', ADMIN))).not.toContain(
+      'ADMIN',
+    );
+  });
+
+  it('an ADMIN can still invite/change/remove MEMBER and GUEST', async () => {
+    for (const role of ['MEMBER', 'GUEST'] as const) {
+      const inv = policyDb({});
+      await expect(
+        svcOf(inv).inviteMember(WS, { email: 'a@x.pk', role } as any, ADMIN),
+      ).resolves.toMatchObject({ message: 'Invitation sent successfully' });
+      expect(inv.insert).toHaveBeenCalledTimes(1);
+
+      const batch = policyDb({});
+      await expect(
+        svcOf(batch).batchInvite(WS, [{ email: 'a@x.pk', role }], ADMIN),
+      ).resolves.toMatchObject({ results: [{ status: 'invited' }] });
+
+      const change = policyDb({ m1: member('m1', 'MEMBER') });
+      await svcOf(change).updateMemberRole(WS, 'm1', { role } as any, ADMIN);
+      expect(change.updates).toHaveLength(1);
+
+      const remove = policyDb({ m1: member('m1', role) });
+      await expect(
+        svcOf(remove).removeMember(WS, 'm1', ADMIN),
+      ).resolves.toEqual({ message: 'Member removed successfully' });
+    }
+  });
+
+  it('an ADMIN can still remove themselves (leave via removeMember isSelf)', async () => {
+    const t = policyDb({ m1: member('m1', 'ADMIN', ADMIN) });
+    await expect(svcOf(t).removeMember(WS, 'm1', ADMIN)).resolves.toEqual({
+      message: 'Member removed successfully',
+    });
+    expect(t.updates).toHaveLength(1);
+  });
+
+  it('the OWNER and a super admin can do all of it', async () => {
+    for (const caller of [OWNER, ROOT]) {
+      roleService.isPlatformSuperAdmin.mockResolvedValue(caller === ROOT);
+
+      const inv = policyDb({});
+      await svcOf(inv).inviteMember(
+        WS,
+        { email: 'a@x.pk', role: 'ADMIN' } as any,
+        caller,
+      );
+      expect(inv.insert).toHaveBeenCalledTimes(1);
+
+      const batch = policyDb({});
+      await expect(
+        svcOf(batch).batchInvite(
+          WS,
+          [{ email: 'a@x.pk', role: 'ADMIN' }],
+          caller,
+        ),
+      ).resolves.toMatchObject({ results: [{ status: 'invited' }] });
+
+      const demote = policyDb({ m1: member('m1', 'ADMIN') });
+      await svcOf(demote).updateMemberRole(
+        WS,
+        'm1',
+        { role: 'MEMBER' } as any,
+        caller,
+      );
+      expect(demote.updates).toHaveLength(1);
+
+      const promote = policyDb({ m1: member('m1', 'MEMBER') });
+      await svcOf(promote).updateMemberRole(
+        WS,
+        'm1',
+        { role: 'ADMIN' } as any,
+        caller,
+      );
+      expect(promote.updates).toHaveLength(1);
+
+      const remove = policyDb({ m1: member('m1', 'ADMIN') });
+      await svcOf(remove).removeMember(WS, 'm1', caller);
+      expect(remove.updates).toHaveLength(1);
+    }
+  });
+
+  describe('an invitation whose role is ADMIN', () => {
+    const rows = () => ({
+      'inv-admin': invitation('inv-admin', 'ADMIN'),
+      'inv-member': invitation('inv-member', 'MEMBER'),
+      'inv-guest': invitation('inv-guest', 'GUEST'),
+    });
+
+    it('an ADMIN cannot cancel, resend or copy the link of it', async () => {
+      const t = policyDb(rows());
+      const svc = svcOf(t);
+      await refused(svc.cancelInvitation(WS, 'inv-admin', ADMIN));
+      await refused(svc.resendInvitation(WS, 'inv-admin', ADMIN));
+      await refused(svc.getInvitationLink(WS, 'inv-admin', ADMIN));
+      noWrite(t);
+    });
+
+    it('an ADMIN still manages MEMBER and GUEST invitations', async () => {
+      for (const id of ['inv-member', 'inv-guest']) {
+        const t = policyDb(rows());
+        const svc = svcOf(t);
+        await expect(svc.getInvitationLink(WS, id, ADMIN)).resolves.toEqual({
+          url: expect.stringContaining('tok') as string,
+          expiresAt: future,
+        });
+        await expect(svc.resendInvitation(WS, id, ADMIN)).resolves.toBeTruthy();
+        await expect(svc.cancelInvitation(WS, id, ADMIN)).resolves.toEqual({
+          message: 'Invitation cancelled',
+        });
+        expect(t.del).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it('the OWNER and a super admin can do all of it', async () => {
+      for (const caller of [OWNER, ROOT]) {
+        roleService.isPlatformSuperAdmin.mockResolvedValue(caller === ROOT);
+        const t = policyDb(rows());
+        const svc = svcOf(t);
+        await expect(
+          svc.getInvitationLink(WS, 'inv-admin', caller),
+        ).resolves.toMatchObject({ expiresAt: future });
+        await expect(
+          svc.resendInvitation(WS, 'inv-admin', caller),
+        ).resolves.toBeTruthy();
+        await expect(
+          svc.cancelInvitation(WS, 'inv-admin', caller),
+        ).resolves.toEqual({ message: 'Invitation cancelled' });
+      }
+    });
   });
 });

@@ -441,6 +441,9 @@ describeInboxDb('ConversationMutationsService', () => {
 
       const before = await svc.markUnread(workspaceId, id, ownerId);
       expect(before.row.unreadCount).toBeGreaterThan(0);
+      // Peeking returns the row as it is and writes nothing.
+      const peeked = await svc.peekRow(workspaceId, id);
+      expect(peeked.unreadCount).toBe(before.row.unreadCount);
       const read = await svc.markRead(workspaceId, id);
       expect(read.row.unreadCount).toBe(0);
       const items = await client.query<{ status: string }>(
@@ -721,6 +724,9 @@ describeInboxDb('ConversationMutationsService', () => {
       const { svc } = build(db);
       const ws = b.workspaceId;
       await expect(svc.markRead(ws, id)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      await expect(svc.peekRow(ws, id)).rejects.toBeInstanceOf(
         NotFoundException,
       );
       await expect(svc.markUnread(ws, id, b.ownerId)).rejects.toBeInstanceOf(

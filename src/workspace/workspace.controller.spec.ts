@@ -15,7 +15,7 @@ const GUARDED: Record<string, { cap: Capability; path: string }> = {
   update: { cap: 'workspace:manage', path: ':workspaceId' },
   presignLogo: { cap: 'workspace:manage', path: ':workspaceId/logo/presign' },
   publishingDefaults: {
-    cap: 'posts:draft',
+    cap: 'posts:view',
     path: ':workspaceId/publishing-defaults',
   },
   deletionPreview: {

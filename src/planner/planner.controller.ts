@@ -31,7 +31,7 @@ export class PlannerController {
     private readonly lookupService: PlannerLookupService,
   ) {}
 
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('list')
   async list(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
@@ -45,7 +45,7 @@ export class PlannerController {
     });
   }
 
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('month-counts')
   async monthCounts(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
@@ -54,7 +54,7 @@ export class PlannerController {
     return await this.lookupService.monthCounts(workspaceId, query.year);
   }
 
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('next-post')
   async nextPost(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
@@ -66,7 +66,7 @@ export class PlannerController {
     );
   }
 
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('last-post-time')
   async lastPostTime(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,

@@ -9,6 +9,10 @@ import {
 import type { Response } from 'express';
 import { LibraryZipController } from './library-zip.controller';
 import { MediaLibraryController } from './media-library.controller';
+import {
+  roleCan,
+  type Capability,
+} from '../workspace-members/role-capabilities';
 import { signZipTicket, verifyZipTicket } from './lib/zip-ticket';
 
 const SECRET = 'k'.repeat(64);
@@ -125,7 +129,7 @@ describe('LibraryZipController.downloadCategoryZip', () => {
     await expectInvalidTicket(
       c.downloadCategoryZip(WS, FOLDER, ticketFor(), res),
     );
-    expect(access.assertCan).toHaveBeenCalledWith(WS, USER, 'posts:draft');
+    expect(access.assertCan).toHaveBeenCalledWith(WS, USER, 'posts:view');
     expect(c.categoryZip.streamZip).not.toHaveBeenCalled();
   });
 
@@ -151,7 +155,21 @@ describe('LibraryZipController.downloadCategoryZip', () => {
     const access = okAccess();
     const c = makeDownload(access);
     await c.downloadCategoryZip(WS, FOLDER, ticketFor(), res);
-    expect(access.assertCan).toHaveBeenCalledWith(WS, USER, 'posts:draft');
+    expect(access.assertCan).toHaveBeenCalledWith(WS, USER, 'posts:view');
+    expect(c.categoryZip.streamZip).toHaveBeenCalledWith(WS, FOLDER, res);
+  });
+
+  it('streams the folder for a Viewer: a zip download is a read', async () => {
+    // Answers like WorkspaceAccessService for a GUEST, on the real role map.
+    const access = {
+      assertCan: jest.fn((_w: string, _u: string, cap: Capability) =>
+        roleCan('GUEST', cap)
+          ? Promise.resolve('GUEST')
+          : Promise.reject(new NotFoundException()),
+      ),
+    };
+    const c = makeDownload(access);
+    await c.downloadCategoryZip(WS, FOLDER, ticketFor(), res);
     expect(c.categoryZip.streamZip).toHaveBeenCalledWith(WS, FOLDER, res);
   });
 });

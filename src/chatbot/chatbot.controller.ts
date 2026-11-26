@@ -18,6 +18,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
 import { WorkspaceAccessService } from '../workspace-members/workspace-access.service';
+import { CHATBOT_ROLE_REFUSAL } from './tools/tool-access';
 import { ChatbotRateLimitGuard } from './guards/chatbot-rate-limit.guard';
 import { ChatbotService } from './chatbot.service';
 import { TokenTrackingService } from './services/token-tracking.service';
@@ -103,7 +104,12 @@ export class ChatbotController {
     @CurrentUser() user: { userId: string; email: string },
     @Body() dto: CreateConversationDto,
   ) {
-    await this.access.assertCan(dto.workspaceId, user.userId, 'posts:draft');
+    await this.access.assertCanOrExplain(
+      dto.workspaceId,
+      user.userId,
+      'posts:draft',
+      CHATBOT_ROLE_REFUSAL,
+    );
     const conversation = await this.chatbotService.createConversation(
       user.userId,
       dto.workspaceId,
@@ -164,7 +170,7 @@ export class ChatbotController {
     @Query('limit') limit?: number,
     @Query('offset') offset?: number,
   ) {
-    await this.access.assertCan(workspaceId, user.userId, 'posts:draft');
+    await this.access.assertCan(workspaceId, user.userId, 'posts:view');
     const conversations = await this.chatbotService.listSharedConversations(
       workspaceId,
       limit,
@@ -263,6 +269,12 @@ export class ChatbotController {
 
   /**
    * Share a conversation with workspace members.
+   *
+   * Owning the conversation is not enough: the owner may have been demoted to
+   * a role that can no longer draft since they made it, and sharing publishes
+   * it to the whole workspace. So the owner's current role is re-checked on the
+   * conversation's own workspace. Unshare stays open: taking it back is always
+   * allowed.
    */
   @Patch('conversations/:id/share')
   @UseGuards(JwtAuthGuard)
@@ -270,6 +282,11 @@ export class ChatbotController {
     @CurrentUser() user: { userId: string; email: string },
     @Param('id') conversationId: string,
   ) {
+    const owned = await this.chatbotService.getConversation(
+      conversationId,
+      user.userId,
+    );
+    await this.access.assertCan(owned.workspaceId, user.userId, 'posts:draft');
     const conversation = await this.chatbotService.shareConversation(
       conversationId,
       user.userId,
@@ -303,7 +320,7 @@ export class ChatbotController {
     @Param('id') conversationId: string,
     @Query('workspaceId') workspaceId: string,
   ) {
-    await this.access.assertCan(workspaceId, user.userId, 'posts:draft');
+    await this.access.assertCan(workspaceId, user.userId, 'posts:view');
     const conversation = await this.chatbotService.getSharedConversation(
       conversationId,
       workspaceId,
@@ -436,7 +453,7 @@ export class ChatbotController {
     @Query('workspaceId') workspaceId: string,
   ) {
     if (workspaceId) {
-      await this.access.assertCan(workspaceId, user.userId, 'posts:draft');
+      await this.access.assertCan(workspaceId, user.userId, 'posts:view');
     }
     const available = this.llmRouter.getAvailableProviders();
     const preference = workspaceId

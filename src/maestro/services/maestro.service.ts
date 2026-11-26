@@ -23,7 +23,6 @@ import { ConversationListService } from '../../inbox/conversations/services/conv
 import { ConversationPresenter } from '../../inbox/conversations/services/conversation-presenter.service';
 import { DripService } from '../../drips/drip.service';
 import { WorkspaceRoleService } from '../../workspace-members/workspace-role.service';
-import { roleCan } from '../../workspace-members/role-capabilities';
 import { PostService } from '../../posts/services/post.service';
 import { CloudflareR2Service } from '../../media/cloudflare-r2.service';
 import {
@@ -33,7 +32,10 @@ import {
 import { MaestroKeyService } from './maestro-key.service';
 import { assembleMaestroTools } from '../tools/assemble';
 import { gateTools } from '../tools/capability-gate';
-import { WorkspaceAccessService } from '../../workspace-members/workspace-access.service';
+import {
+  NO_LONGER_MEMBER_MESSAGE,
+  WorkspaceAccessService,
+} from '../../workspace-members/workspace-access.service';
 import { isPendingAction, type PendingAction } from '../tools/confirm';
 import {
   mergeReferences,
@@ -75,6 +77,10 @@ import {
   MAESTRO_PDF_MAX_BYTES,
   type MaestroAttachmentKind,
 } from '../dto/send-message.dto';
+
+/** What a member whose role can't draft is told when they use Maestro. */
+export const MAESTRO_ROLE_REFUSAL =
+  "Your role can't use Maestro in this workspace.";
 
 const DEFAULT_MODEL = process.env.MAESTRO_MODEL || 'claude-haiku-4-5';
 const ALLOWED_MODELS = new Set(['claude-haiku-4-5', 'claude-sonnet-4-6']);
@@ -301,11 +307,6 @@ export class MaestroService {
     });
   }
 
-  /**
-   * Maestro key + first-run state for a workspace. Owner-checked: the key is a
-   * billing credential, so only the workspace owner may see or change it.
-   * Returns only a MASKED hint — the key itself never leaves the server.
-   */
   /** Never throws: falls back to the pre-existing voice. */
   private async resolveTone(userId: string): Promise<MaestroTone> {
     try {
@@ -326,26 +327,42 @@ export class MaestroService {
     return this.usersService.setMaestroTone(userId, tone);
   }
 
+  /**
+   * The key is a billing credential, so only whoever holds `billing:manage`
+   * (the workspace owner) may see or change it. A caller without it gets
+   * assertCan's own 404. The workspace is then loaded by id (live only), not
+   * by `ownerId`.
+   */
+  private async assertKeyAccess(userId: string, workspaceId: string) {
+    await this.access.assertCan(workspaceId, userId, 'billing:manage');
+    await this.workspaceService.findDetail(workspaceId);
+  }
+
+  /**
+   * Maestro key + first-run state for a workspace. Owner-only (see
+   * `assertKeyAccess`). Returns only a MASKED hint — the key itself never
+   * leaves the server.
+   */
   async getKeyStatus(userId: string, workspaceId: string) {
-    await this.workspaceService.findOne(workspaceId, userId);
+    await this.assertKeyAccess(userId, workspaceId);
     return this.keys.getStatus(workspaceId);
   }
 
   /** Validate against Anthropic, then store the workspace's own key. */
   async setOwnKey(userId: string, workspaceId: string, apiKey: string) {
-    await this.workspaceService.findOne(workspaceId, userId);
+    await this.assertKeyAccess(userId, workspaceId);
     return this.keys.setKey(workspaceId, apiKey);
   }
 
   /** Drop the workspace's key — Maestro reverts to the platform key. */
   async removeOwnKey(userId: string, workspaceId: string) {
-    await this.workspaceService.findOne(workspaceId, userId);
+    await this.assertKeyAccess(userId, workspaceId);
     return this.keys.removeKey(workspaceId);
   }
 
   /** Mark the first-run Maestro wizard complete. */
   async completeOnboarding(userId: string, workspaceId: string) {
-    await this.workspaceService.findOne(workspaceId, userId);
+    await this.assertKeyAccess(userId, workspaceId);
     return this.keys.markOnboarded(workspaceId);
   }
 
@@ -384,23 +401,12 @@ export class MaestroService {
   }
 
   /**
-   * Conversations for the history list (most-recent first).
-   *
-   * An owner or admin sees the whole workspace's; everyone else sees their
-   * own. The widening is a capability, not a role comparison written here, so
-   * it moves with the rest of the permission model rather than drifting from
-   * it — and a member whose role is later raised gets the wider list without
-   * this file changing.
-   *
-   * A missing role means no membership, which is narrower than MEMBER, so it
-   * falls through to 'own' rather than being treated as a failure.
+   * Conversations for the history list (most-recent first). Always the
+   * caller's own, whatever their role: a Maestro chat can hold a teammate's
+   * private questions, so owners and admins do not read each other's history.
    */
   async listConversations(userId: string, workspaceId: string) {
-    const role = await this.roles.getRole(workspaceId, userId);
-    const seesEveryone = role ? roleCan(role, 'maestro:view-all') : false;
-    return this.conversations.list(userId, workspaceId, {
-      scope: seesEveryone ? 'workspace' : 'own',
-    });
+    return this.conversations.list(userId, workspaceId);
   }
 
   /**
@@ -816,9 +822,16 @@ export class MaestroService {
       await this.access.assertCan(ctx.workspaceId, userId, 'posts:draft');
     } catch (err) {
       if (err instanceof NotFoundException) {
+        // assertCan answers 404 for both cases. Tell them apart: a member whose
+        // role is too low has not left, and must not be told they did.
+        const stillMember = await this.roles.getRole(ctx.workspaceId, userId);
         yield {
           event: 'error',
-          data: { message: "You're no longer a member of this workspace." },
+          data: {
+            message: stillMember
+              ? MAESTRO_ROLE_REFUSAL
+              : NO_LONGER_MEMBER_MESSAGE,
+          },
         };
         return;
       }

@@ -22,11 +22,15 @@ jest.mock('../../drizzle/db', () => {
 });
 
 import { PostService } from '../../posts/services/post.service';
+import {
+  roleCan,
+  type Capability,
+} from '../../workspace-members/role-capabilities';
 import { createPostTools } from './post.tools';
 
 const CTX = { userId: 'u1', workspaceId: 'ws1' };
 
-/** A real PostService (so the Guest rules are the real ones) over mocked IO. */
+/** A real PostService over mocked IO. */
 function realPostService(
   existing: Record<string, unknown>,
   policyCovers = false,
@@ -70,18 +74,21 @@ function build(
 ) {
   const posts = realPostService(existing, policyCovers);
   // The mocked db returns bare rows; give the result the shape the tool reads
-  // AFTER the real service (and its Guest rules) has run.
+  // AFTER the real service has run.
   const realCreate = posts.createPost.bind(posts);
-  jest
-    .spyOn(posts, 'createPost')
-    .mockImplementation(async (...a) => ({
-      ...(await realCreate(...a)),
-      targets: [],
-    }) as any);
+  jest.spyOn(posts, 'createPost').mockImplementation(
+    async (...a) =>
+      ({
+        ...(await realCreate(...a)),
+        targets: [],
+      }) as any,
+  );
   const access = {
     assertCan: jest.fn(async (_w: string, _u: string, cap: string) => {
       if (role === 'none') throw new NotFoundException('Not found');
-      if (role === 'GUEST' && cap !== 'posts:draft') {
+      // The real rule: WorkspaceAccessService throws NotFound for a role that
+      // lacks the capability, so the mock answers from the real role map.
+      if (!roleCan(role, cap as Capability)) {
         throw new NotFoundException('Not found');
       }
       return role;
@@ -97,9 +104,24 @@ function build(
 
 const FUTURE = '2030-01-01T10:00:00Z';
 
+const REFUSAL = 'does not allow';
+
 describe('chatbot create_post', () => {
-  it('a viewer saving a draft is allowed, and the role reaches PostService', async () => {
+  it('a viewer is refused before anything is created', async () => {
     const { posts, access, tool } = build('GUEST');
+    const spy = jest.spyOn(posts, 'createPost');
+    const res = await tool('create_post').execute(
+      { content: 'hi', targetChannelIds: [] },
+      CTX,
+    );
+    expect(res.success).toBe(false);
+    expect(res.error).toContain(REFUSAL);
+    expect(access.assertCan).toHaveBeenCalledWith('ws1', 'u1', 'posts:draft');
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('a member may save a draft', async () => {
+    const { posts, access, tool } = build('MEMBER');
     const spy = jest.spyOn(posts, 'createPost');
     const res = await tool('create_post').execute(
       { content: 'hi', targetChannelIds: [] },
@@ -107,17 +129,7 @@ describe('chatbot create_post', () => {
     );
     expect(res.success).toBe(true);
     expect(access.assertCan).toHaveBeenCalledWith('ws1', 'u1', 'posts:draft');
-    expect(spy).toHaveBeenCalledWith('ws1', 'u1', expect.anything(), 'GUEST');
-  });
-
-  it('a viewer asking to SCHEDULE gets the same refusal as the route', async () => {
-    const { tool } = build('GUEST');
-    const res = await tool('create_post').execute(
-      { content: 'hi', targetChannelIds: [], scheduledAt: FUTURE },
-      CTX,
-    );
-    expect(res.success).toBe(false);
-    expect(res.error).toContain('Only members can schedule posts');
+    expect(spy).toHaveBeenCalledTimes(1);
   });
 
   it('a member may schedule', async () => {
@@ -137,7 +149,7 @@ describe('chatbot create_post', () => {
       CTX,
     );
     expect(res.success).toBe(false);
-    expect(res.error).toContain('does not allow');
+    expect(res.error).toContain(REFUSAL);
     expect(spy).not.toHaveBeenCalled();
   });
 
@@ -161,36 +173,25 @@ describe('chatbot create_post', () => {
 });
 
 describe('chatbot update_post', () => {
-  it('a viewer may edit their own draft', async () => {
-    const { tool } = build('GUEST');
+  it('a viewer is refused, even on their own draft', async () => {
+    const { posts, tool } = build('GUEST');
+    const spy = jest.spyOn(posts, 'updatePost');
+    const res = await tool('update_post').execute(
+      { postId: 'p1', content: 'new' },
+      CTX,
+    );
+    expect(res.success).toBe(false);
+    expect(res.error).toContain(REFUSAL);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('a member may edit a draft', async () => {
+    const { tool } = build('MEMBER');
     const res = await tool('update_post').execute(
       { postId: 'p1', content: 'new' },
       CTX,
     );
     expect(res.success).toBe(true);
-  });
-
-  it('a viewer cannot schedule an existing draft', async () => {
-    const { tool } = build('GUEST');
-    const res = await tool('update_post').execute(
-      { postId: 'p1', scheduledAt: FUTURE },
-      CTX,
-    );
-    expect(res.success).toBe(false);
-  });
-
-  it("a viewer cannot edit someone else's post", async () => {
-    const { tool } = build('GUEST', {
-      id: 'p1',
-      status: 'draft',
-      createdById: 'someone-else',
-      jobId: null,
-    });
-    const res = await tool('update_post').execute(
-      { postId: 'p1', content: 'x' },
-      CTX,
-    );
-    expect(res.success).toBe(false);
   });
 
   it('a non-member is refused', async () => {
@@ -206,21 +207,13 @@ describe('chatbot update_post', () => {
 });
 
 describe('chatbot delete_post', () => {
-  it('a viewer may delete their own draft', async () => {
-    const { tool } = build('GUEST');
-    const res = await tool('delete_post').execute({ postId: 'p1' }, CTX);
-    expect(res.success).toBe(true);
-  });
-
-  it('a viewer cannot delete a scheduled post', async () => {
-    const { tool } = build('GUEST', {
-      id: 'p1',
-      status: 'scheduled',
-      createdById: 'u1',
-      jobId: 'j',
-    });
+  it('a viewer is refused, even on their own draft', async () => {
+    const { posts, tool } = build('GUEST');
+    const spy = jest.spyOn(posts, 'deletePost');
     const res = await tool('delete_post').execute({ postId: 'p1' }, CTX);
     expect(res.success).toBe(false);
+    expect(res.error).toContain(REFUSAL);
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it('a member may delete a scheduled post', async () => {
