@@ -10,6 +10,13 @@
 --   * queued_posts_per_channel -- was -1 (UNLIMITED) on EVERY plan because the
 --     seed's upsert once omitted the column, so the cap post-queue.service.ts
 --     enforces never applied to anyone.
+--   * ai_tokens_per_month -- prod read 1000/2000/5000 on BASIC/PRO/MAX against
+--     the seed's 10000/20000/50000: a TENTH of the intended allowance. Commit
+--     27d57515 raised them on 2026-06-27 and has been on main (deployed) ever
+--     since; the rows never moved, because nothing runs the seed. Confirmed
+--     against the live prod table on 2026-11-26, which also showed the prices
+--     and the queue cap still stale -- all three are the same root cause.
+--     FREE's 100 was already correct.
 --
 -- SAFE TO RUN NOW because there are no real customer subscriptions yet (test
 -- accounts only, confirmed 2026-11-26). With live customers this would need a
