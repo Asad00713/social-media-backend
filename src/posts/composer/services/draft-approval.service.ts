@@ -66,6 +66,11 @@ export interface DraftApprovalView {
   canApprove: boolean;
   /** The caller may switch the requirement off. */
   canTurnOff: boolean;
+  /**
+   * The caller may switch the requirement on: the draft's author or an
+   * approver. The same rule setRequired enforces when it would write.
+   */
+  canRequest: boolean;
 }
 
 type ApprovalRow = Pick<
@@ -118,6 +123,17 @@ interface PostCardFacts {
   thumbnailUrl: string | null;
   campaignName: string | null;
 }
+
+/**
+ * Who may switch approval on for a draft: its author or an approver. One rule
+ * for the write (setRequired) and for the view's `canRequest`, so the two
+ * cannot drift.
+ */
+const mayRequestApproval = (
+  row: Pick<ApprovalRow, 'createdById'>,
+  userId: string,
+  role: CallerRole,
+): boolean => row.createdById === userId || may(role, APPROVE_CAPABILITY);
 
 const may = (role: CallerRole, cap: typeof APPROVE_CAPABILITY): boolean =>
   role === 'SUPER_ADMIN' || (role !== undefined && roleCan(role, cap));
@@ -187,11 +203,7 @@ export class DraftApprovalService {
       const policyNotSentYet =
         !!current?.byPolicy && !current.notifiedAt && !current.approvedAt;
       const wouldWrite = !current || policyNotSentYet;
-      if (
-        wouldWrite &&
-        row.createdById !== userId &&
-        !may(role, APPROVE_CAPABILITY)
-      ) {
+      if (wouldWrite && !mayRequestApproval(row, userId, role)) {
         throw new ForbiddenException(
           'Only the author or an approver can ask for approval on this draft.',
         );
@@ -498,6 +510,8 @@ export class DraftApprovalService {
         approvedAt: null,
         canApprove: false,
         canTurnOff,
+        // Nothing saved yet: whoever saves it is its author.
+        canRequest: !row || mayRequestApproval(row, userId, role),
       };
     }
     const state = approvalState(approval, contentFingerprint(row));
@@ -523,6 +537,7 @@ export class DraftApprovalService {
         may(role, APPROVE_CAPABILITY) &&
         (ALLOW_SELF_APPROVAL || approval.requestedById !== userId),
       canTurnOff,
+      canRequest: mayRequestApproval(row, userId, role),
     };
   }
 

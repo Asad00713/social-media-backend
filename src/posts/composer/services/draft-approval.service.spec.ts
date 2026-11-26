@@ -685,6 +685,56 @@ describe('DraftApprovalService emails', () => {
       },
     );
 
+    describe('the view says whether you may ask (canRequest)', () => {
+      it('is true for the author', async () => {
+        const h = setup();
+        const view = await h.service.get(WS, POST, REQUESTER, 'MEMBER');
+        expect(view.canRequest).toBe(true);
+      });
+
+      it.each(['ADMIN', 'OWNER'] as const)(
+        'is true for %s who is not the author',
+        async (role) => {
+          const h = setup();
+          const view = await h.service.get(WS, POST, ADMIN, role);
+          expect(view.canRequest).toBe(true);
+        },
+      );
+
+      it('is false for a MEMBER who is not the author', async () => {
+        const h = setup();
+        const view = await h.service.get(WS, POST, OTHER_MEMBER, 'MEMBER');
+        expect(view.canRequest).toBe(false);
+      });
+
+      it('answers the same once approval is already on', async () => {
+        const h = setup();
+        pending(h);
+        expect(
+          (await h.service.get(WS, POST, OTHER_MEMBER, 'MEMBER')).canRequest,
+        ).toBe(false);
+        expect(
+          (await h.service.get(WS, POST, REQUESTER, 'MEMBER')).canRequest,
+        ).toBe(true);
+      });
+
+      it('agrees with setRequired(true): whoever the view clears can ask, whoever it refuses cannot', async () => {
+        const cases = [
+          [REQUESTER, 'MEMBER'],
+          [ADMIN, 'ADMIN'],
+          [OTHER_MEMBER, 'MEMBER'],
+        ] as const;
+        for (const [user, role] of cases) {
+          const h = setup();
+          const { canRequest } = await h.service.get(WS, POST, user, role);
+          const asked = h.service.setRequired(WS, POST, user, role, true);
+          if (canRequest) await expect(asked).resolves.toBeDefined();
+          else await expect(asked).rejects.toBeInstanceOf(ForbiddenException);
+          await settle();
+        }
+      });
+    });
+
     it('keeps turning approval off for approvers only', async () => {
       const h = setup();
       pending(h);
