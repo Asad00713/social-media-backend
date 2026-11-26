@@ -1,13 +1,16 @@
 import { Logger } from '@nestjs/common';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import {
   providerSubscriptions,
   subscriptionItems,
   subscriptions,
+  workspace,
+  workspaceUsage,
   ProviderItemType,
   PaymentProvider,
 } from '../../drizzle/schema';
+import { liveWorkspaces } from '../../posts/soft-delete/soft-delete';
 
 /**
  * Taking entitlements back when a provider stops billing for them.
@@ -97,6 +100,48 @@ export async function revokeBasePlan(input: {
     extraWorkspaces: 0,
     extraAiTokens: 0,
   });
+
+  // The purchased extras die with the subscription.
+  //
+  // `resolveWorkspaceLimits` writes the PLAN's limits and ignores add-ons, so
+  // these three columns are the only record of purchased capacity — and they
+  // are always read ON TOP of the written limit (`usage.service.ts:131` for
+  // seats, `ai-token.service.ts:248` for the live AI quota). Re-applying FREE
+  // above therefore does NOT take them back: without this the account keeps
+  // every seat and AI credit it bought, for free, indefinitely.
+  //
+  // Stripe's own cancellation path does exactly this (`webhook.service.ts`).
+  // It was the one thing this shared util did not carry over, so the gap was
+  // live on both Paddle and Lemon Squeezy.
+  //
+  // The owned workspaces are resolved in their own SELECT rather than as a
+  // sub-select inside the UPDATE. Two reasons: the id list is wanted anyway to
+  // skip the write when the account owns nothing, and a correlated sub-select
+  // is the one shape the `db` fake in these specs cannot evaluate, so the
+  // version with it was untestable on the Paddle path.
+  const owned = (await db
+    .select({ id: workspace.id })
+    .from(workspace)
+    .where(and(eq(workspace.ownerId, userId), liveWorkspaces()))) as {
+    id: string;
+  }[];
+
+  if (owned.length > 0) {
+    await db
+      .update(workspaceUsage)
+      .set({
+        extraChannelsPurchased: 0,
+        extraMembersPurchased: 0,
+        extraAiTokensPurchased: 0,
+        updatedAt: new Date(),
+      })
+      .where(
+        inArray(
+          workspaceUsage.workspaceId,
+          owned.map((w) => w.id),
+        ),
+      );
+  }
 
   await db
     .delete(subscriptionItems)
