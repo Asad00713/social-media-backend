@@ -13,9 +13,9 @@ export function safeReturnUrl(
   allowedOrigins: readonly (string | null | undefined)[],
 ): string {
   if (!candidate || !/^https?:\/\//i.test(candidate)) return fallback;
-  let origin: string;
+  let url: URL;
   try {
-    origin = new URL(candidate).origin;
+    url = new URL(candidate);
   } catch {
     return fallback;
   }
@@ -28,5 +28,6 @@ export function safeReturnUrl(
       // A misconfigured value allows nothing.
     }
   }
-  return allowed.has(origin) ? candidate : fallback;
+  // The parsed form, not the raw string: what was checked is what is used.
+  return allowed.has(url.origin) ? url.href : fallback;
 }

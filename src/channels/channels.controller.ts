@@ -4351,11 +4351,14 @@ export class ChannelsController {
         },
       );
 
-      // Redirect to frontend
+      // Redirect to frontend: only a FRONTEND_URL-origin return URL is
+      // followed (never the API origin, whose callbacks would chain the
+      // redirect on); otherwise the absolute frontend page.
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
       const redirectUrl = safeReturnUrl(
         stateRecord.redirectUrl,
-        '/channels/connect/success',
-        [process.env.FRONTEND_URL, process.env.APP_URL],
+        `${frontendUrl}/channels/connect/success`,
+        [frontendUrl],
       );
       const separator = redirectUrl.includes('?') ? '&' : '?';
       return res.redirect(
@@ -4363,10 +4366,11 @@ export class ChannelsController {
       );
     } catch (error) {
       console.error('[Mastodon OAuth] Error:', error);
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
       const redirectUrl = safeReturnUrl(
         stateRecord.redirectUrl,
-        '/channels/connect/error',
-        [process.env.FRONTEND_URL, process.env.APP_URL],
+        `${frontendUrl}/channels/connect/error`,
+        [frontendUrl],
       );
       const separator = redirectUrl.includes('?') ? '&' : '?';
       return res.redirect(

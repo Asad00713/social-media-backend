@@ -111,37 +111,44 @@ describe('ChannelsController.mastodonOAuthCallback return URL', () => {
     );
   });
 
-  it('follows a return URL on the API origin', async () => {
-    expect(await landing(`${API}/done`)).toBe(
-      `${API}/done?platform=mastodon&success=true`,
-    );
-  });
-
-  it.each([
+  const REFUSED: [string, string][] = [
     ['an evil origin', 'https://evil.example/phish'],
     ['a relative path', '/dashboard'],
     ['a scheme-relative URL', '//evil.com/phish'],
-  ])('falls back to the default path for %s', async (_what, url) => {
-    expect(await landing(url)).toBe(
-      '/channels/connect/success?platform=mastodon&success=true',
-    );
-  });
+    // The API is not a place to land: its own callbacks would chain the
+    // redirect on (e.g. into the Canva callback).
+    ['the API origin', `${API}/done`],
+    [
+      'the API origin’s Canva callback (chained)',
+      `${API}/canva/oauth/callback?code=x&state=y`,
+    ],
+  ];
 
-  it.each([
-    ['an evil origin', 'https://evil.example/phish'],
-    ['a relative path', '/dashboard'],
-    ['a scheme-relative URL', '//evil.com/phish'],
-  ])('falls back on the error path too, for %s', async (_what, url) => {
-    failExchange = true;
-    const target = await landing(url);
-    expect(
-      target.startsWith('/channels/connect/error?error=oauth_failed'),
-    ).toBe(true);
-  });
+  it.each(REFUSED)(
+    'falls back to the absolute frontend success page for %s',
+    async (_what, url) => {
+      expect(await landing(url)).toBe(
+        `${FRONTEND}/channels/connect/success?platform=mastodon&success=true`,
+      );
+    },
+  );
 
-  it('keeps the default path when no return URL was stored', async () => {
+  it.each(REFUSED)(
+    'falls back to the absolute frontend error page for %s',
+    async (_what, url) => {
+      failExchange = true;
+      const target = await landing(url);
+      expect(
+        target.startsWith(
+          `${FRONTEND}/channels/connect/error?error=oauth_failed`,
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it('uses the absolute frontend page when no return URL was stored', async () => {
     expect(await landing(null)).toBe(
-      '/channels/connect/success?platform=mastodon&success=true',
+      `${FRONTEND}/channels/connect/success?platform=mastodon&success=true`,
     );
   });
 });

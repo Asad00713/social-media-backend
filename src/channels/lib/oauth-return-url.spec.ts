@@ -1,3 +1,18 @@
+// No real request may leave a test: both fetches are stubbed, though this
+// helper never sends one.
+jest.mock('undici', () => ({
+  ...jest.requireActual<typeof import('undici')>('undici'),
+  fetch: jest.fn(() =>
+    Promise.reject(new Error('undici fetch is stubbed in this spec')),
+  ),
+}));
+beforeEach(() => {
+  jest
+    .spyOn(global, 'fetch')
+    .mockRejectedValue(new Error('global fetch is stubbed in this spec'));
+});
+afterEach(() => jest.restoreAllMocks());
+
 import { safeReturnUrl } from './oauth-return-url';
 
 const ALLOWED = ['https://app.schedura.test', 'https://api.schedura.test'];
@@ -9,7 +24,16 @@ describe('safeReturnUrl', () => {
     'https://app.schedura.test',
     'https://api.schedura.test/done',
   ])('keeps %s: one of our own origins', (url) => {
-    expect(safeReturnUrl(url, FALLBACK, ALLOWED)).toBe(url);
+    expect(safeReturnUrl(url, FALLBACK, ALLOWED)).toBe(new URL(url).href);
+  });
+
+  it('returns the parsed URL, not the raw string', () => {
+    expect(
+      safeReturnUrl('HTTPS://APP.schedura.test/a b?x=1', FALLBACK, ALLOWED),
+    ).toBe('https://app.schedura.test/a%20b?x=1');
+    expect(safeReturnUrl('https://app.schedura.test', FALLBACK, ALLOWED)).toBe(
+      'https://app.schedura.test/',
+    );
   });
 
   it.each([
