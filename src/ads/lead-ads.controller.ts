@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -18,6 +19,8 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { db } from '../drizzle/db';
 import { leadRoutes, leadForms } from '../drizzle/schema';
 import { signWebhookPayload } from './utils/hmac';
+import { assertWebhookUrl, WEBHOOK_URL_UNREACHABLE } from './utils/webhook-url';
+import { fetchPublic, UnsafeUrlError } from '../common/net/public-fetch';
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
 import { PlanFeatureGuard } from '../billing/plan/plan-feature.guard';
@@ -102,6 +105,9 @@ export class LeadAdsController {
     @Body() body: CreateRouteBody,
   ) {
     await this.resolveForm(wid, formId);
+    if (body.type === 'webhook' || body.config?.url !== undefined) {
+      await assertWebhookUrl(body.config?.url);
+    }
 
     const inserted = await db
       .insert(leadRoutes)
@@ -131,6 +137,9 @@ export class LeadAdsController {
     @Body() body: UpdateRouteBody,
   ) {
     await this.resolveForm(wid, formId);
+    if (body.config?.url !== undefined) {
+      await assertWebhookUrl(body.config.url);
+    }
 
     // Build update payload — only include fields that were provided
     const updates: Partial<{
@@ -193,6 +202,7 @@ export class LeadAdsController {
     @Body() body: TestWebhookBody,
   ) {
     await this.resolveForm(wid, formId);
+    await assertWebhookUrl(body.url);
 
     const samplePayload = {
       id: 'test-' + crypto.randomUUID(),
@@ -221,15 +231,21 @@ export class LeadAdsController {
     let ok: boolean;
 
     try {
-      const res = await fetch(body.url, {
+      // Redirects are not followed: a 3xx is reported as a failed test.
+      const res = await fetchPublic(body.url, {
         method: 'POST',
         headers,
         body: payloadStr,
         signal: AbortSignal.timeout(10_000),
       });
+      await res.body?.cancel().catch(() => undefined);
       status = res.status;
       ok = res.ok;
     } catch (err) {
+      // The host resolved to a private address at connect time.
+      if (err instanceof UnsafeUrlError) {
+        throw new BadRequestException(WEBHOOK_URL_UNREACHABLE);
+      }
       const message = err instanceof Error ? err.message : String(err);
       return { ok: false, status: null, error: message };
     }

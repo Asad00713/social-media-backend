@@ -2,6 +2,7 @@ import { lookup as dnsLookup } from 'dns';
 import { isIP } from 'net';
 import ipaddr from 'ipaddr.js';
 import { Agent, fetch as undiciFetch } from 'undici';
+import type { RequestInit as UndiciRequestInit } from 'undici';
 
 // ── SSRF guard ──────────────────────────────────────────────────────────────
 // Client-supplied URLs (link previews, draft media, thumbnails) are fetched
@@ -51,6 +52,14 @@ export function isPrivateAddress(address: string): boolean {
   );
 }
 
+/** checkedLookup refused a host because it resolved to a non-public address. */
+export class PrivateAddressError extends Error {
+  constructor(message = 'Link points at a private address') {
+    super(message);
+    this.name = 'PrivateAddressError';
+  }
+}
+
 interface LookupResult {
   address: string;
   family: number;
@@ -80,7 +89,7 @@ export function checkedLookup(
   resolver(host, { all: true }, (err, addrs) => {
     if (err) return callback(err, []);
     if (addrs.length === 0 || addrs.some((a) => isPrivateAddress(a.address))) {
-      return callback(new Error('Link points at a private address'), []);
+      return callback(new PrivateAddressError(), []);
     }
     if ((options as { all?: boolean } | null)?.all) {
       return callback(null, addrs);
@@ -110,6 +119,93 @@ export function assertPublicUrl(url: string): Promise<URL> {
     return Promise.reject(new Error('Link points at a private address'));
   }
   return Promise.resolve(parsed);
+}
+
+// ── One request to a user-named server ──────────────────────────────────────
+
+/**
+ * The target is not a public http(s) host. The message never names the
+ * address a hostname resolved to, so it is safe to log; callers still show
+ * their own copy to the client.
+ */
+export class UnsafeUrlError extends Error {
+  constructor(message = 'URL does not point at the public internet') {
+    super(message);
+    this.name = 'UnsafeUrlError';
+  }
+}
+
+export type PublicRequestInit = Omit<
+  UndiciRequestInit,
+  'redirect' | 'dispatcher'
+>;
+
+/**
+ * ONE request to a URL a user supplied or stored (a lead webhook, a Mastodon
+ * server): the same guard as fetchPublicMedia, but redirects are NOT followed.
+ * A webhook POST or an API call has no business being bounced elsewhere, so a
+ * 3xx comes back as an ordinary non-ok Response and the caller fails on it.
+ *
+ * Throws UnsafeUrlError when the URL is not http(s), is a private IP literal,
+ * or its hostname resolves to a private address at connect time. Any other
+ * failure (DNS miss, refused, timeout) is rethrown unchanged.
+ */
+export async function fetchPublic(
+  url: string,
+  init: PublicRequestInit = {},
+): Promise<Response> {
+  try {
+    await assertPublicUrl(url);
+  } catch {
+    throw new UnsafeUrlError();
+  }
+  try {
+    return (await undiciFetch(url, {
+      ...init,
+      redirect: 'manual',
+      dispatcher: publicAgent,
+    })) as unknown as Response;
+  } catch (err) {
+    if (
+      (err as { cause?: unknown } | null)?.cause instanceof PrivateAddressError
+    ) {
+      throw new UnsafeUrlError();
+    }
+    throw err;
+  }
+}
+
+/**
+ * Save-time check for a server a user names (a webhook URL, a Mastodon
+ * server): http(s), not a private literal, and a hostname that resolves ONLY
+ * to public addresses. It turns `localhost` or an internal name into a clean
+ * refusal before anything is stored or sent.
+ *
+ * It does not replace the connect-time check: DNS can change after this runs,
+ * so every request still goes through publicAgent. A name that does not
+ * resolve is refused too. `resolver` is injectable for tests.
+ */
+export async function assertPublicHost(
+  url: string,
+  resolver: Resolver = dnsLookup as unknown as Resolver,
+): Promise<URL> {
+  let parsed: URL;
+  try {
+    parsed = await assertPublicUrl(url);
+  } catch {
+    throw new UnsafeUrlError();
+  }
+  const host = parsed.hostname.replace(/^\[|\]$/g, '');
+  if (isIP(host)) return parsed;
+  await new Promise<void>((resolve, reject) =>
+    checkedLookup(
+      host,
+      { all: true },
+      (err) => (err ? reject(new UnsafeUrlError()) : resolve()),
+      resolver,
+    ),
+  );
+  return parsed;
 }
 
 // ── Media downloads ─────────────────────────────────────────────────────────

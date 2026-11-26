@@ -13,6 +13,8 @@ import {
   type LeadDeliveredProps,
 } from '../../email/templates/reports/lead-delivered';
 import { signWebhookPayload } from '../utils/hmac';
+import { WEBHOOK_URL_UNREACHABLE } from '../utils/webhook-url';
+import { fetchPublic, UnsafeUrlError } from '../../common/net/public-fetch';
 
 type RouteType = 'inbox' | 'email' | 'webhook';
 
@@ -237,7 +239,29 @@ export class LeadRouterService {
       headers['X-Schedura-Signature'] = signWebhookPayload(secret, body);
     }
 
-    const res = await fetch(url, { method: 'POST', headers, body });
+    // Public hosts only, pinned at connect; a 3xx is not followed and fails
+    // below like any other non-2xx answer. No save-time style DNS pre-check
+    // here: a transient DNS error must stay retryable.
+    let res: Response;
+    try {
+      res = await fetchPublic(url, { method: 'POST', headers, body });
+    } catch (err) {
+      // A URL stored before the save-time check, or a name that now resolves
+      // privately. Recorded as failed, not thrown: no retry can fix it.
+      if (err instanceof UnsafeUrlError) {
+        this.logger.warn(
+          `LeadRouterService: lead=${payload.id} webhook skipped, the URL is not a public address`,
+        );
+        return {
+          type: 'webhook',
+          status: 'failed',
+          at: new Date().toISOString(),
+          error: WEBHOOK_URL_UNREACHABLE,
+        };
+      }
+      throw err;
+    }
+    await res.body?.cancel().catch(() => undefined);
 
     if (!res.ok) {
       throw new Error(
