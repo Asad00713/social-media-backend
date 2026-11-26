@@ -169,6 +169,18 @@ describe('MentionLookupService', () => {
       expect(init.dispatcher).toBe(publicAgent);
     });
 
+    it('asks a stored http:// server over https', async () => {
+      fetchMock.mockImplementation(() => reply({ accounts: [] }));
+      await service.lookup(
+        'mastodon',
+        'tok',
+        { instanceUrl: 'http://mastodon.social/' },
+        'ann',
+      );
+      const [url] = fetchMock.mock.calls[0] as [string];
+      expect(new URL(url).origin).toBe('https://mastodon.social');
+    });
+
     it('says not found without a server to ask', async () => {
       expect((await service.lookup('mastodon', 'tok', {}, 'ann')).found).toBe(
         false,

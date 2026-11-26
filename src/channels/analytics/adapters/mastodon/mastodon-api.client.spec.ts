@@ -206,3 +206,15 @@ describe('MastodonApiClient default transport (SSRF guard)', () => {
     expect(mockedUndici).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('MastodonApiClient.normalizeInstance', () => {
+  it.each([
+    ['http://mastodon.social', 'https://mastodon.social'],
+    ['HTTPS://mastodon.social//', 'https://mastodon.social'],
+    ['mastodon.social/', 'https://mastodon.social'],
+  ])('rewrites %s to %s (https only)', (raw, expected) => {
+    expect(new MastodonApiClient(jest.fn()).normalizeInstance(raw)).toBe(
+      expected,
+    );
+  });
+});

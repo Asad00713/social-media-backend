@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, Logger } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
 import * as http from 'http';
 import type { AddressInfo } from 'net';
@@ -161,4 +161,66 @@ describe('MastodonService refuses a non-public server address', () => {
       await new Promise((r) => server.close(r));
     }
   });
+});
+
+describe('MastodonService speaks https only', () => {
+  const ok = () =>
+    new Response(JSON.stringify({ id: '1' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+
+  it.each([
+    ['http://93.184.216.34', 'https://93.184.216.34'],
+    ['HTTP://93.184.216.34/', 'https://93.184.216.34'],
+    ['93.184.216.34', 'https://93.184.216.34'],
+    ['https://93.184.216.34//', 'https://93.184.216.34'],
+  ])('rewrites %s to %s before any request', async (typed, expected) => {
+    mockedFetch.mockImplementation(() => Promise.resolve(ok()));
+    const app = await service.registerApp(typed, 'https://app/cb');
+    expect(app.instanceUrl).toBe(expected);
+    expect((mockedFetch.mock.calls[0] as [string])[0]).toBe(
+      `${expected}/api/v1/apps`,
+    );
+  });
+
+  it('rewrites a stored http:// address on read (no migration needed)', async () => {
+    mockedFetch.mockImplementation(() => Promise.resolve(ok()));
+    await service.verifyCredentials('http://93.184.216.34', 'tok');
+    expect((mockedFetch.mock.calls[0] as [string])[0]).toBe(
+      'https://93.184.216.34/api/v1/accounts/verify_credentials',
+    );
+  });
+});
+
+describe('MastodonService does not echo the server’s error body', () => {
+  const SECRET = 'internal-detail-' + 'x'.repeat(5000);
+  const fail = () => Promise.resolve(new Response(SECRET, { status: 422 }));
+
+  it.each([
+    [
+      'registerApp',
+      () => service.registerApp(PUBLIC_INSTANCE, 'https://app/cb'),
+      'Failed to register app with Mastodon instance',
+    ],
+    [
+      'exchangeCodeForToken',
+      () => service.exchangeCodeForToken(PUBLIC_INSTANCE, 'id', 's', 'c', 'cb'),
+      'Failed to authenticate with Mastodon',
+    ],
+  ])(
+    '%s: plain copy to the client, truncated body in the log',
+    async (_n, call, copy) => {
+      const logged = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+      mockedFetch.mockImplementation(fail);
+      const err = await refusal(call());
+      expect(err.message).toBe(copy);
+      expect(err.message).not.toContain('internal-detail');
+      const line = String(logged.mock.calls[0]?.[0]);
+      expect(line).toContain('internal-detail');
+      expect(line.length).toBeLessThan(700);
+    },
+  );
 });

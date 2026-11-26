@@ -93,10 +93,14 @@ export class MastodonApiClient {
   }
 
   normalizeInstance(instanceUrl: string): string {
-    // Accept "mastodon.social", "https://mastodon.social", "https://mastodon.social/"
-    const trimmed = instanceUrl.replace(/\/$/, '');
-    if (/^https?:\/\//.test(trimmed)) return trimmed;
-    return `https://${trimmed}`;
+    // Accept "mastodon.social", "https://mastodon.social", "https://mastodon.social/".
+    // Always https: the guarded request follows no redirect, so a stored
+    // http:// address is rewritten here rather than bounced by the server.
+    const host = instanceUrl
+      .trim()
+      .replace(/^https?:\/\//i, '')
+      .replace(/\/+$/, '');
+    return `https://${host}`;
   }
 
   private mapCode(status: number): MastodonApiError['code'] {

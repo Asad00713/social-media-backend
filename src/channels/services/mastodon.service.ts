@@ -18,6 +18,14 @@ import {
 export const MASTODON_SERVER_UNREACHABLE =
   "That Mastodon server address isn't reachable from the internet.";
 
+/** A remote error body goes to the log, cut short; never to the client. */
+const MAX_LOGGED_BODY = 500;
+function truncateForLog(body: string): string {
+  return body.length > MAX_LOGGED_BODY
+    ? `${body.slice(0, MAX_LOGGED_BODY)}… [${body.length - MAX_LOGGED_BODY} more chars]`
+    : body;
+}
+
 /**
  * Every request to a Mastodon server. The server address is user-supplied
  * (typed at connect, then stored on the channel), so it goes through the SSRF
@@ -112,20 +120,19 @@ export class MastodonService {
   constructor(private readonly configService: ConfigService) {}
 
   /**
-   * Normalize instance URL (ensure https:// and no trailing slash)
+   * Normalize instance URL: always https://, no trailing slash.
+   *
+   * Mastodon requires TLS, and requests never follow redirects (SSRF guard),
+   * so an `http://` address, typed or already stored, is rewritten to
+   * https here, on every read, instead of relying on the server's redirect.
    */
   private normalizeInstanceUrl(instanceUrl: string): string {
-    let url = instanceUrl.trim().toLowerCase();
-
-    // Add https:// if no protocol
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      url = `https://${url}`;
-    }
-
-    // Remove trailing slash
-    url = url.replace(/\/+$/, '');
-
-    return url;
+    const host = instanceUrl
+      .trim()
+      .toLowerCase()
+      .replace(/^https?:\/\//, '')
+      .replace(/\/+$/, '');
+    return `https://${host}`;
   }
 
   /**
@@ -161,10 +168,13 @@ export class MastodonService {
     });
 
     if (!response.ok) {
+      // The body is the remote server's: log it (truncated), never echo it.
       const errorData = await response.text();
-      this.logger.error(`Failed to register Mastodon app: ${errorData}`);
+      this.logger.error(
+        `Failed to register Mastodon app: HTTP ${response.status} ${truncateForLog(errorData)}`,
+      );
       throw new BadRequestException(
-        `Failed to register app with Mastodon instance: ${errorData}`,
+        'Failed to register app with Mastodon instance',
       );
     }
 
@@ -234,10 +244,10 @@ export class MastodonService {
 
     if (!response.ok) {
       const errorData = await response.text();
-      this.logger.error(`Failed to exchange code for token: ${errorData}`);
-      throw new BadRequestException(
-        `Failed to authenticate with Mastodon: ${errorData}`,
+      this.logger.error(
+        `Failed to exchange code for token: HTTP ${response.status} ${truncateForLog(errorData)}`,
       );
+      throw new BadRequestException('Failed to authenticate with Mastodon');
     }
 
     const data = await response.json();
