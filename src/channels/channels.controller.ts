@@ -49,6 +49,7 @@ import { ThreadsService } from './services/threads.service';
 import { BlueskyService } from './services/bluesky.service';
 import { MastodonService } from './services/mastodon.service';
 import { safeReturnUrl } from './lib/oauth-return-url';
+import { TrackUnsplashDownloadDto } from './dto/unsplash-download.dto';
 import {
   MENTION_LOOKUP_PLATFORMS,
   MentionLookupService,
@@ -5946,10 +5947,7 @@ export class ChannelsController {
   @Post('unsplash/download')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async trackUnsplashDownload(@Body() dto: { downloadLocation: string }) {
-    if (!dto.downloadLocation) {
-      throw new BadRequestException('downloadLocation is required');
-    }
+  async trackUnsplashDownload(@Body() dto: TrackUnsplashDownloadDto) {
     await this.unsplashService.trackDownload(dto.downloadLocation);
     return { success: true, message: 'Download tracked successfully' };
   }
