@@ -3,6 +3,7 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  InternalServerErrorException,
 } from '@nestjs/common';
 import { eq, and, sql } from 'drizzle-orm';
 import Stripe from 'stripe';
@@ -163,17 +164,39 @@ export class SubscriptionService {
     //    line below, so a Lemon Squeezy signup created a Stripe customer and
     //    wrote `stripe_customer_id` to our database, silently and with no
     //    error. Non-Stripe accounts are sent to Checkout, which IS routed.
-    const provider = await this.providers.providerForUser(dto.userId);
-    if (provider !== 'stripe') {
-      throw new BadRequestException(
-        `Direct subscription creation is not supported for ${provider} — ` +
-          'start a checkout session instead.',
-      );
+    //
+    //    FREE IS EXEMPT, and that exemption is load-bearing. A FREE
+    //    subscription moves no money and touches no provider:
+    //    `createFreeSubscription` writes a local row and the usage limits,
+    //    and that is all. Refusing it because the ACCOUNT's provider is not
+    //    Stripe left every new workspace on a Paddle (or Lemon Squeezy)
+    //    deployment with NO subscription row — `WorkspaceService` only logs
+    //    the failure, so the workspace was created and nothing looked wrong.
+    //
+    //    The absence surfaced later and far worse: a customer paid, the
+    //    `subscription.created` webhook arrived, and `createRowFromCheckout`
+    //    found no row to attach the Paddle subscription to. The payment
+    //    bought nothing. Caught end to end in sandbox, 2026-11-26.
+    const isFree = dto.planCode === 'FREE';
+    if (!isFree) {
+      const provider = await this.providers.providerForUser(dto.userId);
+      if (provider !== 'stripe') {
+        throw new BadRequestException(
+          `Direct subscription creation is not supported for ${provider} — ` +
+            'start a checkout session instead.',
+        );
+      }
     }
 
-    // 1. Get or create Stripe customer
-    const { stripeCustomerId } =
-      await this.customerService.getOrCreateStripeCustomer(dto.userId);
+    // 1. Get or create Stripe customer — for a PAID subscription only. A FREE
+    //    row needs no customer anywhere (`subscriptions.stripe_customer_id` is
+    //    nullable), and creating one here would reintroduce exactly what the
+    //    guard above exists to prevent: a Paddle or Lemon Squeezy signup
+    //    silently acquiring a Stripe customer.
+    const stripeCustomerId = isFree
+      ? null
+      : (await this.customerService.getOrCreateStripeCustomer(dto.userId))
+          .stripeCustomerId;
 
     // 2. Validate workspace exists and user is owner
     const ws = await db
@@ -251,6 +274,15 @@ export class SubscriptionService {
     //    because this direct path has no Lemon Squeezy equivalent and so
     //    cannot be one of the abstracted operations — step 0 already refused
     //    non-Stripe accounts.
+    // FREE returned at step 5, so `stripeCustomerId` is non-null from here on.
+    // Asserted rather than assumed: a future edit that moves the FREE branch
+    // would otherwise send `null` into Stripe and fail inside their API.
+    if (!stripeCustomerId) {
+      throw new InternalServerErrorException(
+        'A paid subscription reached the Stripe call with no customer id.',
+      );
+    }
+
     const stripeSubscription = await createStripeSubscriptionDirect(
       this.stripeService,
       {
@@ -368,7 +400,9 @@ export class SubscriptionService {
   private async createFreeSubscription(
     userId: string,
     workspaces: { id: string; createdAt: Date }[],
-    stripeCustomerId: string,
+    // Null on a non-Stripe account: a FREE row needs no customer at any
+    // provider, and the column is nullable.
+    stripeCustomerId: string | null,
     plan: typeof plans.$inferSelect,
   ): Promise<SubscriptionResponse> {
     // Create local subscription record without Stripe subscription
