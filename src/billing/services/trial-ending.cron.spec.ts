@@ -1,14 +1,31 @@
 import { Logger } from '@nestjs/common';
 import { TrialEndingCron } from './trial-ending.cron';
 
-/** A select chain that resolves to fixed rows, whatever the clauses say. */
+/**
+ * A select chain that resolves to fixed rows, whatever the clauses say.
+ *
+ * `sendDue` runs TWO selects: the trials inside the window, then which of
+ * them a swept provider bills the plan for. This fake answers them in order,
+ * because it cannot read a where clause to tell them apart — a deliberate
+ * limit, not an oversight: what WHICH subscriptions are asked for is tested
+ * against the real table-aware fake in `trial-ending.cron.providers.spec.ts`.
+ * Here the second answer simply confirms every candidate, so these tests stay
+ * about what happens to a due trial once it is found.
+ */
 function dbReturning(rows: unknown[]): never {
+  const answers = [
+    rows,
+    (rows as { id: unknown }[]).map((row) => ({ subscriptionId: row.id })),
+  ];
+  let call = 0;
   const chain: Record<string, unknown> = {
     from: () => chain,
     innerJoin: () => chain,
     where: () => chain,
     then: (resolve: (v: unknown) => unknown) =>
-      Promise.resolve(rows).then(resolve),
+      Promise.resolve(answers[Math.min(call++, answers.length - 1)]).then(
+        resolve,
+      ),
   };
   return { select: () => chain } as never;
 }

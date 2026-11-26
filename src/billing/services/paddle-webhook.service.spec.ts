@@ -104,7 +104,12 @@ function payingAccount(extra: Partial<Row> = {}) {
 function subEvent(
   status: string,
   opts: {
-    items?: { priceId: string; quantity: number }[];
+    items?: {
+      priceId: string;
+      quantity: number;
+      /** Paddle carries trial dates PER ITEM; `null` is "no trial". */
+      trialDates?: { starts_at: string; ends_at: string } | null;
+    }[];
     scheduledChange?: { action: string; effective_at?: string } | null;
     customData?: Record<string, unknown> | null;
     nextBilledAt?: string | null;
@@ -125,6 +130,7 @@ function subEvent(
       items: items.map((i) => ({
         price: { id: i.priceId, product_id: 'pro_x' },
         quantity: i.quantity,
+        trial_dates: i.trialDates ?? null,
       })),
     },
   };
@@ -994,5 +1000,112 @@ describe('PaddleWebhookService: unknown events', () => {
     await expect(
       service.handleEvent('subscription.updated', undefined),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('PaddleWebhookService: trials', () => {
+  // `trial_end` is not cosmetic. `TrialEndingCron` filters on it
+  // (`gt(trialEnd, now)` and `lte(trialEnd, now + 3 days)`), so a Paddle
+  // subscription that never records one is invisible to the sweep: the
+  // customer gets no warning and is then charged. This file had no trial
+  // coverage at all, and the webhook wrote no trial field.
+  //
+  // Paddle carries the dates per ITEM, as `items[].trial_dates.ends_at`
+  // (developer.paddle.com, subscription.created / .updated).
+
+  it('records the trial end a Paddle trial reports', async () => {
+    const { service } = seed(payingAccount({ providerStatus: 'trialing' }));
+
+    await service.handleEvent(
+      'subscription.updated',
+      subEvent('trialing', {
+        items: [
+          {
+            priceId: PRICE_BASE,
+            quantity: 1,
+            trialDates: {
+              starts_at: '2026-11-14T09:00:00Z',
+              ends_at: '2026-11-21T09:00:00Z',
+            },
+          },
+        ],
+      }),
+    );
+
+    expect(subRow()).toMatchObject({ status: 'trialing' });
+    expect(subRow().trialEnd).toEqual(new Date('2026-11-21T09:00:00Z'));
+  });
+
+  it('records it on the creating event too', async () => {
+    // A trial that starts at checkout arrives on `subscription.created`. If
+    // only `.updated` wrote the column, a trial shorter than Paddle's next
+    // update would end before anything recorded it.
+    const { service } = seed({
+      subscriptions: [
+        { id: 42, userId: 'user-1', planCode: 'FREE', status: 'active' },
+      ],
+      provider_subscriptions: [],
+      subscription_items: [],
+      plans: [{ code: 'PRO' }],
+    });
+
+    await service.handleEvent(
+      'subscription.created',
+      subEvent('trialing', {
+        customData: { user_id: 'user-1', plan_code: 'PRO' },
+        items: [
+          {
+            priceId: PRICE_BASE,
+            quantity: 1,
+            trialDates: {
+              starts_at: '2026-11-14T09:00:00Z',
+              ends_at: '2026-11-28T09:00:00Z',
+            },
+          },
+        ],
+      }),
+    );
+
+    expect(subRow().trialEnd).toEqual(new Date('2026-11-28T09:00:00Z'));
+  });
+
+  it('reads the trial dates off whichever item carries them', async () => {
+    // The base plan is not guaranteed to be `items[0]`, and an add-on line
+    // added mid-trial can come first. Taking only the first item's dates
+    // would then read `null` and lose the trial.
+    const { service } = seed(payingAccount({ providerStatus: 'trialing' }));
+
+    await service.handleEvent(
+      'subscription.updated',
+      subEvent('trialing', {
+        items: [
+          { priceId: PRICE_CHANNEL, quantity: 2, trialDates: null },
+          {
+            priceId: PRICE_BASE,
+            quantity: 1,
+            trialDates: {
+              starts_at: '2026-11-14T09:00:00Z',
+              ends_at: '2026-11-21T09:00:00Z',
+            },
+          },
+        ],
+      }),
+    );
+
+    expect(subRow().trialEnd).toEqual(new Date('2026-11-21T09:00:00Z'));
+  });
+
+  it('leaves a recorded trial end alone when an event carries no trial', async () => {
+    // Paddle sends `"trial_dates": null` on every item of a subscription that
+    // is past its trial, and `subscription.updated` fires for unrelated
+    // reasons. Clearing the column on every such event would erase the date
+    // before the sweep ran, which is the same outage by another route.
+    const account = payingAccount();
+    account.subscriptions[0].trialEnd = new Date('2026-11-21T09:00:00Z');
+    const { service } = seed(account);
+
+    await service.handleEvent('subscription.updated', subEvent('active'));
+
+    expect(subRow().trialEnd).toEqual(new Date('2026-11-21T09:00:00Z'));
   });
 });

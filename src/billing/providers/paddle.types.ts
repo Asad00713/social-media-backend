@@ -43,6 +43,25 @@ export interface PaddleProduct {
 }
 
 /**
+ * The trial window on ONE subscription item.
+ *
+ * Paddle hangs trial dates off each item, not off the subscription: there is
+ * no top-level `trial_dates`, only `items[].trial_dates`, and the object is
+ * `null` on an item with no trial (`developer.paddle.com`,
+ * `subscription.created` / `subscription.updated` / `GET /subscriptions/{id}`
+ * — both child fields are RFC 3339 date-time strings and required when the
+ * object is present).
+ *
+ * So the base plan's item has to be found before a trial end can be read.
+ * Reading a field off the subscription would silently find `undefined`,
+ * which is how a Paddle trial end was never recorded at all.
+ */
+export interface PaddleTrialDates {
+  starts_at: string;
+  ends_at: string;
+}
+
+/**
  * One line on a subscription.
  *
  * `price` is a SNAPSHOT: Paddle's doc says it "reflects the price entity at
@@ -56,6 +75,7 @@ export interface PaddleSubscriptionItem {
   quantity: number;
   status?: 'active' | 'inactive' | 'trialing';
   recurring?: boolean;
+  trial_dates?: PaddleTrialDates | null;
 }
 
 export interface PaddleScheduledChange {
