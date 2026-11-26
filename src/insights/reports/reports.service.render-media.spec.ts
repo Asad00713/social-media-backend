@@ -20,7 +20,8 @@ import { ReportsService } from './reports.service';
 
 const ID = '00000000-0000-4000-8000-000000000001';
 const SHARE = 'a'.repeat(43);
-const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47]);
+// The type is read from the bytes, so this is a whole PNG signature.
+const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const PNG_DATA = `data:image/png;base64,${Buffer.from(PNG).toString('base64')}`;
 
 function setup(logoUrl: string | null) {

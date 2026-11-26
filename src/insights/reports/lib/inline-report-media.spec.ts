@@ -10,16 +10,54 @@ jest.mock('undici', () => {
 });
 const mockedFetch = undiciFetch as unknown as jest.Mock;
 
+import { Logger } from '@nestjs/common';
 import { publicAgent } from '../../../common/net/public-fetch';
 import type { ReportPayloadDto } from '../reports.dto';
 import {
   inlineReportMedia,
+  REPORT_IMAGE_BUDGET_BYTES,
   REPORT_IMAGE_MAX_BYTES,
+  sniffImageType,
 } from './inline-report-media';
 
 const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const PNG_DATA = `data:image/png;base64,${Buffer.from(PNG).toString('base64')}`;
 const PUBLIC_LOGO = 'https://93.184.216.34/logo.png';
+
+const ascii = (s: string): number[] => [...s].map((c) => c.charCodeAt(0));
+
+/** An ISO-BMFF `ftyp` box: size, 'ftyp', major brand, minor version, brands. */
+function ftyp(major: string, ...compatible: string[]): number[] {
+  return [
+    0,
+    0,
+    0,
+    16 + 4 * compatible.length,
+    ...ascii('ftyp'),
+    ...ascii(major),
+    0,
+    0,
+    0,
+    0,
+    ...compatible.flatMap(ascii),
+  ];
+}
+
+/** The first bytes of each type we inline. */
+const MAGIC: Record<string, Uint8Array<ArrayBuffer>> = {
+  'image/png': PNG,
+  'image/jpeg': Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10]),
+  'image/gif': Uint8Array.from([...ascii('GIF89a'), 1, 0, 1, 0]),
+  'image/webp': Uint8Array.from([
+    ...ascii('RIFF'),
+    0x24,
+    0,
+    0,
+    0,
+    ...ascii('WEBPVP8 '),
+  ]),
+  'image/avif': Uint8Array.from(ftyp('avif', 'mif1', 'miaf')),
+};
 
 const PRIVATE_URLS = [
   'http://127.0.0.1/logo.png',
@@ -60,6 +98,17 @@ function png(headers: Record<string, string> = {}) {
   });
 }
 
+/** A JPEG of `bytes` bytes: the JPEG signature, then zeros. */
+function jpeg(bytes: number): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(bytes);
+  out.set(MAGIC['image/jpeg']);
+  return out;
+}
+
+/** The length of the data: URI a body of `bytes` bytes becomes. */
+const dataUriLength = (type: string, bytes: number) =>
+  `data:${type};base64,`.length + Math.ceil(bytes / 3) * 4;
+
 /** Every string anywhere in `value`. */
 function strings(value: unknown): string[] {
   if (typeof value === 'string') return [value];
@@ -70,14 +119,35 @@ function strings(value: unknown): string[] {
   return [];
 }
 
+const lanePost = (thumbnailUrl: string | null) => ({
+  postId: 'p',
+  channelId: 1,
+  thumbnailUrl,
+});
+
+/** The thumbnails of `overview.series[0].posts`, in order. */
+function seriesThumbs(out: ReportPayloadDto): (string | null)[] {
+  return (
+    out.overview as unknown as {
+      series: { posts: { thumbnailUrl: string | null }[] }[];
+    }
+  ).series[0].posts.map((p) => p.thumbnailUrl);
+}
+
 let globalFetch: jest.SpyInstance;
+let warn: jest.SpyInstance;
+let debug: jest.SpyInstance;
 beforeEach(() => {
   mockedFetch.mockReset();
   globalFetch = jest
     .spyOn(global, 'fetch')
     .mockRejectedValue(new Error('unguarded global fetch was called'));
+  warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+  debug = jest.spyOn(Logger.prototype, 'debug').mockImplementation();
 });
 afterEach(() => jest.restoreAllMocks());
+
+const logged = () => debug.mock.calls.map((c: unknown[]) => String(c[0]));
 
 describe('inlineReportMedia: the logo', () => {
   it.each(PRIVATE_URLS)(
@@ -107,27 +177,59 @@ describe('inlineReportMedia: the logo', () => {
     expect(globalFetch).not.toHaveBeenCalled();
   });
 
-  it('keeps only the bare image type, not its parameters', async () => {
-    mockedFetch.mockResolvedValue(
-      png({ 'content-type': 'image/jpeg; charset=binary' }),
-    );
-    const out = await inlineReportMedia(payload({ logoUrl: PUBLIC_LOGO }));
-    expect(out.logoUrl?.startsWith('data:image/jpeg;base64,')).toBe(true);
-  });
+  it.each(Object.entries(MAGIC))(
+    'reads %s from the bytes, whatever the header says',
+    async (type, bytes) => {
+      for (const header of [
+        'image/jpg',
+        'application/octet-stream',
+        'text/html',
+        '',
+      ]) {
+        const res = new Response(bytes);
+        if (header) res.headers.set('content-type', header);
+        else res.headers.delete('content-type');
+        mockedFetch.mockResolvedValueOnce(res);
+        const out = await inlineReportMedia(payload({ logoUrl: PUBLIC_LOGO }));
+        expect(out.logoUrl).toBe(
+          `data:${type};base64,${Buffer.from(bytes).toString('base64')}`,
+        );
+      }
+    },
+  );
 
   it.each([
-    'text/html',
-    'image/svg+xml',
-    'application/octet-stream',
-    'video/mp4',
-    '',
-  ])('drops a public answer typed %j', async (type) => {
-    const res = png();
-    res.headers.set('content-type', type);
-    if (!type) res.headers.delete('content-type');
-    mockedFetch.mockResolvedValue(res);
+    ['HTML labelled image/png', ascii('<!doctype html><p>hi'), 'image/png'],
+    ['SVG labelled image/png', ascii('<svg xmlns="x"/>'), 'image/png'],
+    ['an MP4 labelled image/jpeg', ftyp('isom', 'mp41'), 'image/jpeg'],
+    [
+      'a HEIC photo (Chromium cannot draw it)',
+      ftyp('heic', 'mif1'),
+      'image/heic',
+    ],
+    ['an empty body', [], 'image/png'],
+    ['a truncated PNG signature', [0x89, 0x50, 0x4e], 'image/png'],
+  ])('drops %s', async (_what, bytes, header) => {
+    mockedFetch.mockResolvedValue(
+      new Response(Uint8Array.from(bytes), {
+        headers: { 'content-type': header },
+      }),
+    );
     const out = await inlineReportMedia(payload({ logoUrl: PUBLIC_LOGO }));
     expect(out.logoUrl).toBeNull();
+  });
+
+  it('inlines a 9 MB phone photo: the cap is the 10 MB image upload cap', async () => {
+    expect(REPORT_IMAGE_MAX_BYTES).toBe(10 * 1024 * 1024);
+    const photo = jpeg(9 * 1024 * 1024);
+    mockedFetch.mockResolvedValue(
+      new Response(photo, { headers: { 'content-type': 'image/jpg' } }),
+    );
+    const out = await inlineReportMedia(payload({ logoUrl: PUBLIC_LOGO }));
+    expect(out.logoUrl?.startsWith('data:image/jpeg;base64,/9j/')).toBe(true);
+    expect(out.logoUrl).toHaveLength(
+      dataUriLength('image/jpeg', photo.byteLength),
+    );
   });
 
   it('drops a non-2xx answer', async () => {
@@ -145,9 +247,8 @@ describe('inlineReportMedia: the logo', () => {
   });
 
   it('drops an image over the size cap (streamed, no length)', async () => {
-    const big = new Uint8Array(REPORT_IMAGE_MAX_BYTES + 1);
     mockedFetch.mockResolvedValue(
-      new Response(big, { headers: { 'content-type': 'image/png' } }),
+      new Response(jpeg(REPORT_IMAGE_MAX_BYTES + 1)),
     );
     const out = await inlineReportMedia(payload({ logoUrl: PUBLIC_LOGO }));
     expect(out.logoUrl).toBeNull();
@@ -195,18 +296,14 @@ describe('inlineReportMedia: the logo', () => {
 });
 
 describe('inlineReportMedia: post thumbnails', () => {
-  const lanePost = (thumbnailUrl: string | null) => ({
-    postId: 'p',
-    channelId: 1,
-    thumbnailUrl,
-  });
-
   it('inlines public images, drops private ones and videos, and fetches each URL once', async () => {
     const video = 'https://93.184.216.35/clip.mp4';
     mockedFetch.mockImplementation((url: string) =>
       Promise.resolve(
         url === video
-          ? new Response('v', { headers: { 'content-type': 'video/mp4' } })
+          ? new Response(Uint8Array.from(ftyp('isom', 'mp41')), {
+              headers: { 'content-type': 'video/mp4' },
+            })
           : png(),
       ),
     );
@@ -226,7 +323,6 @@ describe('inlineReportMedia: post thumbnails', () => {
     const series = (
       out.overview as unknown as {
         series: { posts: { thumbnailUrl: string | null }[] }[];
-        standout: { top: { thumbnailUrl: string | null }[] };
       }
     ).series;
     expect(series[0].posts[0].thumbnailUrl).toBe(PNG_DATA);
@@ -262,8 +358,13 @@ describe('inlineReportMedia: post thumbnails', () => {
     expect(out).toEqual(input);
     expect(mockedFetch).not.toHaveBeenCalled();
   });
+});
 
-  it('stops inlining once the total budget is spent', async () => {
+describe('inlineReportMedia: the budget', () => {
+  // The data URI each test image becomes: its length in the JSON.
+  const COST = PNG_DATA.length;
+
+  it('stops fetching once the budget is spent', async () => {
     mockedFetch.mockImplementation(() => Promise.resolve(png()));
     const urls = Array.from(
       { length: 6 },
@@ -275,14 +376,153 @@ describe('inlineReportMedia: post thumbnails', () => {
           series: [{ posts: urls.map(lanePost) }],
         } as unknown as ReportPayloadDto['overview'],
       }),
-      { budgetBytes: PNG.byteLength * 2, concurrency: 1 },
+      { budgetBytes: COST * 2, concurrency: 1 },
     );
-    const thumbs = (
-      out.overview as unknown as {
-        series: { posts: { thumbnailUrl: string | null }[] }[];
-      }
-    ).series[0].posts.map((p) => p.thumbnailUrl);
-    expect(thumbs.filter((t) => t === PNG_DATA)).toHaveLength(2);
-    expect(thumbs.filter((t) => t === null)).toHaveLength(4);
+    expect(seriesThumbs(out)).toEqual([
+      PNG_DATA,
+      PNG_DATA,
+      null,
+      null,
+      null,
+      null,
+    ]);
+    // spent >= budget after two: the other four are never downloaded.
+    expect(mockedFetch).toHaveBeenCalledTimes(2);
+    expect(logged().filter((l) => l.includes('over_budget'))).toHaveLength(4);
+  });
+
+  it('charges a repeated image for every place it is written', async () => {
+    mockedFetch.mockImplementation(() => Promise.resolve(png()));
+    const thrice = (budgetBytes: number) =>
+      inlineReportMedia(
+        payload({
+          overview: {
+            series: [{ posts: [1, 2, 3].map(() => lanePost(PUBLIC_LOGO)) }],
+          } as unknown as ReportPayloadDto['overview'],
+        }),
+        { budgetBytes },
+      );
+
+    expect(seriesThumbs(await thrice(COST * 3 - 1))).toEqual([
+      null,
+      null,
+      null,
+    ]);
+    expect(seriesThumbs(await thrice(COST * 3))).toEqual([
+      PNG_DATA,
+      PNG_DATA,
+      PNG_DATA,
+    ]);
+    // Fetched once per payload, however often it appears.
+    expect(mockedFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('fits a full report of phone photos: a logo and 9 thumbnails at 4 MB', async () => {
+    const photo = jpeg(4 * 1024 * 1024);
+    mockedFetch.mockImplementation(() => Promise.resolve(new Response(photo)));
+    const urls = Array.from(
+      { length: 9 },
+      (_, i) => `https://93.184.216.${i + 1}/p.jpg`,
+    );
+    const out = await inlineReportMedia(
+      payload({
+        logoUrl: PUBLIC_LOGO,
+        overview: {
+          standout: {
+            above: urls.slice(0, 3).map(lanePost),
+            below: urls.slice(3, 6).map(lanePost),
+          },
+          brief: { sources: urls.slice(6).map(lanePost) },
+        } as unknown as ReportPayloadDto['overview'],
+      }),
+    );
+    expect(
+      strings(out).filter((s) => s.startsWith('data:image/jpeg')),
+    ).toHaveLength(10);
+    expect(REPORT_IMAGE_BUDGET_BYTES).toBeGreaterThanOrEqual(
+      10 * dataUriLength('image/jpeg', photo.byteLength),
+    );
+  });
+});
+
+describe('inlineReportMedia: logging', () => {
+  it('says unsafe for a refused URL, at debug level only', async () => {
+    await inlineReportMedia(payload({ logoUrl: 'http://169.254.169.254/x' }));
+    expect(logged()).toEqual([expect.stringContaining('unsafe')]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('says too_large for a declared oversize body', async () => {
+    mockedFetch.mockResolvedValue(
+      png({ 'content-length': String(REPORT_IMAGE_MAX_BYTES + 1) }),
+    );
+    await inlineReportMedia(payload({ logoUrl: PUBLIC_LOGO }));
+    expect(logged()).toEqual([expect.stringContaining('too_large')]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('says too_large for a streamed oversize body', async () => {
+    mockedFetch.mockResolvedValue(
+      new Response(jpeg(REPORT_IMAGE_MAX_BYTES + 1)),
+    );
+    await inlineReportMedia(payload({ logoUrl: PUBLIC_LOGO }));
+    expect(logged()).toEqual([expect.stringContaining('too_large')]);
+  });
+
+  it('names the other reasons, and never the URL', async () => {
+    mockedFetch
+      .mockResolvedValueOnce(new Response('<html>'))
+      .mockResolvedValueOnce(new Response('x', { status: 404 }))
+      .mockRejectedValueOnce(new TypeError('fetch failed'));
+    for (let i = 0; i < 3; i++) {
+      await inlineReportMedia(payload({ logoUrl: PUBLIC_LOGO }));
+    }
+    expect(logged()).toEqual([
+      expect.stringContaining('not_image'),
+      expect.stringContaining('http_404'),
+      expect.stringContaining('network'),
+    ]);
+    for (const line of logged()) expect(line).not.toContain('93.184');
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('logs nothing for an image that was inlined', async () => {
+    mockedFetch.mockResolvedValue(png());
+    await inlineReportMedia(payload({ logoUrl: PUBLIC_LOGO }));
+    expect(debug).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('inlineReportMedia: values that are not plain objects', () => {
+  it('passes a Date (and other class instances) through untouched', async () => {
+    mockedFetch.mockResolvedValue(png());
+    const at = new Date('2026-11-01T00:00:00Z');
+    const out = await inlineReportMedia({
+      ...payload({ logoUrl: PUBLIC_LOGO }),
+      overview: { at, nested: [{ at }] },
+    } as unknown as ReportPayloadDto);
+    const o = out.overview as unknown as { at: Date; nested: { at: Date }[] };
+    expect(out.logoUrl).toBe(PNG_DATA);
+    expect(o.at).toBe(at);
+    expect(o.nested[0].at).toBe(at);
+  });
+});
+
+describe('sniffImageType', () => {
+  it('knows an AVIF by its major or a compatible brand; a HEIC is not one', () => {
+    expect(sniffImageType(Buffer.from(ftyp('mif1', 'avif')))).toBe(
+      'image/avif',
+    );
+    expect(sniffImageType(Buffer.from(ftyp('avis')))).toBe('image/avif');
+    expect(sniffImageType(Buffer.from(ftyp('mif1', 'heic')))).toBeNull();
+  });
+
+  it('does not read past a short buffer', () => {
+    expect(sniffImageType(Buffer.from([0xff, 0xd8]))).toBeNull();
+    expect(sniffImageType(Buffer.from(ascii('RIFF')))).toBeNull();
+    expect(
+      sniffImageType(Buffer.from([0, 0, 0, 64, ...ascii('ftyp')])),
+    ).toBeNull();
   });
 });
