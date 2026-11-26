@@ -472,9 +472,12 @@ export type NewPlatformCredential = typeof platformCredentials.$inferInsert;
  * Priority: env var `<PLATFORM_UPPER>_REFRESH_TOKEN_TTL_DAYS` > PLATFORM_CONFIG default.
  * Returns null when the platform's refresh token never expires.
  *
- * Example env overrides:
- *   YOUTUBE_REFRESH_TOKEN_TTL_DAYS=36500   (published Google OAuth app)
- *   GOOGLE_BUSINESS_REFRESH_TOKEN_TTL_DAYS=36500
+ * The override exists for a platform whose real deadline differs from ours by
+ * deployment — e.g. a Google OAuth app back in "Testing" publishing status,
+ * where refresh tokens do die after 7 days:
+ *   YOUTUBE_REFRESH_TOKEN_TTL_DAYS=7
+ * A value of 0 or below is ignored; null (never expires) cannot be forced on
+ * from env, only off.
  */
 export function getRefreshTokenTtlDays(
   platform: SupportedPlatform,
@@ -570,7 +573,13 @@ export const PLATFORM_CONFIG: Record<
     accountTypes: ['channel'],
     supportsRefreshToken: true,
     tokenExpirationDays: null, // Refresh token doesn't expire
-    refreshTokenTtlDays: 7, // Testing-mode Google apps; override via YOUTUBE_REFRESH_TOKEN_TTL_DAYS=36500 for published apps
+    // null: the Google OAuth app went In-Production on 2026-08-06, and the
+    // 7-day cap belongs to "Testing" publishing status only — a published app's
+    // refresh tokens have no issue-time deadline. The 7 outlived that move and,
+    // against the cron's own 7-day warning threshold, put every YouTube channel
+    // in the "reconnect soon" window the instant it connected. Set
+    // YOUTUBE_REFRESH_TOKEN_TTL_DAYS to force a TTL back on.
+    refreshTokenTtlDays: null,
     maxMediaPerPost: 1,
     maxTextLength: 5000,
     supportedMediaTypes: ['video'],
@@ -707,7 +716,10 @@ export const PLATFORM_CONFIG: Record<
     accountTypes: ['business_account'],
     supportsRefreshToken: true,
     tokenExpirationDays: null,
-    refreshTokenTtlDays: 7, // Google testing-mode default; override via GOOGLE_BUSINESS_REFRESH_TOKEN_TTL_DAYS
+    // null: In-Production since 2026-08-06, so Google applies no 7-day
+    // refresh-token cap — that was the "Testing" status rule. Override with
+    // GOOGLE_BUSINESS_REFRESH_TOKEN_TTL_DAYS if one is ever needed again.
+    refreshTokenTtlDays: null,
     maxMediaPerPost: 10,
     maxTextLength: 1500,
     supportedMediaTypes: ['image', 'video'],
@@ -729,7 +741,10 @@ export const PLATFORM_CONFIG: Record<
     accountTypes: ['storage'],
     supportsRefreshToken: true,
     tokenExpirationDays: null,
-    refreshTokenTtlDays: 7, // Google testing-mode default; override via GOOGLE_DRIVE_REFRESH_TOKEN_TTL_DAYS
+    // null: In-Production since 2026-08-06, so Google applies no 7-day
+    // refresh-token cap — that was the "Testing" status rule. Override with
+    // GOOGLE_DRIVE_REFRESH_TOKEN_TTL_DAYS if one is ever needed again.
+    refreshTokenTtlDays: null,
     maxMediaPerPost: 0, // Not a posting platform
     maxTextLength: 0,
     supportedMediaTypes: ['image', 'video', 'document'],
@@ -740,7 +755,10 @@ export const PLATFORM_CONFIG: Record<
     accountTypes: ['storage'],
     supportsRefreshToken: true,
     tokenExpirationDays: null,
-    refreshTokenTtlDays: 7, // Google testing-mode default; override via GOOGLE_PHOTOS_REFRESH_TOKEN_TTL_DAYS
+    // null: In-Production since 2026-08-06, so Google applies no 7-day
+    // refresh-token cap — that was the "Testing" status rule. Override with
+    // GOOGLE_PHOTOS_REFRESH_TOKEN_TTL_DAYS if one is ever needed again.
+    refreshTokenTtlDays: null,
     maxMediaPerPost: 0, // Not a posting platform
     maxTextLength: 0,
     supportedMediaTypes: ['image', 'video'],
@@ -751,7 +769,10 @@ export const PLATFORM_CONFIG: Record<
     accountTypes: ['storage'], // Not a posting platform, utility service
     supportsRefreshToken: true,
     tokenExpirationDays: null,
-    refreshTokenTtlDays: 7, // Google testing-mode default; override via GOOGLE_CALENDAR_REFRESH_TOKEN_TTL_DAYS
+    // null: In-Production since 2026-08-06, so Google applies no 7-day
+    // refresh-token cap — that was the "Testing" status rule. Override with
+    // GOOGLE_CALENDAR_REFRESH_TOKEN_TTL_DAYS if one is ever needed again.
+    refreshTokenTtlDays: null,
     maxMediaPerPost: 0,
     maxTextLength: 0,
     supportedMediaTypes: [],

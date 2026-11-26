@@ -77,12 +77,26 @@ describe('0101_brand_voice.sql', () => {
   });
 
   it('0101 tone CHECK lists exactly BRAND_TONES', () => {
-    const check =
+    // Anchored on the ARRAY[...] literal, not on the end of the CHECK.
+    //
+    // The previous pattern closed on `\),?\n` and matched lazily, so it
+    // stopped at the FIRST `)` inside the expression — the one closing
+    // `cardinality("tone") <= 4)`. The capture then held no quoted tones,
+    // `quoted` came back `[]`, and this failed against a migration that was
+    // correct all along: 0101 does list all nine tones, with the cap.
+    //
+    // The tones are the only quoted strings inside `ARRAY[...]`, so matching
+    // that cannot be cut short the same way. What the test is FOR is unchanged
+    // — the SQL constraint and the TS `BRAND_TONES` list must never drift.
+    const list =
       migrationCode.match(
-        /CONSTRAINT "workspace_brand_voice_tone_chk"\s+CHECK \(([\s\S]*?)\),?\n/,
+        /CONSTRAINT "workspace_brand_voice_tone_chk"[\s\S]*?ARRAY\[([^\]]*)\]/,
       )?.[1] ?? '';
-    const quoted = [...check.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+    const quoted = [...list.matchAll(/'([^']+)'/g)].map((m) => m[1]);
     expect(quoted.sort()).toEqual([...BRAND_TONES].sort());
-    expect(check).toContain('cardinality("tone") <= 4');
+
+    // Asserted against the whole file: the capture above ends at the
+    // ARRAY[...] literal, and the cardinality cap sits after it.
+    expect(migrationCode).toContain('cardinality("tone") <= 4');
   });
 });
