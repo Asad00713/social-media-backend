@@ -1,5 +1,6 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { REST, Routes } from 'discord.js';
+import { fetchPublicMedia } from '../../common/net/public-fetch';
 
 /**
  * Discord REST client (uses the single shared bot token). Handles the OUTBOUND
@@ -101,7 +102,13 @@ export class DiscordService {
     channelId: string,
     limit = 10,
   ): Promise<
-    { id: string; authorName: string; bot: boolean; content: string; timestamp: string }[]
+    {
+      id: string;
+      authorName: string;
+      bot: boolean;
+      content: string;
+      timestamp: string;
+    }[]
   > {
     const query = new URLSearchParams({
       limit: String(Math.min(Math.max(limit, 1), 50)),
@@ -153,11 +160,15 @@ export class DiscordService {
     }
   }
 
-  /** Download a Discord-hosted attachment (CDN urls are public + unauth). */
+  /**
+   * Download an attachment: a Discord CDN url on ingest, or a client-supplied
+   * url when the user sends a DM with files. Either way it goes through the
+   * SSRF guard (public hosts only, every redirect re-checked).
+   */
   async downloadAttachment(
     url: string,
   ): Promise<{ buffer: Buffer; contentType: string }> {
-    const res = await fetch(url);
+    const res = await fetchPublicMedia(url);
     if (!res.ok) {
       throw new BadRequestException(`Discord attachment fetch ${res.status}`);
     }

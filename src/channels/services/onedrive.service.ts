@@ -56,6 +56,24 @@ export class OneDriveService {
   private readonly apiBaseUrl = 'https://graph.microsoft.com/v1.0';
 
   /**
+   * A pagination link from the client is Graph's own `@odata.nextLink`,
+   * handed back. It is fetched with the user's bearer token, so anything but a
+   * Graph URL would be SSRF plus token exfiltration: refuse it.
+   */
+  private graphLink(link: string): string {
+    let url: URL;
+    try {
+      url = new URL(link);
+    } catch {
+      throw new BadRequestException('Invalid OneDrive pagination cursor');
+    }
+    if (url.origin !== 'https://graph.microsoft.com') {
+      throw new BadRequestException('Invalid OneDrive pagination cursor');
+    }
+    return link;
+  }
+
+  /**
    * List items in OneDrive root or specific folder
    */
   async listItems(
@@ -70,7 +88,7 @@ export class OneDriveService {
 
     let url: string;
     if (nextLink) {
-      url = nextLink;
+      url = this.graphLink(nextLink);
     } else if (folderId) {
       url = `${this.apiBaseUrl}/me/drive/items/${folderId}/children?$top=${pageSize}&$expand=thumbnails`;
     } else {
@@ -122,9 +140,9 @@ export class OneDriveService {
       ? `${this.apiBaseUrl}/me/drive/items/${folderId}/children`
       : `${this.apiBaseUrl}/me/drive/root/children`;
 
-    let url =
-      options.nextLink ??
-      `${basePath}?$top=${CHILDREN_FETCH_SIZE}&$expand=thumbnails`;
+    let url = options.nextLink
+      ? this.graphLink(options.nextLink)
+      : `${basePath}?$top=${CHILDREN_FETCH_SIZE}&$expand=thumbnails`;
 
     const items: OneDriveItem[] = [];
     let nextLink: string | undefined;
@@ -229,7 +247,7 @@ export class OneDriveService {
 
     let url: string;
     if (nextLink) {
-      url = nextLink;
+      url = this.graphLink(nextLink);
     } else {
       const basePath = parentId
         ? `${this.apiBaseUrl}/me/drive/items/${parentId}/children`
@@ -274,7 +292,7 @@ export class OneDriveService {
 
     let url: string;
     if (nextLink) {
-      url = nextLink;
+      url = this.graphLink(nextLink);
     } else {
       url = `${this.apiBaseUrl}/me/drive/root/search(q='${encodeURIComponent(query)}')?$top=${pageSize}&$expand=thumbnails`;
     }
@@ -433,5 +451,4 @@ export class OneDriveService {
 
     return response.json();
   }
-
 }

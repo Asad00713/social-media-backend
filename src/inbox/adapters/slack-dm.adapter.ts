@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { fetchPublicMedia } from '../../common/net/public-fetch';
 import { SlackService } from '../../channels/services/slack.service';
 import type {
   PlatformDmAdapter,
@@ -120,7 +121,8 @@ export class SlackDmAdapter implements PlatformDmAdapter {
       const isLast = i === attachments.length - 1;
 
       // Pull the R2 object — same bucket the user just uploaded to, no auth.
-      const res = await fetch(att.url);
+      // The URL comes from the request body (DmAttachmentDto): SSRF guard.
+      const res = await fetchPublicMedia(att.url);
       if (!res.ok) {
         throw new BadRequestException(
           `Failed to fetch attachment ${i + 1}/${attachments.length} from R2 after ${successCount} uploaded: ${res.status} ${res.statusText}`,

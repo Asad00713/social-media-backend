@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { fetchPublicMedia } from '../../common/net/public-fetch';
 import { TelegramService } from '../../channels/services/telegram.service';
 import type {
   PlatformDmAdapter,
@@ -67,7 +68,8 @@ export class TelegramDmAdapter implements PlatformDmAdapter {
       const isLast = i === attachments.length - 1;
       const caption = isLast && text ? text : undefined;
 
-      const res = await fetch(att.url);
+      // The URL comes from the request body (DmAttachmentDto): SSRF guard.
+      const res = await fetchPublicMedia(att.url);
       if (!res.ok) {
         throw new BadRequestException(
           `Failed to fetch attachment ${i + 1}/${attachments.length} from R2 after ${successCount} uploaded: ${res.status} ${res.statusText}`,

@@ -1,4 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
+import {
+  fetchPublicMedia,
+  MAX_IMAGE_BYTES,
+} from '../../common/net/public-fetch';
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import type {
@@ -373,9 +377,13 @@ export class MessagesApiRuntime implements AgentRuntime {
     return messages;
   }
 
-  /** Fetch a (public R2) URL and return its bytes as base64. */
+  /**
+   * Fetch an attachment URL and return its bytes as base64. The URL comes from
+   * the request body, so it goes through the SSRF guard (public hosts only,
+   * every redirect re-checked, body capped) rather than a bare fetch.
+   */
   private async fetchBase64(url: string): Promise<string> {
-    const res = await fetch(url);
+    const res = await fetchPublicMedia(url, { maxBytes: MAX_IMAGE_BYTES });
     if (!res.ok) {
       throw new Error(`attachment fetch failed: ${res.status} ${url}`);
     }
