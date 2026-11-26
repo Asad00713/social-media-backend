@@ -2,6 +2,7 @@ import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import type { DbType } from '../../drizzle/db';
+import { rehomeDefault } from '../services/rehome-default.util';
 import {
   providerSubscriptions,
   subscriptions,
@@ -370,6 +371,42 @@ export class PaddleAdapter implements PaymentProviderAdapter {
     await this.paddle.post(`subscriptions/${paddleId}/cancel`, {
       effective_from: atPeriodEnd ? 'next_billing_period' : 'immediately',
     });
+
+    // Record the cancellation locally too, rather than waiting for the
+    // webhook. Paddle fires `subscription.canceled` asynchronously even for
+    // `immediately`, and until it lands the row still reads
+    // `provider_status: 'active'`, `is_default: true` — so `isLive()` answers
+    // TRUE for a subscription that is already gone. In that window the
+    // customer is told "canceled" while still showing as paid, a second
+    // cancel is accepted and re-POSTs to Paddle, and a signup at another
+    // provider raises 23505 on `provider_subscriptions_one_default_idx`
+    // AFTER that provider has taken the money. If the webhook is ever lost
+    // the account stays paid-looking and unbillable indefinitely.
+    //
+    // A SCHEDULED cancel keeps `is_default`: it is still billing until the
+    // period ends, and the slot still belongs to Paddle.
+    await this.db
+      .update(providerSubscriptions)
+      .set({
+        providerStatus: atPeriodEnd ? 'cancel_scheduled' : 'canceled',
+        ...(atPeriodEnd ? {} : { isDefault: false }),
+        updatedAt: new Date(),
+      })
+      .where(eq(providerSubscriptions.id, base.id));
+
+    // Releasing the flag is half of it. `is_default` names the provider
+    // billing THE ACCOUNT, not this row, so an account mid-cutover with a
+    // live Lemon Squeezy row must hand the flag over rather than be left with
+    // none — zero defaults makes `hasLiveBasePlan` answer false for a paying
+    // customer. Runs after the write above, so the row just cancelled cannot
+    // win its own heir search.
+    if (!atPeriodEnd) {
+      await rehomeDefault({
+        subscriptionId,
+        excludeRowId: base.id,
+        db: this.db,
+      });
+    }
   }
 
   // ------------------------------------------------------------ pause/resume

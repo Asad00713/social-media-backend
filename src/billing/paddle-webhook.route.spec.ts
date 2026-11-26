@@ -67,7 +67,7 @@ describe('POST /billing/webhooks/paddle', () => {
 
   it('verifies, then hands the event type and payload to the service', async () => {
     const handleEvent = jest.fn().mockResolvedValue(undefined);
-    const service = new PaddleWebhookService({} as never, {} as never);
+    const service = new PaddleWebhookService({} as never, {} as never, {} as never);
     service.handleEvent = handleEvent;
     const controller = controllerWith(service);
 
@@ -142,7 +142,7 @@ describe('POST /billing/webhooks/paddle', () => {
     // The binding is pinned by the source assertion at the bottom of this
     // file instead; what this one proves is that a missing header is refused
     // rather than treated as an empty, passing signature.
-    const service = new PaddleWebhookService({} as never, {} as never);
+    const service = new PaddleWebhookService({} as never, {} as never, {} as never);
     service.handleEvent = jest.fn().mockResolvedValue(undefined);
     const controller = controllerWith(service);
 
@@ -211,7 +211,7 @@ describe('POST /billing/webhooks/paddle', () => {
   it('answers an event type it does not know, rather than 400ing', async () => {
     // Paddle sends events we never subscribed to and retries anything that is
     // not 2xx. Refusing one would be an infinite retry of a harmless event.
-    const service = new PaddleWebhookService({} as never, {} as never);
+    const service = new PaddleWebhookService({} as never, {} as never, {} as never);
     const controller = controllerWith(service);
 
     const raw = Buffer.from(

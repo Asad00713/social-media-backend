@@ -33,6 +33,11 @@ interface Harness {
     getAddonQuantities: jest.Mock;
   };
   alerts: { paymentFailed: jest.Mock; paymentSucceeded: jest.Mock };
+  emails: {
+    paymentFailed: jest.Mock;
+    planName: jest.Mock;
+    planChanged: jest.Mock;
+  };
 }
 
 function seed(tables: Record<string, Row[]>): Harness {
@@ -52,11 +57,18 @@ function seed(tables: Record<string, Row[]>): Harness {
     paymentSucceeded: jest.fn().mockResolvedValue(true),
   };
 
+  const emails = {
+    paymentFailed: jest.fn().mockResolvedValue(undefined),
+    planName: jest.fn().mockResolvedValue('Basic'),
+    planChanged: jest.fn().mockResolvedValue(undefined),
+  };
+
   const service = new PaddleWebhookService(
     limits as never,
     alerts as never,
+    emails as never,
   );
-  return { service, limits, alerts };
+  return { service, limits, alerts, emails };
 }
 
 /** An account already billing through Paddle. */
@@ -805,6 +817,76 @@ describe('PaddleWebhookService: transactions', () => {
 
     expect(subRow().status).toBe('past_due');
     expect(alerts.paymentFailed).toHaveBeenCalled();
+  });
+
+  it('sends the payment-failed EMAIL, not only the in-app alert', async () => {
+    // The alert and the email are different channels with different rules.
+    // `payment-alerts.service` states it: "The payment-failed EMAIL is
+    // mandatory and sent by the webhooks, not here." The alert rings a bell
+    // and raises a toast, both conditional on the user's `billing_alert`
+    // preference; the email is not, because a customer whose card declined
+    // has to find out while they are NOT logged in — the normal case during a
+    // dunning retry window.
+    //
+    // Paddle sent only the alert. A customer could have their card fail,
+    // Paddle could exhaust its retries, and the subscription could end with
+    // the account dropping to FREE having been told nothing. Stripe and Lemon
+    // Squeezy both send it.
+    const { service, emails } = seed(payingAccount());
+
+    await service.handleEvent('transaction.payment_failed', {
+      data: {
+        id: 'txn_1',
+        subscription_id: PADDLE_SUB,
+        status: 'past_due',
+        created_at: '2026-11-25T00:00:00Z',
+        details: { totals: { grand_total: '2900' } },
+      },
+    });
+
+    expect(emails.paymentFailed).toHaveBeenCalledTimes(1);
+    expect(emails.paymentFailed.mock.calls[0][0]).toMatchObject({
+      userId: 'user-1',
+      amountCents: 2900,
+    });
+  });
+
+  it('does not email on a SUCCESSFUL payment', async () => {
+    // The success path has its own alert and must not raise a failure notice.
+    const { service, emails } = seed(payingAccount());
+
+    await service.handleEvent('transaction.completed', {
+      data: {
+        id: 'txn_1',
+        subscription_id: PADDLE_SUB,
+        status: 'completed',
+        created_at: '2026-11-25T00:00:00Z',
+        details: { totals: { grand_total: '2900' } },
+      },
+    });
+
+    expect(emails.paymentFailed).not.toHaveBeenCalled();
+  });
+
+  it('still answers when the email throws', async () => {
+    // A failed send must not 500 the webhook: Paddle would retry an event
+    // already applied, and the billing writes above it are already done.
+    const { service, emails } = seed(payingAccount());
+    emails.paymentFailed.mockRejectedValue(new Error('resend down'));
+
+    await expect(
+      service.handleEvent('transaction.payment_failed', {
+        data: {
+          id: 'txn_1',
+          subscription_id: PADDLE_SUB,
+          status: 'past_due',
+          created_at: '2026-11-25T00:00:00Z',
+          details: { totals: { grand_total: '2900' } },
+        },
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(subRow().status).toBe('past_due');
   });
 
   it('passes the amount in minor units as a NUMBER', async () => {
