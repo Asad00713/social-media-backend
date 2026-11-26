@@ -208,6 +208,11 @@ export class WorkspaceMembersService {
         'Only workspace owner or admins can invite members',
       );
     }
+    this.assertMayManageRole(
+      isOwner || isSuperAdmin,
+      null,
+      inviteMemberDto.role as MemberRoleName | undefined,
+    );
 
     // Seat gate and insert under the workspace's seat lock, so two invites
     // racing for the last seat cannot both get it. Same gate as batch invite:
@@ -343,6 +348,11 @@ export class WorkspaceMembersService {
       throw new ForbiddenException(
         'Only workspace owner or admins can invite members',
       );
+    }
+    // The whole batch is refused, not just the ADMIN rows: a batch that
+    // quietly drops one address would look sent.
+    for (const item of invites) {
+      this.assertMayManageRole(isOwner || isSuperAdmin, null, item.role);
     }
 
     // Seat gate and every insert under the workspace's seat lock (one
@@ -706,6 +716,10 @@ export class WorkspaceMembersService {
       throw new NotFoundException('Workspace not found');
     }
 
+    const mayManageAdmins = await this.callerManagesAdmins(
+      workspaceData.ownerId,
+      currentUserId,
+    );
     const resent = await this.db.transaction(async (tx) => {
       await lockWorkspaceSeats(tx, workspaceId);
       const row = await tx.query.workspaceInvitation.findFirst({
@@ -717,6 +731,7 @@ export class WorkspaceMembersService {
       if (!row) {
         throw new NotFoundException('Invitation not found');
       }
+      this.assertMayManageRole(mayManageAdmins, row.role as MemberRoleName);
       if (row.status !== 'PENDING' && row.status !== 'EXPIRED') {
         throw memberConflict(
           'INVITATION_NOT_RESENDABLE',
@@ -880,6 +895,10 @@ export class WorkspaceMembersService {
         'You do not have permission to cancel this invitation',
       );
     }
+    this.assertMayManageRole(
+      isOwner || isSuperAdmin,
+      invitation.role as MemberRoleName,
+    );
 
     await this.db
       .delete(workspaceInvitation)
@@ -1028,6 +1047,12 @@ export class WorkspaceMembersService {
     }
 
     const newRole = updateMemberDto.role as MemberRoleName;
+    const mayManageAdmins = isOwner || isSuperAdmin;
+    this.assertMayManageRole(
+      mayManageAdmins,
+      member.role as MemberRoleName,
+      newRole,
+    );
 
     // Under the workspace's seat lock: moving between GUEST and a seat role
     // changes the seats in use, so it is checked and counted like an accept.
@@ -1046,6 +1071,12 @@ export class WorkspaceMembersService {
       if (!current) {
         throw new NotFoundException('Member not found in this workspace');
       }
+      // The row as it is now, in case it was made an ADMIN since it was read.
+      this.assertMayManageRole(
+        mayManageAdmins,
+        current.role as MemberRoleName,
+        newRole,
+      );
 
       // +1 promoting a guest, -1 demoting to guest, 0 otherwise.
       const seatDelta =
@@ -1148,6 +1179,13 @@ export class WorkspaceMembersService {
     if (!isSelf && !isOwner && !isAdmin && !isSuperAdmin) {
       throw new ForbiddenException(
         'You do not have permission to remove this member',
+      );
+    }
+    // Leaving is everyone's right, an ADMIN's included.
+    if (!isSelf) {
+      this.assertMayManageRole(
+        isOwner || isSuperAdmin,
+        member.role as MemberRoleName,
       );
     }
 
@@ -1452,18 +1490,36 @@ export class WorkspaceMembersService {
    * (AppLinks.invite). 404 for anything else: an accepted,
    * rejected, expired or removed row, or another workspace's.
    */
-  async getInvitationLink(workspaceId: string, invitationId: string) {
+  async getInvitationLink(
+    workspaceId: string,
+    invitationId: string,
+    currentUserId: string,
+  ) {
     const invitation = await this.db.query.workspaceInvitation.findFirst({
       where: and(
         eq(workspaceInvitation.workspaceId, workspaceId),
         eq(workspaceInvitation.id, invitationId),
         eq(workspaceInvitation.status, 'PENDING'),
       ),
-      columns: { token: true, expiresAt: true },
+      columns: { token: true, expiresAt: true, role: true },
     });
 
     if (!invitation || invitation.expiresAt.getTime() <= Date.now()) {
       throw new NotFoundException('Invitation not found or no longer pending');
+    }
+
+    // The link is the invitation: whoever holds an ADMIN one can become an
+    // admin, so only the owner (or support) may read it.
+    if (invitation.role === 'ADMIN') {
+      const workspaceData = await this.db.query.workspace.findFirst({
+        where: and(eq(workspace.id, workspaceId), liveWorkspaces()),
+        columns: { ownerId: true },
+      });
+      if (!workspaceData) throw new NotFoundException('Workspace not found');
+      this.assertMayManageRole(
+        await this.callerManagesAdmins(workspaceData.ownerId, currentUserId),
+        invitation.role as MemberRoleName,
+      );
     }
 
     return {
@@ -1744,6 +1800,34 @@ export class WorkspaceMembersService {
       ),
     });
     return !!member;
+  }
+
+  /** The workspace owner or a platform super admin: the only ones who manage admins. */
+  private async callerManagesAdmins(
+    ownerId: string,
+    userId: string,
+  ): Promise<boolean> {
+    return ownerId === userId || (await this.isPlatformSuperAdmin(userId));
+  }
+
+  /**
+   * Only the owner (or a super admin) invites, promotes, demotes, removes or
+   * re-sends the invitation of an ADMIN. An ADMIN keeps full say over MEMBER
+   * and GUEST seats. `targetRole` is the role the person or invitation has
+   * now, `newRole` the one it would get; null/undefined when there is none.
+   * Never apply it to someone leaving on their own.
+   */
+  private assertMayManageRole(
+    callerIsOwnerOrSuperAdmin: boolean,
+    targetRole: MemberRoleName | null,
+    newRole?: MemberRoleName,
+  ): void {
+    if (callerIsOwnerOrSuperAdmin) return;
+    if (targetRole === 'ADMIN' || newRole === 'ADMIN') {
+      throw new ForbiddenException(
+        'Only the workspace owner can manage admins.',
+      );
+    }
   }
 
   private async isUserAdmin(
