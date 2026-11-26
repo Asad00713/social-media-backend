@@ -181,8 +181,17 @@ export class DraftApprovalService {
     if (required) {
       // Asking is not drafting: it is a request to the team's approvers, so
       // it comes from the draft's author or from an approver, not from any
-      // member who can see the draft.
-      if (row.createdById !== userId && !may(role, APPROVE_CAPABILITY)) {
+      // member who can see the draft. Only a call that would write is gated:
+      // when approval is already on and nothing would change, anyone who
+      // reaches this route (posts:draft) gets the current view back.
+      const policyNotSentYet =
+        !!current?.byPolicy && !current.notifiedAt && !current.approvedAt;
+      const wouldWrite = !current || policyNotSentYet;
+      if (
+        wouldWrite &&
+        row.createdById !== userId &&
+        !may(role, APPROVE_CAPABILITY)
+      ) {
         throw new ForbiddenException(
           'Only the author or an approver can ask for approval on this draft.',
         );
@@ -190,7 +199,7 @@ export class DraftApprovalService {
       // A request the policy wrote silently on the first save: sending it
       // for approval tells the approvers, once. Not once it is approved
       // (an approver can approve before the author sends it).
-      if (current?.byPolicy && !current.notifiedAt && !current.approvedAt) {
+      if (current && policyNotSentYet) {
         const stamped = await this.stampNotified(workspaceId, postId, userId);
         if (stamped) {
           // Not awaited, like below. The author is the requester.

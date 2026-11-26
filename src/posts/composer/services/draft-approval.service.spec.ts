@@ -630,6 +630,45 @@ describe('DraftApprovalService emails', () => {
       expect(h.row.metadata.approval).toBeUndefined();
     });
 
+    it('answers the current view to a non-author MEMBER when approval is already on, and writes nothing', async () => {
+      const h = setup();
+      pending(h);
+      const before = JSON.stringify(h.row.metadata);
+      const view = await h.service.setRequired(
+        WS,
+        POST,
+        OTHER_MEMBER,
+        'MEMBER',
+        true,
+      );
+      await settle();
+      expect(view).toMatchObject({ required: true });
+      expect(JSON.stringify(h.row.metadata)).toBe(before);
+      expect(h.bell.approvalRequested).not.toHaveBeenCalled();
+    });
+
+    it('still refuses a non-author MEMBER when the call would write: a policy request nobody has sent yet', async () => {
+      const h = setup();
+      h.row.metadata = {
+        approval: {
+          required: true,
+          byPolicy: true,
+          requestedById: REQUESTER,
+          requestedAt: '2026-10-26T09:00:00.000Z',
+          notifiedAt: null,
+          approvedById: null,
+          approvedAt: null,
+          approvedFingerprint: null,
+        },
+      };
+      await expect(
+        h.service.setRequired(WS, POST, OTHER_MEMBER, 'MEMBER', true),
+      ).rejects.toThrow(
+        'Only the author or an approver can ask for approval on this draft.',
+      );
+      expect(h.bell.approvalRequested).not.toHaveBeenCalled();
+    });
+
     it('lets the author ask', async () => {
       const h = setup();
       await expect(ask(h, REQUESTER)).resolves.toBeDefined();
