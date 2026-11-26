@@ -54,6 +54,11 @@ import { loadPeople } from '../lib/people';
 import { toChannelResponse } from '../lib/channel-response';
 import { isDisconnected, liveChannel } from '../lib/live-channel';
 import {
+  expiryFrom,
+  isLongLivedPlatform,
+  shouldRenew,
+} from '../lib/long-lived-token';
+import {
   CHANNEL_RESTORE_WINDOW_MS,
   mustDeleteOnDisconnect,
 } from '../lib/disconnect-policy';
@@ -1158,6 +1163,21 @@ export class ChannelService {
       return this.getBlueskyAccessToken(channelData);
     }
 
+    // Instagram (Business Login) and Threads carry a 60-day token with NO
+    // refresh token, so the OAuth2 path below can never fire for them:
+    // it requires both `refreshToken` and `supportsRefreshToken`, and they
+    // have neither. Renewing is a different call — hand the live token back
+    // to Meta for a fresh 60 days — handled inline here for the same reason
+    // Bluesky is: otherwise publishing uses a token nobody can renew.
+    //
+    // The daily `LongLivedTokenScheduler` is what normally keeps these fresh.
+    // This is the backstop for a channel that was missed (added since the
+    // last run, or the cron was down), and it only acts when the token is
+    // close enough to expiry to matter.
+    if (isLongLivedPlatform(platform)) {
+      return this.getLongLivedAccessToken(channelId, channelData);
+    }
+
     // Check if token is expired or about to expire
     const now = new Date();
     const bufferTime = new Date(now.getTime() + this.TOKEN_REFRESH_BUFFER_MS);
@@ -1313,6 +1333,90 @@ export class ChannelService {
    * returning the existing token (caller may still succeed, or will get a
    * fresh error to surface).
    */
+  /**
+   * The publish-time backstop for Instagram and Threads.
+   *
+   * Their 60-day token has no refresh token, so it is RENEWED: handed back to
+   * Meta for a fresh 60 days. `LongLivedTokenScheduler` does this daily; this
+   * catches a channel that run missed and is now close to expiry.
+   *
+   * The renewal is a plain GET rather than a call into `InstagramService` /
+   * `ThreadsService`, to avoid adding two more `forwardRef` cycles to this
+   * constructor for two one-line requests. The grant types and hosts are the
+   * same ones those services use, and both were verified against the live
+   * endpoints.
+   *
+   * Never throws for a renewal failure: the stored token is still valid (the
+   * renewal window opens days before expiry), so publishing must proceed with
+   * it rather than fail because a refresh attempt did.
+   */
+  private async getLongLivedAccessToken(
+    channelId: number,
+    channelData: typeof socialMediaChannels.$inferSelect,
+  ): Promise<string> {
+    const current = decrypt(channelData.accessToken);
+
+    const decision = shouldRenew({
+      platform: channelData.platform,
+      tokenExpiresAt: channelData.tokenExpiresAt,
+      updatedAt: channelData.updatedAt,
+    });
+
+    if (!decision.renew) {
+      // `already-expired` included: Meta refuses to renew a lapsed token, so
+      // there is nothing to do here. The call that follows will fail with the
+      // platform's own error, which is the truthful one to surface.
+      return current;
+    }
+
+    try {
+      const url =
+        channelData.platform === 'instagram'
+          ? `https://graph.instagram.com/refresh_access_token` +
+            `?grant_type=ig_refresh_token&access_token=${encodeURIComponent(current)}`
+          : `https://graph.threads.net/refresh_access_token` +
+            `?grant_type=th_refresh_token&access_token=${encodeURIComponent(current)}`;
+
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const data = (await response.json()) as {
+        access_token?: string;
+        expires_in?: number;
+      };
+      if (!data.access_token) {
+        throw new Error('renewal returned no access_token');
+      }
+
+      const expiresAt = expiryFrom(data.expires_in);
+
+      await db
+        .update(socialMediaChannels)
+        .set({
+          accessToken: encrypt(data.access_token),
+          tokenExpiresAt: expiresAt,
+          connectionStatus: 'connected',
+          lastError: null,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(socialMediaChannels.id, channelId), liveChannel()));
+
+      this.logger.log(
+        `Renewed ${channelData.platform} token at publish time: ` +
+          `channelId=${channelId} new_expires_at=${expiresAt.toISOString()}`,
+      );
+      return data.access_token;
+    } catch (err) {
+      this.logger.warn(
+        `Publish-time renewal failed for channel ${channelId} ` +
+          `(${channelData.platform}): ${(err as Error)?.message}. ` +
+          'Using the stored token, which has not expired yet.',
+      );
+      return current;
+    }
+  }
+
   private async getBlueskyAccessToken(
     channelData: typeof socialMediaChannels.$inferSelect,
   ): Promise<string> {

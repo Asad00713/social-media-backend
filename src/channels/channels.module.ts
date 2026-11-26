@@ -71,6 +71,7 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
 import { TokenRefreshProcessor } from './processors/token-refresh.processor';
 import { TokenRefreshScheduler } from './schedulers/token-refresh.scheduler';
 import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.scheduler';
+import { LongLivedTokenScheduler } from './schedulers/long-lived-token.scheduler';
 import { ChannelHealthModule } from './channel-health.module';
 import { YoutubeAuthorizationCheckScheduler } from './schedulers/youtube-authorization-check.scheduler';
 
@@ -161,6 +162,9 @@ import { YoutubeAuthorizationCheckScheduler } from './schedulers/youtube-authori
     TokenRefreshProcessor,
     TokenRefreshScheduler,
     RefreshTokenExpiryScheduler,
+    // Instagram and Threads have no refresh token: their 60-day access token
+    // is RENEWED instead, which nothing did before.
+    LongLivedTokenScheduler,
     YoutubeAuthorizationCheckScheduler,
     MetaAdsClient,
     AdAccountsService,
