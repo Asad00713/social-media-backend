@@ -176,6 +176,76 @@ describe('PaddleWebhookService: subscription.created', () => {
     });
   });
 
+  it('puts the account on the plan the checkout named', async () => {
+    // THE point of the purchase. `applyStatus` carries the STATUS but never
+    // the plan, so without this the customer pays, the provider row is
+    // written, the status goes `active` — and `plan_code` stays FREE. They
+    // are billed for Basic and hold Free's limits.
+    //
+    // Every other test in this file seeds an account ALREADY on a paid plan,
+    // which is why 33 of them passed while this was broken. A new signup
+    // starts on FREE, so that is what this seeds.
+    const { service } = seed({
+      subscriptions: [
+        { id: 42, userId: 'user-1', planCode: 'FREE', status: 'active' },
+      ],
+      provider_subscriptions: [],
+      plans: [{ code: 'BASIC' }, { code: 'PRO' }, { code: 'MAX' }],
+    });
+
+    await service.handleEvent(
+      'subscription.created',
+      subEvent('active', {
+        customData: { user_id: 'user-1', plan_code: 'BASIC' },
+      }),
+    );
+
+    expect(subRow()).toMatchObject({ planCode: 'BASIC' });
+  });
+
+  it('keeps the current plan when the checkout names an unknown one', async () => {
+    // The code comes back over a public endpoint. An unvalidated value would
+    // put an arbitrary string in the column every limit check reads — and a
+    // plan nothing can resolve is worse than the plan they already had.
+    const { service } = seed({
+      subscriptions: [
+        { id: 42, userId: 'user-1', planCode: 'FREE', status: 'active' },
+      ],
+      provider_subscriptions: [],
+      plans: [{ code: 'BASIC' }],
+    });
+
+    await service.handleEvent(
+      'subscription.created',
+      subEvent('active', {
+        customData: { user_id: 'user-1', plan_code: 'ENTERPRISE_XL' },
+      }),
+    );
+
+    expect(subRow()).toMatchObject({ planCode: 'FREE' });
+    // The attachment still happened: the payment is real and the row must not
+    // be lost over bad metadata.
+    expect(providerRows()).toHaveLength(1);
+  });
+
+  it('keeps the current plan when the checkout carries no plan_code', async () => {
+    const { service } = seed({
+      subscriptions: [
+        { id: 42, userId: 'user-1', planCode: 'FREE', status: 'active' },
+      ],
+      provider_subscriptions: [],
+      plans: [{ code: 'BASIC' }],
+    });
+
+    await service.handleEvent(
+      'subscription.created',
+      subEvent('active', { customData: { user_id: 'user-1' } }),
+    );
+
+    expect(subRow()).toMatchObject({ planCode: 'FREE' });
+    expect(providerRows()).toHaveLength(1);
+  });
+
   it('writes nothing when custom_data names no user', async () => {
     // Nothing is inferred from the email: two accounts can share one, and
     // billing the wrong one is not recoverable by a later event.
