@@ -140,7 +140,7 @@ export class MediaLibraryController {
   }
 
   @Delete('categories/:categoryId')
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:publish')
   @HttpCode(HttpStatus.OK)
   async deleteCategory(
     @Param('workspaceId') workspaceId: string,

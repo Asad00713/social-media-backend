@@ -123,8 +123,8 @@ export class ComposerController {
   }
 
   /**
-   * Switch "Needs approval" on (anyone who may draft; approvers are told) or
-   * off (approvers only). The draft must be saved first.
+   * Switch "Needs approval" on (the draft's author or an approver; approvers
+   * are told) or off (approvers only). The draft must be saved first.
    */
   @RequireCapability('posts:draft')
   @Put('drafts/:draftId/approval')

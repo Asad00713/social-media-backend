@@ -72,6 +72,7 @@ type ApprovalRow = Pick<
   typeof posts.$inferSelect,
   | 'id'
   | 'status'
+  | 'createdById'
   | 'content'
   | 'mediaItems'
   | 'platformContent'
@@ -154,9 +155,9 @@ export class DraftApprovalService {
   }
 
   /**
-   * Switch the requirement on (any member who may draft) or off (approvers
-   * only: otherwise the person waiting for approval could simply turn it off
-   * and schedule). Turning it on again after it was on is a no-op, except for
+   * Switch the requirement on (the draft's author or an approver) or off
+   * (approvers only: otherwise the person waiting for approval could simply
+   * turn it off and schedule). Turning it on again after it was on is a no-op, except for
    * a request the workspace approval policy wrote, which tells the approvers
    * the first time. A policy request cannot be switched off while the policy
    * still covers its author.
@@ -178,6 +179,14 @@ export class DraftApprovalService {
     const current = readApproval(row.metadata);
 
     if (required) {
+      // Asking is not drafting: it is a request to the team's approvers, so
+      // it comes from the draft's author or from an approver, not from any
+      // member who can see the draft.
+      if (row.createdById !== userId && !may(role, APPROVE_CAPABILITY)) {
+        throw new ForbiddenException(
+          'Only the author or an approver can ask for approval on this draft.',
+        );
+      }
       // A request the policy wrote silently on the first save: sending it
       // for approval tells the approvers, once. Not once it is approved
       // (an approver can approve before the author sends it).
@@ -336,6 +345,7 @@ export class DraftApprovalService {
       .select({
         id: posts.id,
         status: posts.status,
+        createdById: posts.createdById,
         content: posts.content,
         mediaItems: posts.mediaItems,
         platformContent: posts.platformContent,

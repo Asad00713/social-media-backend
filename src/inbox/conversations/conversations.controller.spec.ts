@@ -25,6 +25,7 @@ describe('ConversationsController over HTTP', () => {
     patch: jest.fn(),
     bulk: jest.fn(),
     markRead: jest.fn(),
+    peekRow: jest.fn(),
     markUnread: jest.fn(),
     remove: jest.fn(),
     restore: jest.fn(),
@@ -49,7 +50,9 @@ describe('ConversationsController over HTTP', () => {
         PlanFeatureGuard,
         {
           provide: SubscriptionLookupService,
-          useValue: { findByWorkspaceId: () => Promise.resolve({ planCode: 'MAX' }) },
+          useValue: {
+            findByWorkspaceId: () => Promise.resolve({ planCode: 'MAX' }),
+          },
         },
         WorkspaceRoleGuard,
         { provide: WorkspaceRoleService, useValue: roles },
@@ -243,9 +246,29 @@ describe('ConversationsController over HTTP', () => {
       },
     );
 
-    it('lets a GUEST mark a conversation read (shared read state)', async () => {
+    it('a GUEST marking a conversation read gets 200 with the unchanged row and markRead is not called', async () => {
+      const row = { id: CONV, unread: true };
+      mutations.peekRow.mockResolvedValue(row);
+      await request(app.getHttpServer())
+        .post(`${base}/read`)
+        .expect(200, { row });
+      expect(mutations.peekRow).toHaveBeenCalledWith(WS, CONV);
+      expect(mutations.markRead).not.toHaveBeenCalled();
+    });
+
+    it('a MEMBER marking read still writes', async () => {
+      roles.getRole.mockResolvedValue('MEMBER');
       await request(app.getHttpServer()).post(`${base}/read`).expect(200);
       expect(mutations.markRead).toHaveBeenCalledWith(WS, CONV);
+      expect(mutations.peekRow).not.toHaveBeenCalled();
+    });
+
+    it('a platform super admin marking read still writes', async () => {
+      roles.getRole.mockResolvedValue(null);
+      roles.isPlatformSuperAdmin.mockResolvedValue(true);
+      await request(app.getHttpServer()).post(`${base}/read`).expect(200);
+      expect(mutations.markRead).toHaveBeenCalledWith(WS, CONV);
+      expect(mutations.peekRow).not.toHaveBeenCalled();
     });
 
     it('lets a MEMBER patch, with the user and body forwarded', async () => {

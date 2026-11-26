@@ -27,7 +27,11 @@ import { PostsController } from '../posts/posts.controller';
 import { ShortLinksController } from '../short-links/short-links.controller';
 import { WorkspaceController } from '../workspace/workspace.controller';
 
-type PostsCap = 'posts:view' | 'posts:draft' | 'posts:comment';
+type PostsCap =
+  | 'posts:view'
+  | 'posts:draft'
+  | 'posts:comment'
+  | 'posts:publish';
 type Controller = new (...a: any[]) => object;
 type Row = [Controller, string, PostsCap];
 
@@ -118,7 +122,7 @@ const ROWS: Row[] = [
   [MediaLibraryController, 'getCategoriesGrouped', 'posts:view'],
   [MediaLibraryController, 'getCategory', 'posts:view'],
   [MediaLibraryController, 'updateCategory', 'posts:draft'],
-  [MediaLibraryController, 'deleteCategory', 'posts:draft'], // Task 5 moves this to posts:publish
+  [MediaLibraryController, 'deleteCategory', 'posts:publish'], // a hard delete (R4)
   [MediaLibraryController, 'reorderCategories', 'posts:draft'],
   [MediaLibraryController, 'createCategoryZipTicket', 'posts:view'],
   [MediaLibraryController, 'createMediaItem', 'posts:draft'],

@@ -7,9 +7,11 @@ import { WorkspaceRoleGuard } from '../../workspace-members/workspace-role.guard
 
 @Controller('channels/workspaces/:wsId/:channelId')
 @UseGuards(AuthGuard('jwt'), WorkspaceRoleGuard, ChannelOwnershipGuard)
-// A refresh only re-reads data a viewer can already see, and it is capped per
-// channel and per workspace, so viewing rights are enough.
-@RequireCapability('analytics:view')
+// A refresh spends the per-channel and per-workspace refresh quota (and a call
+// on the platform's API), which is shared by the whole team, so it needs the
+// same right as the other channel operations. Reading the numbers stays on
+// analytics:view.
+@RequireCapability('channels:manage')
 export class ChannelRefreshController {
   constructor(private readonly analytics: AnalyticsService) {}
 

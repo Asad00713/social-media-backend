@@ -25,7 +25,7 @@ export class WhatsAppTemplatesController {
   }
 
   @Post('sync')
-  @RequireCapability('inbox:view')
+  @RequireCapability('inbox:reply')
   @HttpCode(HttpStatus.OK)
   async sync(@Param('workspaceId') workspaceId: string) {
     // Explicit user action — bypass the per-channel throttle.

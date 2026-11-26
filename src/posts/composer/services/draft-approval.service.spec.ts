@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/require-await, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call -- test doubles are loosely typed */
-import { Logger } from '@nestjs/common';
+import { ForbiddenException, Logger } from '@nestjs/common';
 import { campaigns } from '../../../drizzle/schema/campaigns.schema';
 import { socialMediaChannels } from '../../../drizzle/schema/channels.schema';
 import { posts } from '../../../drizzle/schema/posts.schema';
@@ -78,6 +78,7 @@ function setup(
   const row: Record<string, any> = {
     id: POST,
     status: 'draft',
+    createdById: REQUESTER,
     content: opts.content ?? 'Summer menu is here',
     mediaItems: opts.mediaItems ?? [],
     platformContent: {},
@@ -607,6 +608,53 @@ describe('DraftApprovalService emails', () => {
         expect.anything(),
         expect.objectContaining({ jobId: h.queued[0].id }),
       );
+    });
+  });
+
+  describe('who may ask for approval', () => {
+    const OTHER_MEMBER = 'u-other-member';
+
+    it('refuses a MEMBER who is not the author and cannot approve', async () => {
+      const h = setup();
+      const call = h.service.setRequired(
+        WS,
+        POST,
+        OTHER_MEMBER,
+        'MEMBER',
+        true,
+      );
+      await expect(call).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(call).rejects.toThrow(
+        'Only the author or an approver can ask for approval on this draft.',
+      );
+      expect(h.row.metadata.approval).toBeUndefined();
+    });
+
+    it('lets the author ask', async () => {
+      const h = setup();
+      await expect(ask(h, REQUESTER)).resolves.toBeDefined();
+      expect(h.bell.approvalRequested).toHaveBeenCalled();
+    });
+
+    it.each(['ADMIN', 'OWNER'] as const)(
+      'lets %s ask for a draft someone else wrote',
+      async (role) => {
+        const h = setup();
+        await h.service.setRequired(WS, POST, ADMIN, role, true);
+        await settle();
+        expect(h.bell.approvalRequested).toHaveBeenCalled();
+      },
+    );
+
+    it('keeps turning approval off for approvers only', async () => {
+      const h = setup();
+      pending(h);
+      await expect(
+        h.service.setRequired(WS, POST, OTHER_MEMBER, 'MEMBER', false),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(
+        h.service.setRequired(WS, POST, ADMIN, 'ADMIN', false),
+      ).resolves.toBeDefined();
     });
   });
 });

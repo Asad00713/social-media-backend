@@ -357,7 +357,7 @@ export class AdsController {
    * Returns up to 200 rows ordered by capturedAt desc.
    */
   @Get('leads')
-  @RequireCapability('analytics:view')
+  @RequireCapability('channels:manage')
   async listLeads(
     @Param('workspaceId') wid: string,
     @Query('formId') formId?: string,
