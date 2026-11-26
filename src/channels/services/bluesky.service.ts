@@ -7,8 +7,14 @@ import type {
 } from '../../inbox/adapters/inbox-adapter.interface';
 import {
   MAX_IMAGE_BYTES,
+  UnsafeUrlError,
+  fetchPublic,
   fetchPublicMedia,
 } from '../../common/net/public-fetch';
+
+/** Shown when the PDS host from a DID document is not a public address. */
+export const BLUESKY_SERVER_UNREACHABLE =
+  "That Bluesky server address isn't reachable from the internet.";
 
 export interface BlueskySession {
   did: string; // Decentralized Identifier
@@ -748,9 +754,20 @@ export class BlueskyService {
       String(Math.floor(Date.now() / 1000) + 1800), // 30 min
     );
 
-    const authRes = await fetch(serviceAuthUrl.toString(), {
-      headers: { Authorization: `Bearer ${accessJwt}` },
-    });
+    // The PDS host comes from the account's DID document, not from us: the
+    // user's access JWT may only go to a public address (checked, pinned at
+    // connect), and a redirect is not followed (a 3xx fails below).
+    let authRes: Response;
+    try {
+      authRes = await fetchPublic(serviceAuthUrl.toString(), {
+        headers: { Authorization: `Bearer ${accessJwt}` },
+      });
+    } catch (err) {
+      if (err instanceof UnsafeUrlError) {
+        throw new BadRequestException(BLUESKY_SERVER_UNREACHABLE);
+      }
+      throw err;
+    }
     if (!authRes.ok) {
       const errText = await authRes.text();
       this.logger.error(`getServiceAuth failed: ${errText}`);
