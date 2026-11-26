@@ -7,6 +7,10 @@ import {
   subscriptions,
 } from '../../drizzle/schema';
 import {
+  BillingEmailService,
+  billingEmailKey,
+} from './billing-email.service';
+import {
   isPaddleTerminal,
   mapPaddleStatus,
 } from '../providers/paddle-status.util';
@@ -104,6 +108,7 @@ export class PaddleWebhookService {
   constructor(
     private readonly lookup: SubscriptionLookupService,
     private readonly paymentAlerts: PaymentAlertsService,
+    private readonly billingEmail: BillingEmailService,
   ) {}
 
   // --------------------------------------------------------------- signature
@@ -613,6 +618,7 @@ export class PaddleWebhookService {
           card: null,
           reason: null,
         });
+        await this.emailPaymentFailed(account, amountMinor, alertKey);
       } else {
         await this.paymentAlerts.paymentSucceeded({
           userId: account.userId,
@@ -628,6 +634,58 @@ export class PaddleWebhookService {
       // is a Paddle retry of an event already applied.
       this.logger.warn(
         `Paddle payment alert (${eventType}) skipped: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  /**
+   * The payment-failed EMAIL, which is separate from the in-app alert above
+   * and mandatory.
+   *
+   * `payment-alerts.service` says so in its own words: "The payment-failed
+   * EMAIL is mandatory and sent by the webhooks, not here." The alert rings a
+   * bell and raises a toast, and both are conditional on the user's
+   * `billing_alert` preference; the email is not, because a customer whose
+   * card declined has to find out even when they are not logged in — which is
+   * the normal case during a dunning retry window.
+   *
+   * Without this a Paddle customer's card could fail, Paddle could exhaust its
+   * retries, and the subscription could end with the account silently dropping
+   * to FREE, having been told nothing. Stripe and Lemon Squeezy both send it;
+   * Paddle did not.
+   *
+   * Failures are swallowed for the same reason the alert's are: the webhook
+   * must answer 200, or Paddle retries an event already applied.
+   */
+  private async emailPaymentFailed(
+    // `planCode` is nullable on the row this comes from; the email names the
+    // plan, so an unknown one falls back rather than blocking the send.
+    account: { userId: string; planCode: string | null },
+    // Null when Paddle's payload omits the total; the email prints the
+    // amount, so an unknown one shows as zero rather than suppressing a
+    // notice the customer needs.
+    amountMinor: number | null,
+    alertKey: string,
+  ): Promise<void> {
+    try {
+      await this.billingEmail.paymentFailed({
+        userId: account.userId,
+        planName: await this.billingEmail.planName(account.planCode ?? 'FREE'),
+        amountCents: amountMinor ?? 0,
+        currency: 'usd',
+        // Paddle's payload carries no card details on a failure, so naming a
+        // card here would be a guess. The template falls back to the saved
+        // default rather than printing nothing.
+        cardLast4: null,
+        cardBrand: null,
+        reason: null,
+        nextAttempt: null,
+        dedupeKey: billingEmailKey('payment-failed', PROVIDER, alertKey, 0),
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Billing email (payment failed) skipped: ` +
           `${error instanceof Error ? error.message : String(error)}`,
       );
     }

@@ -618,6 +618,39 @@ describe('PaddleAdapter', () => {
       expect(posts[0].body).toEqual({ effective_from: 'immediately' });
     });
 
+    it('records an immediate cancel locally and frees the default slot', async () => {
+      // Paddle fires `subscription.canceled` ASYNCHRONOUSLY even for
+      // `immediately`. Until it lands the row still reads active and default,
+      // so `isLive()` answers TRUE for a subscription that is already gone:
+      // the customer is told "canceled" while still showing as paid, a second
+      // cancel is accepted and re-POSTs, and a signup at another provider
+      // raises 23505 on the one-default index AFTER that provider took the
+      // money. A lost webhook leaves the account paid-looking forever.
+      const { adapter, updates } = makeAdapter({
+        rows: structuredClone(LOADED_ROWS),
+      });
+
+      await adapter.cancel(1, false);
+
+      expect(updates[0]).toMatchObject({
+        providerStatus: 'canceled',
+        isDefault: false,
+      });
+    });
+
+    it('a SCHEDULED cancel keeps the default slot — it is still billing', async () => {
+      // Until the period ends the account is still Paddle's, so handing the
+      // slot away would make `hasLiveBasePlan` false for a paying customer.
+      const { adapter, updates } = makeAdapter({
+        rows: structuredClone(LOADED_ROWS),
+      });
+
+      await adapter.cancel(1, true);
+
+      expect(updates[0]).toMatchObject({ providerStatus: 'cancel_scheduled' });
+      expect(updates[0]).not.toHaveProperty('isDefault');
+    });
+
     it('is ONE call, not one per add-on', async () => {
       // Every row shares the same providerSubscriptionId, so there is no
       // fan-out here as there is for Lemon Squeezy.
