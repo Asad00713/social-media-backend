@@ -11,7 +11,7 @@ import { DRIZZLE } from '../drizzle/drizzle.module';
 import { posts } from '../drizzle/schema/posts.schema';
 import { postComments } from '../drizzle/schema/post-comments.schema';
 import { users } from '../drizzle/schema/users.schema';
-import type { CallerRole } from '../posts/guest-rules';
+import type { CallerRole } from '../workspace-members/caller-role';
 import { roleCan } from '../workspace-members/role-capabilities';
 import type { PostCommentDto } from './dto/post-comments.dto';
 import { livePosts } from '../posts/soft-delete/soft-delete';

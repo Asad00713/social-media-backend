@@ -22,8 +22,8 @@ const INVALID_TICKET = {
  * The one workspace route without `WorkspaceRoleGuard` (an `OPEN_ROUTES`
  * entry): a browser navigation cannot carry the in-memory bearer token. The
  * ticket in the query string is the credential instead. It is minted by the
- * posts:draft-gated `POST …/zip-ticket`, lives 5 minutes, is bound to this
- * workspace, folder and user, and the user is re-checked for posts:draft here
+ * posts:view-gated `POST …/zip-ticket`, lives 5 minutes, is bound to this
+ * workspace, folder and user, and the user is re-checked for posts:view here
  * so a member removed since minting is refused.
  */
 @Controller('workspaces/:workspaceId/media-library')
@@ -52,7 +52,7 @@ export class LibraryZipController {
     }
 
     try {
-      await this.access.assertCan(workspaceId, payload.userId, 'posts:draft');
+      await this.access.assertCan(workspaceId, payload.userId, 'posts:view');
     } catch (err) {
       if (err instanceof NotFoundException) {
         throw new UnauthorizedException(INVALID_TICKET);

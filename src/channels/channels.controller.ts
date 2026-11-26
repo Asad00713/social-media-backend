@@ -1189,7 +1189,7 @@ export class ChannelsController {
    * Get all channels for a workspace
    */
   @Get('workspaces/:workspaceId')
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async getWorkspaceChannels(
     @Param('workspaceId') workspaceId: string,
@@ -1236,7 +1236,7 @@ export class ChannelsController {
    * Get a single channel
    */
   @Get('workspaces/:workspaceId/:channelId')
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async getChannel(
     @Param('workspaceId') workspaceId: string,

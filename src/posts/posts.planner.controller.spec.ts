@@ -146,6 +146,9 @@ describe('PostsController planner reads over HTTP', () => {
   });
 
   describe('ready', () => {
+    // Drafting needs posts:draft, which starts at MEMBER; a GUEST only reads.
+    beforeEach(() => roles.getRole.mockResolvedValue('MEMBER'));
+
     const ready = (body: unknown, ws = WS, id = POST) =>
       request(app.getHttpServer())
         .post(`/posts/workspaces/${ws}/${id}/ready`)
@@ -166,19 +169,28 @@ describe('PostsController planner reads over HTTP', () => {
       expect(drafts.setReady).not.toHaveBeenCalled();
     });
 
-    it('lets a guest flag a draft, passing caller and role', async () => {
+    it('lets a member flag a draft, passing caller and role', async () => {
       await ready({ ready: true }).expect(200, { post: { id: POST } });
       expect(drafts.setReady).toHaveBeenCalledWith(
         WS,
         POST,
         'user-1',
-        'GUEST',
+        'MEMBER',
         true,
       );
+    });
+
+    it('refuses a guest and flags nothing', async () => {
+      roles.getRole.mockResolvedValue('GUEST');
+      await ready({ ready: true }).expect(403);
+      expect(drafts.setReady).not.toHaveBeenCalled();
     });
   });
 
   describe('duplicate', () => {
+    // Copying makes a new draft, so it needs posts:draft (MEMBER and up).
+    beforeEach(() => roles.getRole.mockResolvedValue('MEMBER'));
+
     const dup = (ws = WS, id = POST) =>
       request(app.getHttpServer()).post(
         `/posts/workspaces/${ws}/${id}/duplicate`,
@@ -190,7 +202,13 @@ describe('PostsController planner reads over HTTP', () => {
         unknown
       >;
 
-    it('lets a guest copy a post: 201 with the new post', async () => {
+    it('refuses a guest and copies nothing', async () => {
+      roles.getRole.mockResolvedValue('GUEST');
+      await dup().expect(403);
+      expect(drafts.duplicate).not.toHaveBeenCalled();
+    });
+
+    it('lets a member copy a post: 201 with the new post', async () => {
       await dup().expect(201, { post: { id: 'new-1' } });
       expect(drafts.duplicate).toHaveBeenCalledWith(
         WS,

@@ -100,10 +100,10 @@ export class WorkspaceController {
     };
   }
 
-  /** The composer's starting switches: anyone who can draft needs them. */
+  /** The composer's starting switches: anyone who can view posts needs them. */
   @Get(':workspaceId/publishing-defaults')
   @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   async publishingDefaults(@Param('workspaceId') workspaceId: string) {
     return this.workspaceService.getPublishingDefaults(workspaceId);
   }

@@ -26,7 +26,7 @@ import { LabelsService } from './labels.service';
 
 /**
  * The workspace label catalogue (Settings › Labels, spec §5.9). Anyone who
- * may draft posts reads it; MEMBER and up manage it (`labels:manage`).
+ * may view posts reads it; MEMBER and up manage it (`labels:manage`).
  * Handler names are pinned by the Settings guard spec (Task 22).
  */
 @Controller('labels/workspaces/:workspaceId')
@@ -34,7 +34,7 @@ import { LabelsService } from './labels.service';
 export class LabelsController {
   constructor(private readonly labels: LabelsService) {}
 
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get()
   list(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,

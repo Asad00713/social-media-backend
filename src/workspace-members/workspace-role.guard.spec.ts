@@ -65,7 +65,7 @@ describe('WorkspaceRoleGuard', () => {
         params: { workspaceId: 'w' },
       };
       const guard = new WorkspaceRoleGuard(
-        { getAllAndOverride: () => 'posts:draft' } as unknown as Reflector,
+        { getAllAndOverride: () => 'posts:view' } as unknown as Reflector,
         {
           getRole: () => Promise.resolve(role),
           isPlatformSuperAdmin: () => Promise.resolve(isSuper),

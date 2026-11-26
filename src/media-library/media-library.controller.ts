@@ -80,7 +80,7 @@ export class MediaLibraryController {
 
   /** Storage, Never used, Bin and tab counts in one call. */
   @Get('stats')
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @HttpCode(HttpStatus.OK)
   async getLibraryStats(@Param('workspaceId') workspaceId: string) {
     return this.libraryStats.getStats(workspaceId);
@@ -102,7 +102,7 @@ export class MediaLibraryController {
   }
 
   @Get('categories')
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @HttpCode(HttpStatus.OK)
   async getCategories(
     @Param('workspaceId') workspaceId: string,
@@ -112,14 +112,14 @@ export class MediaLibraryController {
   }
 
   @Get('categories/grouped')
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @HttpCode(HttpStatus.OK)
   async getCategoriesGrouped(@Param('workspaceId') workspaceId: string) {
     return this.categoryService.findAllGroupedByType(workspaceId);
   }
 
   @Get('categories/:categoryId')
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @HttpCode(HttpStatus.OK)
   async getCategory(
     @Param('workspaceId') workspaceId: string,
@@ -140,7 +140,7 @@ export class MediaLibraryController {
   }
 
   @Delete('categories/:categoryId')
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:publish')
   @HttpCode(HttpStatus.OK)
   async deleteCategory(
     @Param('workspaceId') workspaceId: string,
@@ -164,7 +164,7 @@ export class MediaLibraryController {
    * navigate to without the bearer token (see LibraryZipController).
    */
   @Post('categories/:categoryId/zip-ticket')
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @HttpCode(HttpStatus.OK)
   async createCategoryZipTicket(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
@@ -218,7 +218,7 @@ export class MediaLibraryController {
   }
 
   @Get('items')
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @HttpCode(HttpStatus.OK)
   async getMediaItems(
     @Param('workspaceId') workspaceId: string,
@@ -228,7 +228,7 @@ export class MediaLibraryController {
   }
 
   @Get('items/recent')
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @HttpCode(HttpStatus.OK)
   async getRecentMediaItems(
     @Param('workspaceId') workspaceId: string,
@@ -238,7 +238,7 @@ export class MediaLibraryController {
   }
 
   @Get('items/:itemId')
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @HttpCode(HttpStatus.OK)
   async getMediaItem(
     @Param('workspaceId') workspaceId: string,
@@ -326,7 +326,7 @@ export class MediaLibraryController {
 
   /** Where an item is used: posts, campaign slots and evergreen entries. */
   @Get('items/:itemId/usage')
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @HttpCode(HttpStatus.OK)
   async getMediaItemUsage(
     @Param('workspaceId') workspaceId: string,
@@ -345,7 +345,8 @@ export class MediaLibraryController {
     @CurrentWorkspaceRole() role?: WorkspaceRole | 'SUPER_ADMIN',
   ) {
     // Purging deletes files for good: it needs what `items/:id/permanent` and
-    // `recycle-bin/empty` need (posts:publish), not the route's posts:draft.
+    // `recycle-bin/empty` need (posts:publish). Both caps are Member today;
+    // this keeps purging pinned if posts:draft and posts:publish drift apart.
     if (dto.action === 'permanentDelete') {
       assertRoleCan(role, 'posts:publish');
     }
@@ -368,7 +369,7 @@ export class MediaLibraryController {
   }
 
   @Get('templates')
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @HttpCode(HttpStatus.OK)
   async getTemplates(
     @Param('workspaceId') workspaceId: string,
@@ -389,7 +390,7 @@ export class MediaLibraryController {
   }
 
   @Get('templates/:templateId')
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @HttpCode(HttpStatus.OK)
   async getTemplate(
     @Param('workspaceId') workspaceId: string,
@@ -489,7 +490,7 @@ export class MediaLibraryController {
   }
 
   @Get('snippets')
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @HttpCode(HttpStatus.OK)
   async getTextSnippets(
     @Param('workspaceId') workspaceId: string,
@@ -510,7 +511,7 @@ export class MediaLibraryController {
   }
 
   @Get('snippets/:snippetId')
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @HttpCode(HttpStatus.OK)
   async getTextSnippet(
     @Param('workspaceId') workspaceId: string,
@@ -592,7 +593,7 @@ export class MediaLibraryController {
   }
 
   @Get('links')
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @HttpCode(HttpStatus.OK)
   async getSavedLinks(
     @Param('workspaceId') workspaceId: string,
@@ -613,7 +614,7 @@ export class MediaLibraryController {
   }
 
   @Get('links/:linkId')
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @HttpCode(HttpStatus.OK)
   async getSavedLink(
     @Param('workspaceId') workspaceId: string,
@@ -691,7 +692,7 @@ export class MediaLibraryController {
 
   /** One list across media, templates, snippets and links (contract). */
   @Get('recycle-bin')
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @HttpCode(HttpStatus.OK)
   async getRecycleBin(
     @Param('workspaceId') workspaceId: string,

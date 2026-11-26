@@ -45,14 +45,14 @@ export class CampaignsController {
 
   // NOTE: `status-counts` MUST be declared before the `:id` route below, or
   // Nest will match "status-counts" as an `:id` param value.
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('workspaces/:workspaceId/status-counts')
   async statusCounts(@Param('workspaceId') workspaceId: string) {
     return this.campaignsService.statusCounts(workspaceId);
   }
 
   // NOTE: like `status-counts`, `spans` MUST stay above the `:id` route.
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('workspaces/:workspaceId/spans')
   async spans(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
@@ -72,7 +72,7 @@ export class CampaignsController {
     return this.campaignsService.listSpans(workspaceId, from, to);
   }
 
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('workspaces/:workspaceId')
   async list(
     @Param('workspaceId') workspaceId: string,
@@ -84,7 +84,7 @@ export class CampaignsController {
     });
   }
 
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('workspaces/:workspaceId/:id')
   async getOne(
     @Param('workspaceId') workspaceId: string,

@@ -34,7 +34,7 @@ const MATRIX: Array<[string, Ctor, Table, boolean]> = [
       findAll: null,
       findBySlug: null,
       findOne: 'settings:view',
-      publishingDefaults: 'posts:draft',
+      publishingDefaults: 'posts:view',
       update: 'workspace:manage',
       presignLogo: 'workspace:manage',
       deletionPreview: 'workspace:delete',
@@ -70,7 +70,7 @@ const MATRIX: Array<[string, Ctor, Table, boolean]> = [
     'LabelsController',
     LabelsController,
     {
-      list: 'posts:draft',
+      list: 'posts:view',
       create: 'labels:manage',
       update: 'labels:manage',
       merge: 'labels:manage',

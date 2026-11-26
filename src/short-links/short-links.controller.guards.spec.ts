@@ -5,7 +5,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ShortLinkRedirectController } from './short-link-redirect.controller';
 import { ShortLinksController } from './short-links.controller';
 
-type Cap = 'posts:draft';
+type Cap = 'posts:draft' | 'posts:view';
 
 // Every route of ShortLinksController and the capability it must demand. A
 // route missing from this table, or carrying a different capability, fails
@@ -13,7 +13,7 @@ type Cap = 'posts:draft';
 // checks that SOME capability is declared; this pins which one.)
 const EXPECTED: Record<string, Cap> = {
   create: 'posts:draft',
-  list: 'posts:draft',
+  list: 'posts:view',
 };
 
 const routeHandlers = (proto: Record<string, object>): string[] =>

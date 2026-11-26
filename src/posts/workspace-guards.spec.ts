@@ -8,7 +8,7 @@ import { CampaignsController } from '../campaigns/campaigns.controller';
 import { EvergreenController } from '../campaigns/evergreen.controller';
 import { DripController } from '../drips/drip.controller';
 
-type Cap = 'posts:draft' | 'posts:publish' | 'posts:approve';
+type Cap = 'posts:view' | 'posts:draft' | 'posts:publish' | 'posts:approve';
 
 // Every workspace route and the capability it must demand. A route missing from
 // this table, or carrying a different capability, fails the spec.
@@ -18,14 +18,14 @@ const EXPECTED: Array<[string, new (...a: any[]) => object, Record<string, Cap |
     PostsController,
     {
       createPost: 'posts:draft',
-      getWorkspacePosts: 'posts:draft',
-      getCalendarPosts: 'posts:draft',
-      listDrafts: 'posts:draft',
-      getPost: 'posts:draft',
+      getWorkspacePosts: 'posts:view',
+      getCalendarPosts: 'posts:view',
+      listDrafts: 'posts:view',
+      getPost: 'posts:view',
       updatePost: 'posts:draft',
       deletePost: 'posts:draft',
       publishPost: 'posts:publish',
-      getPostHistory: 'posts:draft',
+      getPostHistory: 'posts:view',
       setReady: 'posts:draft',
       duplicatePost: 'posts:draft',
       getQueueStatus: null,
@@ -38,14 +38,14 @@ const EXPECTED: Array<[string, new (...a: any[]) => object, Record<string, Cap |
     ComposerController,
     {
       saveDraft: 'posts:draft',
-      listLabels: 'posts:draft',
-      listDrafts: 'posts:draft',
-      getDraft: 'posts:draft',
-      listVersions: 'posts:draft',
+      listLabels: 'posts:view',
+      listDrafts: 'posts:view',
+      getDraft: 'posts:view',
+      listVersions: 'posts:view',
       restoreVersion: 'posts:draft',
       deleteDraft: 'posts:draft',
       schedule: 'posts:publish',
-      getApproval: 'posts:draft',
+      getApproval: 'posts:view',
       setApproval: 'posts:draft',
       approveDraft: 'posts:approve',
       cancelSchedule: 'posts:publish',
@@ -57,10 +57,10 @@ const EXPECTED: Array<[string, new (...a: any[]) => object, Record<string, Cap |
     'CampaignsController',
     CampaignsController,
     {
-      statusCounts: 'posts:draft',
-      spans: 'posts:draft',
-      list: 'posts:draft',
-      getOne: 'posts:draft',
+      statusCounts: 'posts:view',
+      spans: 'posts:view',
+      list: 'posts:view',
+      getOne: 'posts:view',
       createSimple: 'posts:publish',
       createDrip: 'posts:publish',
       update: 'posts:publish',
@@ -103,21 +103,21 @@ const EXPECTED: Array<[string, new (...a: any[]) => object, Record<string, Cap |
     DripController,
     {
       createDripCampaign: 'posts:publish',
-      getWorkspaceDripCampaigns: 'posts:draft',
-      getWorkspaceScheduledDripPosts: 'posts:draft',
-      getDripCampaign: 'posts:draft',
+      getWorkspaceDripCampaigns: 'posts:view',
+      getWorkspaceScheduledDripPosts: 'posts:view',
+      getDripCampaign: 'posts:view',
       updateDripCampaign: 'posts:publish',
       deleteDripCampaign: 'posts:publish',
       activateDripCampaign: 'posts:publish',
       pauseDripCampaign: 'posts:publish',
       cancelDripCampaign: 'posts:publish',
-      getDripPosts: 'posts:draft',
-      getDripPost: 'posts:draft',
+      getDripPosts: 'posts:view',
+      getDripPost: 'posts:view',
       updateDripPostContent: 'posts:publish',
       approveDripPost: 'posts:publish',
       skipDripPost: 'posts:publish',
-      getCampaignHistory: 'posts:draft',
-      getCampaignStats: 'posts:draft',
+      getCampaignHistory: 'posts:view',
+      getCampaignStats: 'posts:view',
     },
   ],
 ];

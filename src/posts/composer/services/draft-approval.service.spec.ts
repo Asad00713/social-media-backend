@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/require-await, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call -- test doubles are loosely typed */
-import { Logger } from '@nestjs/common';
+import { ForbiddenException, Logger } from '@nestjs/common';
 import { campaigns } from '../../../drizzle/schema/campaigns.schema';
 import { socialMediaChannels } from '../../../drizzle/schema/channels.schema';
 import { posts } from '../../../drizzle/schema/posts.schema';
@@ -78,6 +78,7 @@ function setup(
   const row: Record<string, any> = {
     id: POST,
     status: 'draft',
+    createdById: REQUESTER,
     content: opts.content ?? 'Summer menu is here',
     mediaItems: opts.mediaItems ?? [],
     platformContent: {},
@@ -607,6 +608,142 @@ describe('DraftApprovalService emails', () => {
         expect.anything(),
         expect.objectContaining({ jobId: h.queued[0].id }),
       );
+    });
+  });
+
+  describe('who may ask for approval', () => {
+    const OTHER_MEMBER = 'u-other-member';
+
+    it('refuses a MEMBER who is not the author and cannot approve', async () => {
+      const h = setup();
+      const call = h.service.setRequired(
+        WS,
+        POST,
+        OTHER_MEMBER,
+        'MEMBER',
+        true,
+      );
+      await expect(call).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(call).rejects.toThrow(
+        'Only the author or an approver can ask for approval on this draft.',
+      );
+      expect(h.row.metadata.approval).toBeUndefined();
+    });
+
+    it('answers the current view to a non-author MEMBER when approval is already on, and writes nothing', async () => {
+      const h = setup();
+      pending(h);
+      const before = JSON.stringify(h.row.metadata);
+      const view = await h.service.setRequired(
+        WS,
+        POST,
+        OTHER_MEMBER,
+        'MEMBER',
+        true,
+      );
+      await settle();
+      expect(view).toMatchObject({ required: true });
+      expect(JSON.stringify(h.row.metadata)).toBe(before);
+      expect(h.bell.approvalRequested).not.toHaveBeenCalled();
+    });
+
+    it('still refuses a non-author MEMBER when the call would write: a policy request nobody has sent yet', async () => {
+      const h = setup();
+      h.row.metadata = {
+        approval: {
+          required: true,
+          byPolicy: true,
+          requestedById: REQUESTER,
+          requestedAt: '2026-10-26T09:00:00.000Z',
+          notifiedAt: null,
+          approvedById: null,
+          approvedAt: null,
+          approvedFingerprint: null,
+        },
+      };
+      await expect(
+        h.service.setRequired(WS, POST, OTHER_MEMBER, 'MEMBER', true),
+      ).rejects.toThrow(
+        'Only the author or an approver can ask for approval on this draft.',
+      );
+      expect(h.bell.approvalRequested).not.toHaveBeenCalled();
+    });
+
+    it('lets the author ask', async () => {
+      const h = setup();
+      await expect(ask(h, REQUESTER)).resolves.toBeDefined();
+      expect(h.bell.approvalRequested).toHaveBeenCalled();
+    });
+
+    it.each(['ADMIN', 'OWNER'] as const)(
+      'lets %s ask for a draft someone else wrote',
+      async (role) => {
+        const h = setup();
+        await h.service.setRequired(WS, POST, ADMIN, role, true);
+        await settle();
+        expect(h.bell.approvalRequested).toHaveBeenCalled();
+      },
+    );
+
+    describe('the view says whether you may ask (canRequest)', () => {
+      it('is true for the author', async () => {
+        const h = setup();
+        const view = await h.service.get(WS, POST, REQUESTER, 'MEMBER');
+        expect(view.canRequest).toBe(true);
+      });
+
+      it.each(['ADMIN', 'OWNER'] as const)(
+        'is true for %s who is not the author',
+        async (role) => {
+          const h = setup();
+          const view = await h.service.get(WS, POST, ADMIN, role);
+          expect(view.canRequest).toBe(true);
+        },
+      );
+
+      it('is false for a MEMBER who is not the author', async () => {
+        const h = setup();
+        const view = await h.service.get(WS, POST, OTHER_MEMBER, 'MEMBER');
+        expect(view.canRequest).toBe(false);
+      });
+
+      it('answers the same once approval is already on', async () => {
+        const h = setup();
+        pending(h);
+        expect(
+          (await h.service.get(WS, POST, OTHER_MEMBER, 'MEMBER')).canRequest,
+        ).toBe(false);
+        expect(
+          (await h.service.get(WS, POST, REQUESTER, 'MEMBER')).canRequest,
+        ).toBe(true);
+      });
+
+      it('agrees with setRequired(true): whoever the view clears can ask, whoever it refuses cannot', async () => {
+        const cases = [
+          [REQUESTER, 'MEMBER'],
+          [ADMIN, 'ADMIN'],
+          [OTHER_MEMBER, 'MEMBER'],
+        ] as const;
+        for (const [user, role] of cases) {
+          const h = setup();
+          const { canRequest } = await h.service.get(WS, POST, user, role);
+          const asked = h.service.setRequired(WS, POST, user, role, true);
+          if (canRequest) await expect(asked).resolves.toBeDefined();
+          else await expect(asked).rejects.toBeInstanceOf(ForbiddenException);
+          await settle();
+        }
+      });
+    });
+
+    it('keeps turning approval off for approvers only', async () => {
+      const h = setup();
+      pending(h);
+      await expect(
+        h.service.setRequired(WS, POST, OTHER_MEMBER, 'MEMBER', false),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(
+        h.service.setRequired(WS, POST, ADMIN, 'ADMIN', false),
+      ).resolves.toBeDefined();
     });
   });
 });

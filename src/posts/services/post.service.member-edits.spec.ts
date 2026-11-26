@@ -1,6 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call -- test doubles are loosely typed */
-import { ForbiddenException } from '@nestjs/common';
-
+/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-return, @typescript-eslint/require-await -- test doubles are loosely typed */
 jest.mock('../../drizzle/db', () => {
   const mkChain = (rows: unknown[]): any =>
     new Proxy(function () {}, {
@@ -46,6 +44,7 @@ function makeService(existing: Record<string, unknown>) {
     { enforceQueueLimit: noop } as any,
     { send: jest.fn() } as any, // PostReminderService
     { onPublishOutcome: jest.fn(async () => undefined) } as any, // PublishFailureNotifier
+    {} as any, // StrandedPostSweeperService
   );
   jest.spyOn(svc, 'getPost').mockResolvedValue(existing as any);
   jest.spyOn(svc as any, 'validateChannels').mockResolvedValue([]);
@@ -57,41 +56,14 @@ function makeService(existing: Record<string, unknown>) {
 }
 
 const OWN_DRAFT = { id: 'p1', status: 'draft', createdById: 'u1', jobId: null };
+// A draft a Viewer wrote back when Viewers could draft. No role can draft
+// below MEMBER any more, so nobody can write one now; the rows remain.
+const FORMER_VIEWER_DRAFT = { ...OWN_DRAFT, createdById: 'former-viewer' };
 
-describe('PostService Guest rules (role GUEST = viewer)', () => {
+describe("PostService: members and other people's posts", () => {
   describe('createPost', () => {
-    it('refuses a scheduled post', async () => {
-      const svc = makeService(OWN_DRAFT);
-      await expect(
-        svc.createPost(
-          WS,
-          'u1',
-          {
-            content: 'x',
-            targetChannelIds: [],
-            scheduledAt: new Date(),
-          } as any,
-          'GUEST',
-        ),
-      ).rejects.toThrow(
-        new ForbiddenException('Only members can schedule posts'),
-      );
-    });
-
-    it('allows a draft', async () => {
-      const svc = makeService(OWN_DRAFT);
-      await expect(
-        svc.createPost(
-          WS,
-          'u1',
-          { content: 'x', targetChannelIds: [] } as any,
-          'GUEST',
-        ),
-      ).resolves.toBeDefined();
-    });
-
     it.each(['MEMBER', 'ADMIN', 'OWNER', 'SUPER_ADMIN'] as const)(
-      '%s may still schedule',
+      'a %s schedules',
       async (role) => {
         const svc = makeService(OWN_DRAFT);
         await expect(
@@ -108,43 +80,25 @@ describe('PostService Guest rules (role GUEST = viewer)', () => {
         ).resolves.toBeDefined();
       },
     );
+
+    it('a MEMBER saves a draft', async () => {
+      const svc = makeService(OWN_DRAFT);
+      await expect(
+        svc.createPost(
+          WS,
+          'u1',
+          { content: 'x', targetChannelIds: [] } as any,
+          'MEMBER',
+        ),
+      ).resolves.toBeDefined();
+    });
   });
 
   describe('updatePost', () => {
-    it('refuses a post that is not a draft', async () => {
-      const svc = makeService({ ...OWN_DRAFT, status: 'scheduled' });
+    it('a MEMBER edits a draft a former Viewer wrote', async () => {
+      const svc = makeService(FORMER_VIEWER_DRAFT);
       await expect(
-        svc.updatePost('p1', WS, 'u1', { content: 'y' } as any, 'GUEST'),
-      ).rejects.toBeInstanceOf(ForbiddenException);
-    });
-
-    it('refuses a change to scheduledAt, even null', async () => {
-      const svc = makeService(OWN_DRAFT);
-      await expect(
-        svc.updatePost('p1', WS, 'u1', { scheduledAt: null } as any, 'GUEST'),
-      ).rejects.toBeInstanceOf(ForbiddenException);
-      await expect(
-        svc.updatePost(
-          'p1',
-          WS,
-          'u1',
-          { scheduledAt: new Date() } as any,
-          'GUEST',
-        ),
-      ).rejects.toBeInstanceOf(ForbiddenException);
-    });
-
-    it("refuses someone else's draft", async () => {
-      const svc = makeService({ ...OWN_DRAFT, createdById: 'other' });
-      await expect(
-        svc.updatePost('p1', WS, 'u1', { content: 'y' } as any, 'GUEST'),
-      ).rejects.toBeInstanceOf(ForbiddenException);
-    });
-
-    it('allows editing their own draft', async () => {
-      const svc = makeService(OWN_DRAFT);
-      await expect(
-        svc.updatePost('p1', WS, 'u1', { content: 'y' } as any, 'GUEST'),
+        svc.updatePost('p1', WS, 'u1', { content: 'y' } as any, 'MEMBER'),
       ).resolves.toBeDefined();
     });
 
@@ -172,24 +126,10 @@ describe('PostService Guest rules (role GUEST = viewer)', () => {
   });
 
   describe('deletePost', () => {
-    it('refuses a non-draft', async () => {
-      const svc = makeService({ ...OWN_DRAFT, status: 'failed' });
+    it('a MEMBER deletes a draft a former Viewer wrote', async () => {
+      const svc = makeService(FORMER_VIEWER_DRAFT);
       await expect(
-        svc.deletePost('p1', WS, 'u1', 'GUEST'),
-      ).rejects.toBeInstanceOf(ForbiddenException);
-    });
-
-    it("refuses someone else's draft", async () => {
-      const svc = makeService({ ...OWN_DRAFT, createdById: 'other' });
-      await expect(
-        svc.deletePost('p1', WS, 'u1', 'GUEST'),
-      ).rejects.toBeInstanceOf(ForbiddenException);
-    });
-
-    it('allows deleting their own draft', async () => {
-      const svc = makeService(OWN_DRAFT);
-      await expect(
-        svc.deletePost('p1', WS, 'u1', 'GUEST'),
+        svc.deletePost('p1', WS, 'u1', 'MEMBER'),
       ).resolves.toBeUndefined();
     });
 

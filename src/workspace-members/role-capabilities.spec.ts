@@ -1,4 +1,8 @@
-import { roleCan, CAPABILITY_MIN_ROLE } from './role-capabilities';
+import {
+  roleCan,
+  CAPABILITY_MIN_ROLE,
+  type Capability,
+} from './role-capabilities';
 
 describe('roleCan', () => {
   it('OWNER can everything', () => {
@@ -14,11 +18,49 @@ describe('roleCan', () => {
     expect(roleCan('MEMBER', 'billing:manage')).toBe(false);
   });
 
-  it('GUEST is view/draft only', () => {
+  it('GUEST is view and comment only', () => {
     expect(roleCan('GUEST', 'analytics:view')).toBe(true);
-    expect(roleCan('GUEST', 'posts:draft')).toBe(true);
+    expect(roleCan('GUEST', 'posts:view')).toBe(true);
+    expect(roleCan('GUEST', 'posts:comment')).toBe(true);
+    expect(roleCan('GUEST', 'posts:draft')).toBe(false);
     expect(roleCan('GUEST', 'posts:publish')).toBe(false);
     expect(roleCan('GUEST', 'inbox:reply')).toBe(false);
+  });
+
+  it('posts:view and posts:comment are GUEST', () => {
+    expect(CAPABILITY_MIN_ROLE['posts:view']).toBe('GUEST');
+    expect(CAPABILITY_MIN_ROLE['posts:comment']).toBe('GUEST');
+  });
+
+  it('posts:draft is MEMBER', () => {
+    expect(roleCan('GUEST', 'posts:draft')).toBe(false);
+    expect(roleCan('MEMBER', 'posts:draft')).toBe(true);
+  });
+
+  /** Mirrored by the frontend's `capabilities.ts`; this list pins the shared keys. */
+  it('the map has exactly these 18 keys', () => {
+    expect(Object.keys(CAPABILITY_MIN_ROLE).sort()).toEqual(
+      [
+        'analytics:view',
+        'billing:manage',
+        'brand:manage',
+        'channels:manage',
+        'inbox:reply',
+        'inbox:view',
+        'labels:manage',
+        'posts:approve',
+        'posts:comment',
+        'posts:draft',
+        'posts:publish',
+        'posts:view',
+        'reports:manage',
+        'settings:view',
+        'team:manage',
+        'team:view',
+        'workspace:delete',
+        'workspace:manage',
+      ].sort(),
+    );
   });
 
   it('ADMIN cannot manage billing', () => {
@@ -39,16 +81,11 @@ describe('roleCan', () => {
     expect(roleCan('ADMIN', 'team:manage')).toBe(true);
   });
 
-  /**
-   * Reading colleagues' Maestro conversations is reading whatever they typed
-   * into the agent — their working notes. The floor matters more here than
-   * for most capabilities, so it is asserted from both directions.
-   */
-  it('keeps every Maestro conversation ADMIN+', () => {
-    expect(roleCan('GUEST', 'maestro:view-all')).toBe(false);
-    expect(roleCan('MEMBER', 'maestro:view-all')).toBe(false);
-    expect(roleCan('ADMIN', 'maestro:view-all')).toBe(true);
-    expect(roleCan('OWNER', 'maestro:view-all')).toBe(true);
+  it('maestro:view-all is not a capability', () => {
+    // @ts-expect-error removed: Maestro history is the caller's own, for every role
+    const removed: Capability = 'maestro:view-all';
+    expect(removed).toBe('maestro:view-all');
+    expect(Object.keys(CAPABILITY_MIN_ROLE)).not.toContain('maestro:view-all');
   });
 
   /** A report emails people outside the workspace, so a viewer cannot manage one. */

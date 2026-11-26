@@ -14,7 +14,10 @@ import {
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { RequireCapability } from '../../workspace-members/require-capability.decorator';
+import { CurrentWorkspaceRole } from '../../workspace-members/current-workspace-role.decorator';
+import type { WorkspaceRole } from '../../workspace-members/role-capabilities';
 import { WorkspaceRoleGuard } from '../../workspace-members/workspace-role.guard';
+import { mayChangeReadState } from '../read-state-access';
 import { BulkConversationsDto } from './dto/bulk.dto';
 import type {
   BulkResult,
@@ -121,14 +124,20 @@ export class ConversationsController {
     return await this.mutations.patch(workspaceId, id, user.userId, body);
   }
 
-  // Read state is shared (D4): a GUEST may open a conversation.
+  // Read state is shared (D4): a GUEST may open a conversation, but opening it
+  // must not clear the unread badge for the team, so a role without
+  // inbox:reply gets the row back unchanged.
   @RequireCapability('inbox:view')
   @HttpCode(200)
   @Post(':id/read')
   async read(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Param('id', ParseUUIDPipe) id: string,
+    @CurrentWorkspaceRole() role?: WorkspaceRole | 'SUPER_ADMIN',
   ): Promise<{ row: ConversationRow }> {
+    if (!mayChangeReadState(role)) {
+      return { row: await this.mutations.peekRow(workspaceId, id) };
+    }
     return await this.mutations.markRead(workspaceId, id);
   }
 

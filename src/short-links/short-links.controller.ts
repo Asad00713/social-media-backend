@@ -23,8 +23,9 @@ import {
 import { ShortLinksService } from './short-links.service';
 
 /**
- * The workspace's short links. Anyone who can draft a post may shorten a
- * link in it and see how often it was clicked.
+ * The workspace's short links. Anyone who can draft a post (Member and up)
+ * may shorten a link in it; anyone who can view posts sees how often it was
+ * clicked.
  */
 @Controller('short-links/workspaces/:workspaceId')
 @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
@@ -43,7 +44,7 @@ export class ShortLinksController {
     return this.shortLinks.create(workspaceId, user.userId, dto);
   }
 
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get()
   async list(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,

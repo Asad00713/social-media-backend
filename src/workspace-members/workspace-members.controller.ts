@@ -97,8 +97,13 @@ export class WorkspaceMembersController {
   getInvitationLink(
     @Param('workspaceId') workspaceId: string,
     @Param('invitationId', ParseUUIDPipe) invitationId: string,
+    @CurrentUser() user: { userId: string; email: string },
   ) {
-    return this.membersService.getInvitationLink(workspaceId, invitationId);
+    return this.membersService.getInvitationLink(
+      workspaceId,
+      invitationId,
+      user.userId,
+    );
   }
 
   // Resend an invitation: a fresh 7 days and the email again. A lapsed one

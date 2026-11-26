@@ -85,8 +85,8 @@ export class CalendarSyncController {
    * Auth: same membership check as the backfill endpoint — workspace owner or an
    * ACCEPTED member; otherwise 403.
    */
-  // posts:draft (GUEST): same level as reading the planner calendar itself.
-  @RequireCapability('posts:draft')
+  // posts:view (GUEST): same level as reading the planner calendar itself.
+  @RequireCapability('posts:view')
   @Get('workspaces/:workspaceId/external-events')
   async listExternalEvents(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
@@ -104,7 +104,7 @@ export class CalendarSyncController {
   }
 
   /** The workspace's connected calendars (active connections only, primary first). */
-  @RequireCapability('posts:draft')
+  @RequireCapability('posts:view')
   @Get('workspaces/:workspaceId/calendars')
   async listCalendars(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
