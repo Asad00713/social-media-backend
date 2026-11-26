@@ -224,3 +224,47 @@ describe('MastodonService does not echo the server’s error body', () => {
     },
   );
 });
+
+describe('MastodonService request deadlines', () => {
+  const json = (body: unknown) =>
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+
+  it('gives an API call a 15 s deadline', async () => {
+    const timeout = jest.spyOn(AbortSignal, 'timeout');
+    mockedFetch.mockImplementation(() => Promise.resolve(json({ id: '1' })));
+    await service.verifyCredentials(PUBLIC_INSTANCE, 'tok');
+    expect(timeout).toHaveBeenCalledWith(15_000);
+    const [, init] = mockedFetch.mock.calls[0] as [
+      string,
+      { signal?: AbortSignal },
+    ];
+    expect(init.signal).toBe(timeout.mock.results[0]?.value);
+  });
+
+  it('gives the media upload a longer, 120 s deadline', async () => {
+    const timeout = jest.spyOn(AbortSignal, 'timeout');
+    mockedFetch.mockImplementation((url: string) =>
+      Promise.resolve(
+        url.endsWith('/api/v2/media')
+          ? json({ id: 'm1', type: 'image', url: 'u', preview_url: 'p' })
+          : new Response('img', { headers: { 'content-type': 'image/png' } }),
+      ),
+    );
+    await service.uploadMedia(
+      PUBLIC_INSTANCE,
+      'tok',
+      'https://93.184.216.34/a.png',
+    );
+    const calls = mockedFetch.mock.calls as [
+      string,
+      { signal?: AbortSignal },
+    ][];
+    const upload = calls.find(([url]) => url.endsWith('/api/v2/media'));
+    const index = timeout.mock.calls.findIndex(([ms]) => ms === 120_000);
+    expect(index).toBeGreaterThanOrEqual(0);
+    expect(upload?.[1].signal).toBe(timeout.mock.results[index]?.value);
+  });
+});

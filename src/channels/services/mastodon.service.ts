@@ -18,6 +18,14 @@ import {
 export const MASTODON_SERVER_UNREACHABLE =
   "That Mastodon server address isn't reachable from the internet.";
 
+/** Deadline for one Mastodon API call: a server that never answers. */
+const MASTODON_API_TIMEOUT_MS = 15_000;
+/**
+ * The media upload sends the whole file (up to Mastodon's 40 MB video cap)
+ * in one buffered POST, so it gets longer than an API call.
+ */
+const MASTODON_MEDIA_UPLOAD_TIMEOUT_MS = 120_000;
+
 /** A remote error body goes to the log, cut short; never to the client. */
 const MAX_LOGGED_BODY = 500;
 function truncateForLog(body: string): string {
@@ -34,10 +42,14 @@ function truncateForLog(body: string): string {
  */
 async function mastodonFetch(
   url: string,
-  init?: PublicRequestInit,
+  init: PublicRequestInit = {},
+  timeoutMs = MASTODON_API_TIMEOUT_MS,
 ): Promise<Response> {
   try {
-    return await fetchPublic(url, init);
+    return await fetchPublic(url, {
+      ...init,
+      signal: init.signal ?? AbortSignal.timeout(timeoutMs),
+    });
   } catch (err) {
     if (err instanceof UnsafeUrlError) {
       throw new BadRequestException(MASTODON_SERVER_UNREACHABLE);
@@ -548,14 +560,18 @@ export class MastodonService {
     );
     const body = Buffer.concat(bodyParts);
 
-    const response = await mastodonFetch(`${normalizedUrl}/api/v2/media`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+    const response = await mastodonFetch(
+      `${normalizedUrl}/api/v2/media`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        },
+        body,
       },
-      body,
-    });
+      MASTODON_MEDIA_UPLOAD_TIMEOUT_MS,
+    );
 
     if (!response.ok) {
       const errorData = await response.text();
