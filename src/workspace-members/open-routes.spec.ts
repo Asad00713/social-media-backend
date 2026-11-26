@@ -1,6 +1,10 @@
 /* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call, @typescript-eslint/unbound-method -- test doubles are loosely typed (make() builds controllers over partial mocks) */
 import 'reflect-metadata';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import { GUARDS_METADATA } from '@nestjs/common/constants';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -31,21 +35,41 @@ const user = { userId: 'u1', email: 'u@x.com' };
 function guardsOf(proto: any, method: string): unknown[] {
   return Reflect.getMetadata(GUARDS_METADATA, proto[method]) ?? [];
 }
+/**
+ * Answers like WorkspaceAccessService.assertCanOrExplain: whatever assertCan
+ * says, except that a refusal for someone who is still a member is a 403 with
+ * the route's role copy.
+ */
+function explaining(assertCan: jest.Mock, stillMember: boolean) {
+  return jest.fn(
+    async (w: string, u: string, cap: Capability, roleMessage: string) => {
+      try {
+        return await assertCan(w, u, cap);
+      } catch (err) {
+        if (err instanceof NotFoundException && stillMember) {
+          throw new ForbiddenException(roleMessage);
+        }
+        throw err;
+      }
+    },
+  );
+}
 function noAccess() {
-  return { assertCan: jest.fn().mockRejectedValue(new NotFoundException()) };
+  const assertCan = jest.fn().mockRejectedValue(new NotFoundException());
+  return { assertCan, assertCanOrExplain: explaining(assertCan, false) };
 }
 function okAccess() {
-  return { assertCan: jest.fn().mockResolvedValue('MEMBER') };
+  const assertCan = jest.fn().mockResolvedValue('MEMBER');
+  return { assertCan, assertCanOrExplain: explaining(assertCan, true) };
 }
 /** Answers like WorkspaceAccessService: NotFound for a role without the cap. */
 function accessFor(role: WorkspaceRole) {
-  return {
-    assertCan: jest.fn((_w: string, _u: string, cap: Capability) =>
-      roleCan(role, cap)
-        ? Promise.resolve(role)
-        : Promise.reject(new NotFoundException()),
-    ),
-  };
+  const assertCan = jest.fn((_w: string, _u: string, cap: Capability) =>
+    roleCan(role, cap)
+      ? Promise.resolve(role)
+      : Promise.reject(new NotFoundException()),
+  );
+  return { assertCan, assertCanOrExplain: explaining(assertCan, true) };
 }
 function make(Ctor: any, deps: Record<string, unknown>) {
   const c: any = Object.create(Ctor.prototype);
@@ -159,14 +183,18 @@ describe('ChatbotController for a Viewer (GUEST)', () => {
   const router = { getAvailableProviders: jest.fn().mockReturnValue([]) };
   beforeEach(() => jest.clearAllMocks());
 
-  it('a GUEST cannot start a chatbot conversation', async () => {
+  it('a GUEST cannot start a chatbot conversation, and is told why', async () => {
     const c = make(ChatbotController, {
       chatbotService: svc,
       access: accessFor('GUEST'),
     });
     await expect(
       c.createConversation(user, { workspaceId: 'w' }),
-    ).rejects.toBeInstanceOf(NotFoundException);
+    ).rejects.toThrow(
+      new ForbiddenException(
+        'Your role in this workspace does not allow this action. Ask a workspace admin to change your role.',
+      ),
+    );
     expect(svc.createConversation).not.toHaveBeenCalled();
   });
 
@@ -340,7 +368,9 @@ describe('MaestroController for a Viewer (GUEST)', () => {
     });
     await expect(
       c.createConversation(user, { workspaceId: 'w' }),
-    ).rejects.toBeInstanceOf(NotFoundException);
+    ).rejects.toThrow(
+      new ForbiddenException("Your role can't use Maestro in this workspace."),
+    );
     await expect(
       c.presignAttachment(user, { workspaceId: 'w' }),
     ).rejects.toBeInstanceOf(NotFoundException);
