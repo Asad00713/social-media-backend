@@ -180,6 +180,23 @@ export class PaddleWebhookService {
       target = await this.createRowFromCheckout(paddleId, sub);
     }
 
+    // The plan the checkout bought, applied on EVERY `subscription.created`
+    // rather than only the one that creates the row.
+    //
+    // Putting it inside `createRowFromCheckout` looked equivalent and is not:
+    // that runs only when no row exists yet. Paddle delivers at-least-once
+    // and out of order, so a redelivered or replayed `subscription.created`
+    // finds the row already there, skips the creation — and would skip the
+    // plan with it, leaving an account paying for Basic on Free's limits with
+    // no way to recover short of editing the database. Writing it here makes
+    // the event idempotent in the way Paddle's delivery guarantees require.
+    // Found by replaying a real sandbox event, 2026-11-26.
+    if (target && eventType === 'subscription.created') {
+      const custom = (sub as { custom_data?: Record<string, unknown> | null })
+        .custom_data;
+      await this.applyPurchasedPlan(target.subscriptionId, custom ?? {});
+    }
+
     if (!target) {
       this.logger.warn(
         `No Paddle provider row for subscription ${paddleId} (${eventType}); ` +
@@ -270,14 +287,6 @@ export class PaddleWebhookService {
       `Attached Paddle subscription ${paddleId} to subscription ` +
         `${subscriptionId} for user ${userId}`,
     );
-
-    // The account is now on the plan they just bought. Nothing else writes
-    // this: `applyStatus` carries the STATUS (active, past_due, paused) but
-    // never the plan, so without this the customer pays, the provider row is
-    // written, the status goes `active` — and `subscriptions.plan_code` stays
-    // FREE. They are billed for Basic and hold Free's limits. Verified in
-    // sandbox on 2026-11-26, which is how this was found.
-    await this.applyPurchasedPlan(subscriptionId, custom ?? {});
 
     return inserted[0] ?? null;
   }
