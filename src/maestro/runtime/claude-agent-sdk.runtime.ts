@@ -3,6 +3,7 @@ import {
   fetchPublicMedia,
   MAX_IMAGE_BYTES,
 } from '../../common/net/public-fetch';
+import { attachmentRefusal } from '../../common/net/attachment-refusal';
 import type { AgentEvent, AgentRunInput, AgentRuntime } from '../maestro.types';
 import {
   buildMcpServer,
@@ -328,12 +329,17 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
    * every redirect re-checked, body capped) rather than a bare fetch.
    */
   private async fetchBase64(url: string): Promise<string> {
-    const res = await fetchPublicMedia(url, { maxBytes: MAX_IMAGE_BYTES });
-    if (!res.ok) {
-      throw new Error(`attachment fetch failed: ${res.status} ${url}`);
+    // A refused URL is a 400 with plain copy; other errors pass through.
+    try {
+      const res = await fetchPublicMedia(url, { maxBytes: MAX_IMAGE_BYTES });
+      if (!res.ok) {
+        throw new Error(`attachment fetch failed: ${res.status} ${url}`);
+      }
+      const buf = Buffer.from(await res.arrayBuffer());
+      return buf.toString('base64');
+    } catch (err) {
+      throw attachmentRefusal(err) ?? err;
     }
-    const buf = Buffer.from(await res.arrayBuffer());
-    return buf.toString('base64');
   }
 
   /**

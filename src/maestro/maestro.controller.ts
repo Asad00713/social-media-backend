@@ -14,6 +14,7 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { assertPublicAttachmentUrl } from '../common/net/attachment-refusal';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { WorkspaceAccessService } from '../workspace-members/workspace-access.service';
 import {
@@ -274,6 +275,13 @@ export class MaestroController {
     @Body() dto: SendMaestroMessageDto,
     @Res() res: Response,
   ) {
+    // Attachment URLs come from the body and are fetched by the runtime once
+    // the stream is open, where a refusal could only be an SSE error event.
+    // Check them first, so a refused one is a real 400.
+    for (const att of dto.attachments ?? []) {
+      await assertPublicAttachmentUrl(att.url);
+    }
+
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');

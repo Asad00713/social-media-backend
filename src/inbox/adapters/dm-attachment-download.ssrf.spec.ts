@@ -9,6 +9,9 @@ jest.mock('undici', () => {
 });
 const mockedFetch = undiciFetch as unknown as jest.Mock;
 
+import * as http from 'http';
+import type { AddressInfo } from 'net';
+import { BadRequestException } from '@nestjs/common';
 import { publicAgent } from '../../common/net/public-fetch';
 import type { SlackService } from '../../channels/services/slack.service';
 import type { TelegramService } from '../../channels/services/telegram.service';
@@ -31,6 +34,20 @@ const att = (url: string) => ({
   contentType: 'image/png',
 });
 
+const UNREACHABLE = "That attachment link isn't reachable from the internet.";
+const TOO_LARGE = 'That attachment is too large.';
+
+/** A refusal must be a clean 400 with plain copy, never a 500. */
+async function expect400(p: Promise<unknown>, copy = UNREACHABLE) {
+  const err: unknown = await p.then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+  expect(err).toBeInstanceOf(BadRequestException);
+  expect((err as BadRequestException).getStatus()).toBe(400);
+  expect((err as BadRequestException).message).toBe(copy);
+}
+
 let globalFetch: jest.SpyInstance;
 beforeEach(() => {
   mockedFetch.mockReset();
@@ -46,14 +63,17 @@ describe('Slack DM attachments', () => {
     uploadFile,
   } as unknown as SlackService);
 
-  it.each(PRIVATE_URLS)('refuses %s and uploads nothing', async (url) => {
-    await expect(
-      adapter.sendDmWithAttachments(channel, 'C1', 'hi', [att(url)]),
-    ).rejects.toThrow();
-    expect(mockedFetch).not.toHaveBeenCalled();
-    expect(globalFetch).not.toHaveBeenCalled();
-    expect(uploadFile).not.toHaveBeenCalled();
-  });
+  it.each(PRIVATE_URLS)(
+    'refuses %s with a 400 and uploads nothing',
+    async (url) => {
+      await expect400(
+        adapter.sendDmWithAttachments(channel, 'C1', 'hi', [att(url)]),
+      );
+      expect(mockedFetch).not.toHaveBeenCalled();
+      expect(globalFetch).not.toHaveBeenCalled();
+      expect(uploadFile).not.toHaveBeenCalled();
+    },
+  );
 
   it('downloads a public URL through the pinned agent', async () => {
     mockedFetch.mockResolvedValue(new Response('png'));
@@ -77,21 +97,24 @@ describe('Telegram DM attachments', () => {
     forToken: () => ({ sendPhoto }),
   } as unknown as TelegramService);
 
-  it.each(PRIVATE_URLS)('refuses %s and sends nothing', async (url) => {
-    await expect(
-      adapter.sendDmWithAttachments(channel, '42', 'hi', [att(url)]),
-    ).rejects.toThrow();
-    expect(mockedFetch).not.toHaveBeenCalled();
-    expect(globalFetch).not.toHaveBeenCalled();
-    expect(sendPhoto).not.toHaveBeenCalled();
-  });
+  it.each(PRIVATE_URLS)(
+    'refuses %s with a 400 and sends nothing',
+    async (url) => {
+      await expect400(
+        adapter.sendDmWithAttachments(channel, '42', 'hi', [att(url)]),
+      );
+      expect(mockedFetch).not.toHaveBeenCalled();
+      expect(globalFetch).not.toHaveBeenCalled();
+      expect(sendPhoto).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('Discord attachment download', () => {
   const discord = new DiscordService();
 
-  it.each(PRIVATE_URLS)('refuses %s', async (url) => {
-    await expect(discord.downloadAttachment(url)).rejects.toThrow();
+  it.each(PRIVATE_URLS)('refuses %s with a 400', async (url) => {
+    await expect400(discord.downloadAttachment(url));
     expect(mockedFetch).not.toHaveBeenCalled();
     expect(globalFetch).not.toHaveBeenCalled();
   });
@@ -107,5 +130,59 @@ describe('Discord attachment download', () => {
       { dispatcher: unknown },
     ];
     expect(init.dispatcher).toBe(publicAgent);
+  });
+});
+
+describe('attachment refusal mapping', () => {
+  const discord = new DiscordService();
+  const uploadFile = jest.fn();
+  const slack = new SlackDmAdapter({ uploadFile } as unknown as SlackService);
+
+  it('a host that resolves privately at connect time is a 400, and never reached', async () => {
+    const hits: string[] = [];
+    const server = http.createServer((req, res) => {
+      hits.push(req.url ?? '');
+      res.end('secret');
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const { port } = server.address() as AddressInfo;
+    mockedFetch.mockImplementation(
+      jest.requireActual<typeof import('undici')>('undici').fetch,
+    );
+    try {
+      await expect400(
+        discord.downloadAttachment(`http://localhost:${port}/a.png`),
+      );
+      await expect400(
+        slack.sendDmWithAttachments(channel, 'C1', 'hi', [
+          att(`http://localhost:${port}/a.png`),
+        ]),
+      );
+      expect(hits).toEqual([]);
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  });
+
+  it('a body over the cap is a 400 that says so', async () => {
+    mockedFetch.mockResolvedValue(
+      new Response('x', {
+        headers: { 'content-length': String(5 * 1024 * 1024 * 1024) },
+      }),
+    );
+    await expect400(discord.downloadAttachment(PUBLIC_URL), TOO_LARGE);
+  });
+
+  it('a real network error is left as it is (not a 400)', async () => {
+    const boom = new TypeError('fetch failed', {
+      cause: Object.assign(new Error('connect ECONNREFUSED'), {
+        code: 'ECONNREFUSED',
+      }),
+    });
+    mockedFetch.mockRejectedValue(boom);
+    await expect(discord.downloadAttachment(PUBLIC_URL)).rejects.toBe(boom);
+    await expect(
+      slack.sendDmWithAttachments(channel, 'C1', 'hi', [att(PUBLIC_URL)]),
+    ).rejects.toBe(boom);
   });
 });

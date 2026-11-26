@@ -1,6 +1,7 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { REST, Routes } from 'discord.js';
 import { fetchPublicMedia } from '../../common/net/public-fetch';
+import { attachmentRefusal } from '../../common/net/attachment-refusal';
 
 /**
  * Discord REST client (uses the single shared bot token). Handles the OUTBOUND
@@ -168,14 +169,19 @@ export class DiscordService {
   async downloadAttachment(
     url: string,
   ): Promise<{ buffer: Buffer; contentType: string }> {
-    const res = await fetchPublicMedia(url);
-    if (!res.ok) {
-      throw new BadRequestException(`Discord attachment fetch ${res.status}`);
+    // A refused URL is a 400 with plain copy; other errors pass through.
+    try {
+      const res = await fetchPublicMedia(url);
+      if (!res.ok) {
+        throw new BadRequestException(`Discord attachment fetch ${res.status}`);
+      }
+      const contentType =
+        res.headers.get('content-type')?.split(';')[0]?.trim() ??
+        'application/octet-stream';
+      return { buffer: Buffer.from(await res.arrayBuffer()), contentType };
+    } catch (err) {
+      throw attachmentRefusal(err) ?? err;
     }
-    const contentType =
-      res.headers.get('content-type')?.split(';')[0]?.trim() ??
-      'application/octet-stream';
-    return { buffer: Buffer.from(await res.arrayBuffer()), contentType };
   }
 
   /** Exchange the bot-invite OAuth code for the guild the bot was added to.

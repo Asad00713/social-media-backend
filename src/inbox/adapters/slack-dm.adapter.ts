@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { fetchPublicMedia } from '../../common/net/public-fetch';
+import { attachmentRefusal } from '../../common/net/attachment-refusal';
 import { SlackService } from '../../channels/services/slack.service';
 import type {
   PlatformDmAdapter,
@@ -122,13 +123,19 @@ export class SlackDmAdapter implements PlatformDmAdapter {
 
       // Pull the R2 object — same bucket the user just uploaded to, no auth.
       // The URL comes from the request body (DmAttachmentDto): SSRF guard.
-      const res = await fetchPublicMedia(att.url);
-      if (!res.ok) {
-        throw new BadRequestException(
-          `Failed to fetch attachment ${i + 1}/${attachments.length} from R2 after ${successCount} uploaded: ${res.status} ${res.statusText}`,
-        );
+      // A refused URL is a 400 with plain copy; other errors pass through.
+      let buffer: Buffer;
+      try {
+        const res = await fetchPublicMedia(att.url);
+        if (!res.ok) {
+          throw new BadRequestException(
+            `Failed to fetch attachment ${i + 1}/${attachments.length} from R2 after ${successCount} uploaded: ${res.status} ${res.statusText}`,
+          );
+        }
+        buffer = Buffer.from(await res.arrayBuffer());
+      } catch (err) {
+        throw attachmentRefusal(err) ?? err;
       }
-      const buffer = Buffer.from(await res.arrayBuffer());
 
       // Derive a filename from the URL path tail so Slack shows something
       // human-readable rather than "untitled".

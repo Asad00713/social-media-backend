@@ -52,6 +52,18 @@ export function isPrivateAddress(address: string): boolean {
   );
 }
 
+/**
+ * True only for undici's wrapping of a connect-time refusal by checkedLookup
+ * (`TypeError('fetch failed', { cause: PrivateAddressError })`). Any other
+ * network error (DNS miss, refused, reset, timeout) is not matched.
+ */
+export function isPrivateAddressRefusal(err: unknown): boolean {
+  return (
+    err instanceof TypeError &&
+    (err as { cause?: unknown }).cause instanceof PrivateAddressError
+  );
+}
+
 /** checkedLookup refused a host because it resolved to a non-public address. */
 export class PrivateAddressError extends Error {
   constructor(message = 'Link points at a private address') {
@@ -166,9 +178,7 @@ export async function fetchPublic(
       dispatcher: publicAgent,
     })) as unknown as Response;
   } catch (err) {
-    if (
-      (err as { cause?: unknown } | null)?.cause instanceof PrivateAddressError
-    ) {
+    if (isPrivateAddressRefusal(err)) {
       throw new UnsafeUrlError();
     }
     throw err;
@@ -219,7 +229,11 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 /** The download target is not a public http(s) host, or the body is too big. */
 export class UnsafeMediaUrlError extends Error {
-  constructor(message: string) {
+  /** `too_large`: the body passed the cap. `unsafe`: the target was refused. */
+  constructor(
+    message: string,
+    readonly reason: 'unsafe' | 'too_large' = 'unsafe',
+  ) {
     super(message);
     this.name = 'UnsafeMediaUrlError';
   }
@@ -243,6 +257,7 @@ function capBody(response: Response, maxBytes: number): Response {
     void response.body?.cancel().catch(() => undefined);
     throw new UnsafeMediaUrlError(
       `Media is ${declared} bytes, over the ${maxBytes}-byte limit`,
+      'too_large',
     );
   }
   if (!response.body) return response;
@@ -253,7 +268,10 @@ function capBody(response: Response, maxBytes: number): Response {
         seen += chunk.byteLength;
         if (seen > maxBytes) {
           controller.error(
-            new UnsafeMediaUrlError(`Media is over the ${maxBytes}-byte limit`),
+            new UnsafeMediaUrlError(
+              `Media is over the ${maxBytes}-byte limit`,
+              'too_large',
+            ),
           );
           return;
         }
