@@ -1320,9 +1320,10 @@ export class WorkspaceMembersService {
    * workspace owner or a platform super admin. Seat-gated as an invitation.
    * Restores ACCEPTED with the same role.
    *
-   * A pending re-invitation to the same address, whatever its role, is
-   * deleted and returned in `droppedInvitations`: the restored membership
-   * replaces it.
+   * A pending re-invitation to the same address is deleted and returned in
+   * `droppedInvitations`: the restored membership replaces it. An ADMIN
+   * invitation is the owner's to drop, so an ADMIN restoring someone the
+   * owner has re-invited as ADMIN gets the admin-rule 403 instead.
    *
    * A removal by someone else rings the removed person's bell at once and
    * queues the B3 "removed from workspace" email for after this window; a
@@ -1365,26 +1366,48 @@ export class WorkspaceMembersService {
 
     const isRemover = row.removedBy === currentUserId;
     const isOwner = workspaceData.ownerId === currentUserId;
-    // The remover of a non-ADMIN needs neither lookup.
-    const ownerOrSuperAdmin =
+    // Owner or platform super admin: the only callers who manage admins. The
+    // remover of a non-ADMIN needs neither lookup, so for them this is false
+    // even if they happen to be a super admin; the pending-ADMIN-invitation
+    // check below looks the super admin up itself.
+    const managesAdmins =
       isOwner ||
       ((!isRemover || row.role === 'ADMIN') &&
         (await this.isPlatformSuperAdmin(currentUserId)));
-    if (!isRemover && !ownerOrSuperAdmin) {
+    if (!isRemover && !managesAdmins) {
       throw new ForbiddenException(
         'Only the person who removed them or the workspace owner can undo this removal',
       );
     }
     // Restoring an ADMIN puts an admin back: owner (or support) only, even for
     // the ADMIN who removed them.
-    this.assertMayManageRole(ownerOrSuperAdmin, row.role as MemberRoleName);
+    this.assertMayManageRole(managesAdmins, row.role as MemberRoleName);
+
+    const email = normalizeEmail(row.email);
+
+    // The transaction below deletes every pending invitation to this address.
+    // If the owner re-invited them as ADMIN, that deletes an admin invitation,
+    // which only the owner (or support) may touch. Refused before any lock.
+    if (!managesAdmins) {
+      const adminInvite = await this.db.query.workspaceInvitation.findFirst({
+        where: and(
+          eq(workspaceInvitation.workspaceId, workspaceId),
+          eq(workspaceInvitation.status, 'PENDING'),
+          eq(workspaceInvitation.role, 'ADMIN'),
+          sql`lower(${workspaceInvitation.email}) = ${email}`,
+        ),
+        columns: { id: true },
+      });
+      if (adminInvite && !(await this.isPlatformSuperAdmin(currentUserId))) {
+        this.assertMayManageRole(false, 'ADMIN');
+      }
+    }
 
     const windowStart = new Date(Date.now() - MEMBER_RESTORE_WINDOW_MS);
     if (!row.removedAt || row.removedAt <= windowStart) {
       throw memberConflict('RESTORE_WINDOW_PASSED', RESTORE_WINDOW_MESSAGE);
     }
 
-    const email = normalizeEmail(row.email);
     const alreadyMember = () =>
       memberConflict(
         'ALREADY_MEMBER',

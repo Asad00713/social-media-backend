@@ -506,6 +506,8 @@ describe('WorkspaceMembersService.restoreMember', () => {
       alreadyMember?: boolean;
       pending?: { email: string }[];
       dropped?: unknown[];
+      /** A PENDING ADMIN invitation to the same address exists. */
+      pendingAdminInvite?: boolean;
     } = {},
   ) {
     const restored = { ...(row as object), status: 'ACCEPTED' };
@@ -517,10 +519,22 @@ describe('WorkspaceMembersService.restoreMember', () => {
           findFirst: jest.fn().mockResolvedValue({ id: WS, ownerId: OWNER }),
         },
         workspaceInvitation: {
+          // The first call reads the REMOVED row; the pending-ADMIN-invite
+          // lookup asks for `id` only; every other call is the membership check.
           findFirst: jest
             .fn()
             .mockResolvedValueOnce(row)
-            .mockResolvedValue(opts.alreadyMember ? { id: 'm2' } : undefined),
+            .mockImplementation((args?: { columns?: { id?: boolean } }) =>
+              Promise.resolve(
+                args?.columns?.id
+                  ? opts.pendingAdminInvite
+                    ? { id: 'inv-admin' }
+                    : undefined
+                  : opts.alreadyMember
+                    ? { id: 'm2' }
+                    : undefined,
+              ),
+            ),
           findMany: jest.fn().mockResolvedValue(opts.pending ?? []),
         },
       },
@@ -711,6 +725,59 @@ describe('WorkspaceMembersService.restoreMember', () => {
     expect(res.droppedInvitations).toEqual([reinvite]);
   });
 
+  describe('a pending ADMIN invitation to the same address', () => {
+    it('an ADMIN restoring them gets 403 and nothing is locked or written', async () => {
+      const t = restoreDb(removedRow(), { pendingAdminInvite: true });
+      const err = await makeService(t.db, { usage: usageWith(5, 1) })
+        .restoreMember(WS, 'm1', ADMIN)
+        .catch((e) => e);
+      expect(err).toBeInstanceOf(ForbiddenException);
+      expect(err.message).toBe('Only the workspace owner can manage admins.');
+      expect(t.calls).toHaveLength(0);
+      expect(t.deleted).toHaveLength(0);
+      expect(t.db.execute).not.toHaveBeenCalled();
+      // The lookup is scoped to this workspace, PENDING, ADMIN and the address.
+      const asked = t.db.query.workspaceInvitation.findFirst.mock.calls[1][0];
+      expect(dialect.sqlToQuery(asked.where).params).toEqual(
+        expect.arrayContaining([WS, 'PENDING', 'ADMIN', 'sana@x.pk']),
+      );
+    });
+
+    it('the OWNER still restores and drops it', async () => {
+      const invite = { id: 'inv-admin', email: 'sana@x.pk', role: 'ADMIN' };
+      const t = restoreDb(removedRow(), {
+        pendingAdminInvite: true,
+        dropped: [invite],
+      });
+      const res = await makeService(t.db, {
+        usage: usageWith(5, 1),
+      }).restoreMember(WS, 'm1', OWNER);
+      expect(res.droppedInvitations).toEqual([invite]);
+      expect(t.deleted).toHaveLength(1);
+    });
+
+    it('a platform super admin still restores and drops it', async () => {
+      roleService.isPlatformSuperAdmin.mockResolvedValue(true);
+      const t = restoreDb(removedRow(), { pendingAdminInvite: true });
+      await expect(
+        makeService(t.db, { usage: usageWith(5, 1) }).restoreMember(
+          WS,
+          'm1',
+          ADMIN,
+        ),
+      ).resolves.toMatchObject({ message: 'Member restored' });
+    });
+
+    it('an ADMIN restoring them with only a MEMBER invitation pending still works', async () => {
+      const invite = { id: 'inv-9', email: 'sana@x.pk', role: 'MEMBER' };
+      const t = restoreDb(removedRow(), { dropped: [invite] });
+      const res = await makeService(t.db, {
+        usage: usageWith(5, 1),
+      }).restoreMember(WS, 'm1', ADMIN);
+      expect(res.droppedInvitations).toEqual([invite]);
+    });
+  });
+
   it('leaving on your own is not restorable: 404', async () => {
     const { db } = restoreDb(removedRow({ removedBy: MEMBER_USER }));
     await expect(
@@ -778,7 +845,8 @@ describe('WorkspaceMembersService.restoreMember', () => {
     db.query.workspaceInvitation.findFirst = jest
       .fn()
       .mockResolvedValueOnce(removedRow())
-      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined) // no pending ADMIN invitation
+      .mockResolvedValueOnce(undefined) // not a member yet
       .mockResolvedValueOnce({ id: 'm2' });
     const usage = usageWith(5, 1);
     const err = await makeService(db, { usage })
