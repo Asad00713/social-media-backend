@@ -1,3 +1,10 @@
+// MastodonService sends through the SSRF guard (fetchPublic → undici). Hand
+// undici's fetch to the global stub mockFetch installs; the guard still runs.
+jest.mock('undici', () => ({
+  ...jest.requireActual<typeof import('undici')>('undici'),
+  fetch: (...args: Parameters<typeof fetch>) => global.fetch(...args),
+}));
+
 import type { ConfigService } from '@nestjs/config';
 import { MastodonService } from '../../channels/services/mastodon.service';
 import { json, mockFetch } from '../testing/fetch-mock';

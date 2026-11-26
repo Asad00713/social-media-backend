@@ -1,3 +1,9 @@
+jest.mock('undici', () => ({
+  ...jest.requireActual<typeof import('undici')>('undici'),
+  fetch: jest.fn(),
+}));
+import { fetch as undiciFetch } from 'undici';
+import { publicAgent } from '../../../../common/net/public-fetch';
 import { MastodonApiClient, MastodonApiError } from './mastodon-api.client';
 
 describe('MastodonApiClient', () => {
@@ -138,5 +144,57 @@ describe('MastodonApiClient', () => {
     expect(url).toContain('/api/v1/statuses/109302715060751367');
     expect(status.favourites_count).toBe(10);
     expect(status.reblogs_count).toBe(3);
+  });
+});
+
+describe('MastodonApiClient default transport (SSRF guard)', () => {
+  const mockedUndici = undiciFetch as unknown as jest.Mock;
+  beforeEach(() => mockedUndici.mockReset());
+
+  it.each([
+    'http://127.0.0.1',
+    '169.254.169.254',
+    'https://10.0.0.8',
+    'http://[::1]',
+  ])(
+    'refuses a stored server %s as permanent, and sends nothing',
+    async (instanceUrl) => {
+      const err: unknown = await new MastodonApiClient()
+        .verifyCredentials(instanceUrl, 'tok')
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(MastodonApiError);
+      expect((err as MastodonApiError).code).toBe('permanent');
+      expect((err as MastodonApiError).message).toBe(
+        "That Mastodon server address isn't reachable from the internet.",
+      );
+      expect(mockedUndici).not.toHaveBeenCalled();
+    },
+  );
+
+  it('sends a public server through the pinned agent, redirects manual', async () => {
+    mockedUndici.mockResolvedValue(new Response('{"id":"1"}'));
+    await new MastodonApiClient().verifyCredentials('mastodon.social', 'tok');
+    const [url, init] = mockedUndici.mock.calls[0] as [
+      string,
+      { redirect: string; dispatcher: unknown },
+    ];
+    expect(url).toBe(
+      'https://mastodon.social/api/v1/accounts/verify_credentials',
+    );
+    expect(init.redirect).toBe('manual');
+    expect(init.dispatcher).toBe(publicAgent);
+  });
+
+  it('fails on a 3xx instead of following it', async () => {
+    mockedUndici.mockResolvedValue(
+      new Response(null, {
+        status: 302,
+        headers: { location: 'http://169.254.169.254/' },
+      }),
+    );
+    await expect(
+      new MastodonApiClient().verifyCredentials('mastodon.social', 'tok'),
+    ).rejects.toBeInstanceOf(MastodonApiError);
+    expect(mockedUndici).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,6 +1,16 @@
 import { ConfigService } from '@nestjs/config';
 import { MastodonService } from './mastodon.service';
 
+// These tests stub the network with `global.fetch`. API calls go through the
+// SSRF guard (fetchPublic: undici + a pinned-DNS agent), so route them back to
+// the stub; the guard is covered in mastodon.service.ssrf.spec.
+jest.mock('../../common/net/public-fetch', () => ({
+  ...jest.requireActual<typeof import('../../common/net/public-fetch')>(
+    '../../common/net/public-fetch',
+  ),
+  fetchPublic: (url: string, init?: RequestInit) => global.fetch(url, init),
+}));
+
 /**
  * Quoting a post on Mastodon 4.5+: the body field, the version probe and
  * the link lookup, at the level of the HTTP requests.
