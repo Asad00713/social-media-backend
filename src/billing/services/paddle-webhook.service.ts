@@ -27,6 +27,7 @@ import {
   revokeAddon,
   revokeBasePlan,
 } from './revoke-entitlements.util';
+import { isLive } from './provider-subscription.util';
 import { SubscriptionLookupService } from './subscription-lookup.service';
 import { PaymentAlertsService } from './payment-alerts.service';
 
@@ -68,6 +69,8 @@ interface Target {
   itemType: string;
   isDefault: boolean;
   providerStatus: string | null;
+  /** Selected so `isLive` can judge the row as it stood before an event. */
+  endsAt: Date | null;
 }
 
 /**
@@ -286,6 +289,7 @@ export class PaddleWebhookService {
         itemType: providerSubscriptions.itemType,
         isDefault: providerSubscriptions.isDefault,
         providerStatus: providerSubscriptions.providerStatus,
+        endsAt: providerSubscriptions.endsAt,
       })) as Target[];
 
     this.logger.log(
@@ -388,6 +392,21 @@ export class PaddleWebhookService {
     // order would restore the customer's limits and re-claim an `is_default`
     // slot something else may already hold.
     const current = (target.providerStatus ?? '').toLowerCase();
+    // Whether the row was still entitling anything BEFORE this event. The
+    // plan-ended email keys on it, and it has to be read here: the writes
+    // below are what make it false.
+    //
+    // `isLive` rather than `isPaddleTerminal`, which is NOT the same question.
+    // `isPaddleTerminal` knows only Paddle's own vocabulary (`canceled`), but
+    // the status a terminated row ends up holding is `expired` — that is what
+    // `revokeBasePlan` sweeps every row of the provider to. So a redelivered
+    // cancellation meets `expired`, which `isPaddleTerminal` reads as a live
+    // status and would have emailed a second time. `isLive` denies both words.
+    //
+    // Cast because `isLive` takes the whole drizzle row and `Target` is a
+    // projection of it; the two fields it actually reads — `providerStatus`
+    // and `endsAt` — are both on `Target`, which is why `endsAt` is selected.
+    const wasLive = isLive(target as never);
     if (isPaddleTerminal(current) && !isPaddleTerminal(status)) {
       this.logger.warn(
         `Ignoring a stale Paddle event: provider row ${target.rowId} is ` +
@@ -428,6 +447,22 @@ export class PaddleWebhookService {
       .where(eq(providerSubscriptions.id, target.rowId));
 
     // (b) our own subscription row.
+    //
+    // Read the plan BEFORE the write below, which replaces it with 'FREE':
+    // the email names the plan that ENDED, and after the write there is
+    // nothing left to say was lost. `webhook.service.ts` keeps the same
+    // `endedPlanCode` for the same reason.
+    const endedPlanCode = terminal
+      ? ((
+          (await db
+            .select({ planCode: subscriptions.planCode })
+            .from(subscriptions)
+            .where(eq(subscriptions.id, target.subscriptionId))) as {
+            planCode: string | null;
+          }[]
+        )[0]?.planCode ?? null)
+      : null;
+
     const mapped = mapPaddleStatus(sub.status, sub.scheduled_change);
     const subPatch: Record<string, unknown> = {
       status: mapped.status,
@@ -485,6 +520,10 @@ export class PaddleWebhookService {
           excludeRowId: target.rowId,
         });
       }
+
+      // Last, because it is the only step here that is not a billing write:
+      // everything above has to land even when the mail does not.
+      await this.emailPlanEnded(target, sub, wasLive, endedPlanCode);
       return;
     }
 
@@ -492,6 +531,75 @@ export class PaddleWebhookService {
     // whose items no longer carry that price — Paddle fires no event of its
     // own for a line going away.
     await this.revokeMissingAddons(target, sub);
+  }
+
+  /**
+   * Tell the customer their plan ended and they are back on Free.
+   *
+   * Stripe (`webhook.service.ts`) and Lemon Squeezy both send this; Paddle
+   * sent nothing, so a Paddle subscription that was cancelled or expired
+   * dropped the account to FREE in silence — paid limits gone, no notice.
+   *
+   * Three things decide whether it goes out, and all three are load-bearing:
+   *
+   * - **The plan that ENDED, not the one we just wrote.** `applyStatus`
+   *   overwrites `plan_code` with 'FREE' as it terminates, so `endedPlanCode`
+   *   is captured before that write and passed in.
+   * - **Nothing ended for an account already on FREE.** A never-paying
+   *   account, or one an earlier delivery already reset, has nothing to be
+   *   told. Lemon Squeezy's `planNotice` makes the same check.
+   * - **A redelivered terminal event emails once.** The stale-event guard at
+   *   the top of `applyStatus` does NOT cover this: it only returns early
+   *   when a terminal ROW meets a non-terminal EVENT, so `canceled` arriving
+   *   twice runs the whole method both times. `wasLive` is the liveness of
+   *   the row BEFORE this event, so a second delivery — which finds a row
+   *   the first one already killed — says nothing. The dedupe key is a second line of
+   *   defence, not the first: it is keyed on a `canceled_at` Paddle may omit,
+   *   which would fall back to `Date.now()` and differ per delivery.
+   *
+   * Failures are swallowed, exactly as `emailPaymentFailed` swallows its
+   * own: the webhook must answer 200 or Paddle retries an event whose
+   * billing writes are already applied.
+   */
+  private async emailPlanEnded(
+    target: Target,
+    sub: PaddleSubscription,
+    wasLive: boolean,
+    endedPlanCode: string | null,
+  ): Promise<void> {
+    try {
+      if (target.itemType !== 'BASE_PLAN') return;
+      if (!wasLive) return;
+      if (!endedPlanCode || endedPlanCode === 'FREE') return;
+
+      const account = await this.accountFor(target.subscriptionId);
+      if (!account) return;
+
+      const endedAt = dateOf(sub.canceled_at);
+      await this.billingEmail.planChanged({
+        userId: account.userId,
+        kind: 'ended',
+        fromPlan: await this.billingEmail.planName(endedPlanCode),
+        toPlan: 'Free',
+        billed: null,
+        // Both null on purpose: the plan is already over, so there is no next
+        // charge and no end date still to come.
+        nextCharge: null,
+        endsOn: null,
+        dedupeKey: billingEmailKey(
+          'plan-changed',
+          account.userId,
+          'ended',
+          strOf(sub.id) ?? String(target.subscriptionId),
+          endedAt?.getTime() ?? Date.now(),
+        ),
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Billing email (plan ended) skipped: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   /**
@@ -717,6 +825,7 @@ export class PaddleWebhookService {
         itemType: providerSubscriptions.itemType,
         isDefault: providerSubscriptions.isDefault,
         providerStatus: providerSubscriptions.providerStatus,
+        endsAt: providerSubscriptions.endsAt,
       })
       .from(providerSubscriptions)
       .where(

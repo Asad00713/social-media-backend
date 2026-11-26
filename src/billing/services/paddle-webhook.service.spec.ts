@@ -644,6 +644,93 @@ describe('PaddleWebhookService: termination', () => {
   });
 });
 
+describe('PaddleWebhookService: the plan-ended email', () => {
+  it('emails the plan that ENDED, not the FREE it was just reset to', async () => {
+    // The whole reason this needs care. `applyStatus` overwrites `plan_code`
+    // with `'FREE'` while terminating, so a naive read AFTER the write would
+    // mail the customer "your Free plan has ended" — true of nothing and
+    // useless to them. The plan has to be captured BEFORE that write, which
+    // is what `webhook.service.ts` does with its own `endedPlanCode`.
+    const { service, emails } = seed(payingAccount());
+
+    await service.handleEvent(
+      'subscription.canceled',
+      subEvent('canceled', { canceledAt: '2026-11-25T00:00:00Z' }),
+    );
+
+    expect(emails.planChanged).toHaveBeenCalledTimes(1);
+    const sent = emails.planChanged.mock.calls[0][0];
+    expect(sent).toMatchObject({
+      userId: 'user-1',
+      kind: 'ended',
+      toPlan: 'Free',
+    });
+    // `planName` is stubbed to echo nothing useful, so the assertion is on
+    // the CODE handed to it — the one state the bug would have got wrong.
+    expect(emails.planName).toHaveBeenCalledWith('PRO');
+    // And the row really was reset, so the capture above was genuinely
+    // reading a value the write then destroyed.
+    expect(subRow().planCode).toBe('FREE');
+  });
+
+  it('sends nothing for an account already on FREE', async () => {
+    // Nothing ended. A customer who never paid — or whose plan was already
+    // reset by an earlier delivery — must not be told their plan is over.
+    //
+    // Seeded on FREE deliberately: 33 tests in this file seed `PRO`, and that
+    // blind spot is exactly what hid the `subscription.created` plan bug.
+    const { service, emails } = seed({
+      subscriptions: [
+        { id: 42, userId: 'user-1', planCode: 'FREE', status: 'active' },
+      ],
+      provider_subscriptions: payingAccount().provider_subscriptions,
+      subscription_items: [],
+    });
+
+    await service.handleEvent('subscription.canceled', subEvent('canceled'));
+
+    expect(emails.planChanged).not.toHaveBeenCalled();
+    // The billing writes still happened; only the email was suppressed.
+    expect(providerRows()[0].isDefault).toBe(false);
+  });
+
+  it('emails ONCE for a terminal event delivered twice', async () => {
+    // Paddle delivers at-least-once. The stale-event guard in `applyStatus`
+    // does NOT cover this case: it only returns early when a terminal row
+    // meets a NON-terminal event, so `canceled` arriving on an already
+    // `canceled` row falls straight through it. The email needs its own
+    // guard on the status the row held BEFORE this event — the same reading
+    // Lemon Squeezy's `planNotice` makes.
+    const { service, emails } = seed(payingAccount());
+    const event = subEvent('canceled', { canceledAt: '2026-11-25T00:00:00Z' });
+
+    await service.handleEvent('subscription.canceled', event);
+    // The reset to FREE would mask the guard being tested — a second delivery
+    // reading a FREE row is refused by the already-on-FREE check whether the
+    // status guard exists or not. So the plan is put BACK, which is also the
+    // real state a replay meets after a human repair or a resubscribe that
+    // the replayed cancellation then arrives behind.
+    store.rowsOf('subscriptions')[0].planCode = 'PRO';
+    await service.handleEvent('subscription.canceled', event);
+
+    expect(emails.planChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('still answers 200 when the plan-ended email throws', async () => {
+    // A dead mail provider must not fail the webhook: Paddle would retry an
+    // event whose billing writes are already applied, forever.
+    const { service, emails } = seed(payingAccount());
+    emails.planChanged.mockRejectedValue(new Error('resend down'));
+
+    await expect(
+      service.handleEvent('subscription.canceled', subEvent('canceled')),
+    ).resolves.toBeUndefined();
+
+    expect(subRow().planCode).toBe('FREE');
+    expect(providerRows()[0].isDefault).toBe(false);
+  });
+});
+
 describe('PaddleWebhookService: add-ons', () => {
   it('revokes an add-on whose price left the items array', async () => {
     // An add-on is a LINE here, not a subscription, so Paddle fires no event
