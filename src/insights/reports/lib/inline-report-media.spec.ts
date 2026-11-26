@@ -526,3 +526,93 @@ describe('sniffImageType', () => {
     ).toBeNull();
   });
 });
+
+describe('sniffImageType: bounded ftyp scan', () => {
+  // Real headers: libavif's still image, and an iPhone HEIC.
+  const LIBAVIF = [
+    0x00, 0x00, 0x00, 0x1c, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66,
+    0x00, 0x00, 0x00, 0x00, 0x61, 0x76, 0x69, 0x66, 0x6d, 0x69, 0x66, 0x31,
+    0x6d, 0x69, 0x61, 0x66, 0x00, 0x00, 0x00, 0xf2, 0x6d, 0x65, 0x74, 0x61,
+  ];
+  const IPHONE_HEIC = [
+    0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63,
+    0x00, 0x00, 0x00, 0x00, 0x6d, 0x69, 0x66, 0x31, 0x68, 0x65, 0x69, 0x63,
+    0x00, 0x00, 0x0f, 0xd2, 0x6d, 0x65, 0x74, 0x61,
+  ];
+
+  it('reads a real AVIF header, and a real HEIC header is not one', () => {
+    expect(sniffImageType(Buffer.from(LIBAVIF))).toBe('image/avif');
+    expect(sniffImageType(Buffer.from(IPHONE_HEIC))).toBeNull();
+  });
+
+  it('finds an AVIF brand within the first 64 bytes of a longer box', () => {
+    const brands = ['mif1', 'miaf', 'MA1B', 'iso8', 'mif2', 'msf1', 'avif'];
+    expect(16 + 4 * brands.length).toBeLessThanOrEqual(64);
+    expect(sniffImageType(Buffer.from(ftyp('mif1', ...brands)))).toBe(
+      'image/avif',
+    );
+  });
+
+  it('stops at 64 bytes however large a box the file declares', () => {
+    const huge = Buffer.alloc(10 * 1024 * 1024);
+    huge.writeUInt32BE(0xffffffff, 0);
+    huge.write('ftypmif1', 4, 'latin1');
+    const reads = jest.spyOn(huge, 'toString');
+    const started = performance.now();
+    expect(sniffImageType(huge)).toBeNull();
+    const elapsed = performance.now() - started;
+    // Major brand plus compatible brands from 16 to 64: 13 reads at most.
+    expect(reads.mock.calls.length).toBeLessThanOrEqual(13);
+    expect(elapsed).toBeLessThan(50);
+  });
+});
+
+describe('inlineReportMedia: the fail-closed sweep', () => {
+  class TopPost {
+    constructor(
+      readonly postId: string,
+      readonly thumbnailUrl: string | null,
+    ) {}
+  }
+
+  it('nulls an image URL a class instance carries, and never fetches it', async () => {
+    const input = {
+      ...payload(),
+      overview: {
+        standout: { above: [new TopPost('p1', 'http://169.254.169.254/x')] },
+        pinned: new TopPost('p2', 'https://93.184.216.34/a.png'),
+      },
+    } as unknown as ReportPayloadDto;
+    const out = await inlineReportMedia(input);
+    const o = out.overview as unknown as {
+      standout: { above: TopPost[] };
+      pinned: TopPost;
+    };
+    expect(o.standout.above[0].thumbnailUrl).toBeNull();
+    expect(o.pinned.thumbnailUrl).toBeNull();
+    expect(o.pinned.postId).toBe('p2');
+    expect(strings(out)).not.toContain('https://93.184.216.34/a.png');
+    expect(mockedFetch).not.toHaveBeenCalled();
+    expect(globalFetch).not.toHaveBeenCalled();
+  });
+
+  it('nulls an image field that is not a string, and keeps a data: image', async () => {
+    mockedFetch.mockResolvedValue(png());
+    const out = await inlineReportMedia({
+      ...payload({ logoUrl: PUBLIC_LOGO }),
+      overview: {
+        a: [{ thumbnailUrl: { href: 'https://93.184.216.34/b.png' } }],
+        b: [{ thumbnailUrl: 42 }],
+        c: [{ thumbnailUrl: null }],
+      },
+    } as unknown as ReportPayloadDto);
+    const o = out.overview as unknown as Record<
+      string,
+      { thumbnailUrl: unknown }[]
+    >;
+    expect(out.logoUrl).toBe(PNG_DATA);
+    expect(o.a[0].thumbnailUrl).toBeNull();
+    expect(o.b[0].thumbnailUrl).toBeNull();
+    expect(o.c[0].thumbnailUrl).toBeNull();
+  });
+});

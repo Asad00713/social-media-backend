@@ -74,11 +74,17 @@ const RIFF = ascii('RIFF');
 const WEBP = ascii('WEBP');
 const FTYP = ascii('ftyp');
 const AVIF_BRANDS = new Set(['avif', 'avis']);
+/**
+ * How far into an `ftyp` box the brands are read. Real files list a handful
+ * (libavif: 28 bytes); the declared box size is the file's word, so it is
+ * never trusted to bound the loop.
+ */
+const FTYP_SCAN_BYTES = 64;
 
 /** True when an ISO-BMFF `ftyp` box names an AVIF brand (major or compatible). */
 function isAvif(b: Buffer): boolean {
   if (b.length < 16 || !startsWith(b, FTYP, 4)) return false;
-  const boxEnd = Math.min(b.readUInt32BE(0), b.length);
+  const boxEnd = Math.min(b.readUInt32BE(0), b.length, FTYP_SCAN_BYTES);
   // Major brand at 8, minor version at 12, compatible brands from 16.
   for (let at = 8; at + 4 <= boxEnd; at += at === 8 ? 8 : 4) {
     if (AVIF_BRANDS.has(b.toString('latin1', at, at + 4))) return true;
@@ -133,6 +139,31 @@ function replace(value: unknown, inlined: Map<string, string | null>): unknown {
   );
 }
 
+/**
+ * The last word before the payload leaves: every `logoUrl` / `thumbnailUrl`
+ * anywhere in it, class instances included (set in place there; arrays and
+ * plain objects are already copies), is a `data:image/` URI or null. So a raw
+ * URL can never reach Chromium, whatever shape a future field takes.
+ */
+function sweep(value: unknown, seen = new WeakSet<object>()): void {
+  if (value === null || typeof value !== 'object' || seen.has(value)) return;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const v of value) sweep(v, seen);
+    return;
+  }
+  const obj = value as Record<string, unknown>;
+  for (const [k, v] of Object.entries(obj)) {
+    if (!IMAGE_KEYS.has(k)) sweep(v, seen);
+    else if (
+      v != null &&
+      !(typeof v === 'string' && v.startsWith('data:image/'))
+    ) {
+      obj[k] = null;
+    }
+  }
+}
+
 /** The reason for a thrown download, from the guard's own error fields. */
 function reasonOf(e: unknown): DropReason {
   // A streamed body over the cap may come back wrapped by the body reader.
@@ -169,7 +200,8 @@ async function download(
  * of the image (fetched through the SSRF guard: http(s), public addresses
  * only, pinned; at most 10 MB; a png, jpeg, gif, webp or avif by its bytes)
  * or null. Each URL is fetched once. Never throws; each image left out is
- * logged at debug level with its reason.
+ * logged at debug level with its reason. A final sweep nulls any image field
+ * that is still not a data: image, wherever it sits.
  */
 export async function inlineReportMedia(
   payload: ReportPayloadDto,
@@ -177,7 +209,11 @@ export async function inlineReportMedia(
 ): Promise<ReportPayloadDto> {
   const uses = new Map<string, number>();
   collect(payload, uses);
-  if (!uses.size) return payload;
+  if (!uses.size) {
+    const out = replace(payload, new Map()) as ReportPayloadDto;
+    sweep(out);
+    return out;
+  }
 
   const maxBytes = opts.maxBytes ?? REPORT_IMAGE_MAX_BYTES;
   const budget = opts.budgetBytes ?? REPORT_IMAGE_BUDGET_BYTES;
@@ -229,5 +265,7 @@ export async function inlineReportMedia(
       worker,
     ),
   );
-  return replace(payload, inlined) as ReportPayloadDto;
+  const out = replace(payload, inlined) as ReportPayloadDto;
+  sweep(out);
+  return out;
 }
