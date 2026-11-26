@@ -76,3 +76,61 @@ FROM plans ORDER BY base_price_cents;
 -- 4. Read step 3. Every ok must be t. Then:
 --      COMMIT;    -- keep it
 --      ROLLBACK;  -- undo, if anything looks wrong
+
+-- ===========================================================================
+-- RUN ON PRODUCTION: 2026-11-26. All four rows verified ok = t, COMMITted.
+--
+-- What prod actually held, read from the live table that day:
+--   code   price  queue  ai_tokens
+--   FREE       0     -1        100   (only `ai` was right)
+--   BASIC    500     -1       1000
+--   PRO     1000     -1       2000
+--   MAX     5000     -1       5000
+--
+-- So all three columns were stale at once, from one cause: nothing calls
+-- seedPlans(), so no deploy has ever corrected these rows.
+--
+-- THE SECOND HALF, which this file did not originally cover.
+--
+-- `plans` was only half the repair. `workspace_usage` CACHES the allowances
+-- (channels_limit / members_limit / ai_tokens_limit / storage_bytes_limit) and
+-- is only rewritten by applyLimitsToAllWorkspaces() on a plan or add-on event.
+-- Fixing `plans` therefore changed nothing for accounts that already existed.
+--
+-- Prod had 23 workspaces all reading 3 / 1 / 100 -- FREE's allowance -- while
+-- `subscriptions` held one active BASIC and one active PRO. Both paying
+-- accounts were being served FREE limits; the PRO account had 100 AI credits
+-- against the 20000 it was entitled to. The backfill below fixed both:
+--
+--   UPDATE workspace_usage u SET
+--     channels_limit      = p.channels_per_workspace,
+--     members_limit       = p.members_per_workspace,
+--     ai_tokens_limit     = p.ai_tokens_per_month,
+--     storage_bytes_limit = p.storage_bytes_per_workspace,
+--     updated_at          = now()
+--   FROM workspace w, subscriptions s, plans p
+--   WHERE u.workspace_id = w.id
+--     AND w.owner_id = s.user_id
+--     AND s.status = 'active'
+--     AND s.plan_code <> 'FREE'
+--     AND p.code = s.plan_code
+--     AND w.id = (SELECT w2.id FROM workspace w2
+--                 WHERE w2.owner_id = s.user_id
+--                 ORDER BY w2.created_at, w2.id LIMIT 1);
+--
+-- It reads the numbers FROM `plans` rather than restating them, so it cannot
+-- drift from the seed, and it writes only the account's oldest workspace
+-- because that is the primary one pickPrimaryWorkspaceId() chooses: purchased
+-- channels and seats land there and every other workspace arrives empty. It
+-- writes the BASE allowance only -- add-ons live in the separate
+-- extra_*_purchased columns and every reader computes limit + extra, so
+-- folding them in here would count them twice.
+--
+-- IF THIS IS EVER NEEDED AGAIN, run both halves. `plans` alone leaves every
+-- existing account on its old allowance, silently and with no error.
+--
+-- THE REAL FIX is to stop the drift: either call seedPlans() on deploy, or
+-- add a test that fails when the live rows do not match the seed. Until one
+-- of those exists, any future edit to plans.seed.ts has exactly the same
+-- fate -- deployed in code, absent from the database.
+-- ===========================================================================
