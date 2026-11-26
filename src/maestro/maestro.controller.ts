@@ -16,7 +16,10 @@ import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { WorkspaceAccessService } from '../workspace-members/workspace-access.service';
-import { MaestroService } from './services/maestro.service';
+import {
+  MAESTRO_ROLE_REFUSAL,
+  MaestroService,
+} from './services/maestro.service';
 import { MaestroLaunchGuard } from './maestro-launch';
 import {
   MentionSearchService,
@@ -100,7 +103,12 @@ export class MaestroController {
     @CurrentUser() user: { userId: string; email: string },
     @Body() dto: CreateMaestroConversationDto,
   ) {
-    await this.access.assertCan(dto.workspaceId, user.userId, 'posts:draft');
+    await this.access.assertCanOrExplain(
+      dto.workspaceId,
+      user.userId,
+      'posts:draft',
+      MAESTRO_ROLE_REFUSAL,
+    );
     const conversation = await this.maestro.createConversation(
       user.userId,
       dto.workspaceId,

@@ -18,6 +18,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
 import { WorkspaceAccessService } from '../workspace-members/workspace-access.service';
+import { CHATBOT_ROLE_REFUSAL } from './tools/tool-access';
 import { ChatbotRateLimitGuard } from './guards/chatbot-rate-limit.guard';
 import { ChatbotService } from './chatbot.service';
 import { TokenTrackingService } from './services/token-tracking.service';
@@ -103,7 +104,12 @@ export class ChatbotController {
     @CurrentUser() user: { userId: string; email: string },
     @Body() dto: CreateConversationDto,
   ) {
-    await this.access.assertCan(dto.workspaceId, user.userId, 'posts:draft');
+    await this.access.assertCanOrExplain(
+      dto.workspaceId,
+      user.userId,
+      'posts:draft',
+      CHATBOT_ROLE_REFUSAL,
+    );
     const conversation = await this.chatbotService.createConversation(
       user.userId,
       dto.workspaceId,

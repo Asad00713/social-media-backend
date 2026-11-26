@@ -32,7 +32,10 @@ import {
 import { MaestroKeyService } from './maestro-key.service';
 import { assembleMaestroTools } from '../tools/assemble';
 import { gateTools } from '../tools/capability-gate';
-import { WorkspaceAccessService } from '../../workspace-members/workspace-access.service';
+import {
+  NO_LONGER_MEMBER_MESSAGE,
+  WorkspaceAccessService,
+} from '../../workspace-members/workspace-access.service';
 import { isPendingAction, type PendingAction } from '../tools/confirm';
 import {
   mergeReferences,
@@ -74,6 +77,10 @@ import {
   MAESTRO_PDF_MAX_BYTES,
   type MaestroAttachmentKind,
 } from '../dto/send-message.dto';
+
+/** What a member whose role can't draft is told when they use Maestro. */
+export const MAESTRO_ROLE_REFUSAL =
+  "Your role can't use Maestro in this workspace.";
 
 const DEFAULT_MODEL = process.env.MAESTRO_MODEL || 'claude-haiku-4-5';
 const ALLOWED_MODELS = new Set(['claude-haiku-4-5', 'claude-sonnet-4-6']);
@@ -822,8 +829,8 @@ export class MaestroService {
           event: 'error',
           data: {
             message: stillMember
-              ? "Your role can't use Maestro in this workspace."
-              : "You're no longer a member of this workspace.",
+              ? MAESTRO_ROLE_REFUSAL
+              : NO_LONGER_MEMBER_MESSAGE,
           },
         };
         return;

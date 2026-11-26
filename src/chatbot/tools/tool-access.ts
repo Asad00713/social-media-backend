@@ -4,6 +4,10 @@ import type { WorkspaceAccessService } from '../../workspace-members/workspace-a
 import type { CallerRole } from '../../workspace-members/caller-role';
 import type { ToolContext } from './tool.interface';
 
+/** What a member whose role is too low is told when the assistant refuses. */
+export const CHATBOT_ROLE_REFUSAL =
+  'Your role in this workspace does not allow this action. Ask a workspace admin to change your role.';
+
 /**
  * Run a WRITE tool's workspace check and hand back the caller's role.
  *
@@ -29,9 +33,7 @@ export async function assertToolAccess(
     );
   } catch (err) {
     if (err instanceof NotFoundException) {
-      throw new Error(
-        'Your role in this workspace does not allow this action. Ask a workspace admin to change your role.',
-      );
+      throw new Error(CHATBOT_ROLE_REFUSAL);
     }
     throw err;
   }
