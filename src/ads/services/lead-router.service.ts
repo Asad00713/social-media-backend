@@ -13,7 +13,10 @@ import {
   type LeadDeliveredProps,
 } from '../../email/templates/reports/lead-delivered';
 import { signWebhookPayload } from '../utils/hmac';
-import { WEBHOOK_URL_UNREACHABLE } from '../utils/webhook-url';
+import {
+  WEBHOOK_TIMEOUT_MS,
+  WEBHOOK_URL_UNREACHABLE,
+} from '../utils/webhook-url';
 import { fetchPublic, UnsafeUrlError } from '../../common/net/public-fetch';
 
 type RouteType = 'inbox' | 'email' | 'webhook';
@@ -244,7 +247,14 @@ export class LeadRouterService {
     // here: a transient DNS error must stay retryable.
     let res: Response;
     try {
-      res = await fetchPublic(url, { method: 'POST', headers, body });
+      // A receiver that never answers must not hold the worker: same
+      // deadline as the test button. A timeout is rethrown and retried.
+      res = await fetchPublic(url, {
+        method: 'POST',
+        headers,
+        body,
+        signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
+      });
     } catch (err) {
       // A URL stored before the save-time check, or a name that now resolves
       // privately. Recorded as failed, not thrown: no retry can fix it.

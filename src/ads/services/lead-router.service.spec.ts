@@ -276,6 +276,40 @@ describe('LeadRouterService webhook route', () => {
     expect(updates.at(-1)).toMatchObject({ deliveryStatus: 'delivered' });
   });
 
+  it('gives the POST the same 10 s timeout as the test button', async () => {
+    const timeout = jest.spyOn(AbortSignal, 'timeout');
+    mockedFetch.mockResolvedValue(new Response('ok'));
+    const { service } = setup();
+    await service.deliver('lead-1', 'route-1', 'webhook', { url: PUBLIC_URL });
+    expect(timeout).toHaveBeenCalledWith(10_000);
+    const [, init] = mockedFetch.mock.calls[0] as [
+      string,
+      { signal?: AbortSignal },
+    ];
+    expect(init.signal).toBe(timeout.mock.results[0]?.value);
+  });
+
+  it('a webhook that never answers is cut off: failed attempt, rethrown for a retry', async () => {
+    const controller = new AbortController();
+    jest.spyOn(AbortSignal, 'timeout').mockReturnValue(controller.signal);
+    // The receiver hangs until the deadline fires; the deadline fires once
+    // the POST is in flight.
+    mockedFetch.mockImplementation(
+      (_url: string, init: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          init.signal.addEventListener('abort', () =>
+            reject(new DOMException('timed out', 'TimeoutError')),
+          );
+          controller.abort();
+        }),
+    );
+    const { service } = setup();
+    await expect(
+      service.deliver('lead-1', 'route-1', 'webhook', { url: PUBLIC_URL }),
+    ).rejects.toThrow('timed out');
+    expect(updates.at(-1)).toMatchObject({ deliveryStatus: 'failed' });
+  });
+
   it('treats a 3xx as a failed delivery and does not follow it', async () => {
     mockedFetch.mockResolvedValue(
       new Response(null, {

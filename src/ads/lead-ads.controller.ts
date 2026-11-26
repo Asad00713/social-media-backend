@@ -19,7 +19,11 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { db } from '../drizzle/db';
 import { leadRoutes, leadForms } from '../drizzle/schema';
 import { signWebhookPayload } from './utils/hmac';
-import { assertWebhookUrl, WEBHOOK_URL_UNREACHABLE } from './utils/webhook-url';
+import {
+  assertWebhookUrl,
+  WEBHOOK_TIMEOUT_MS,
+  WEBHOOK_URL_UNREACHABLE,
+} from './utils/webhook-url';
 import { fetchPublic, UnsafeUrlError } from '../common/net/public-fetch';
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
@@ -236,7 +240,7 @@ export class LeadAdsController {
         method: 'POST',
         headers,
         body: payloadStr,
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
       });
       await res.body?.cancel().catch(() => undefined);
       status = res.status;

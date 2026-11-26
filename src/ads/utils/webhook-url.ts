@@ -1,6 +1,9 @@
 import { BadRequestException } from '@nestjs/common';
 import { assertPublicHost } from '../../common/net/public-fetch';
 
+/** One deadline for a lead webhook POST: the test button and real delivery. */
+export const WEBHOOK_TIMEOUT_MS = 10_000;
+
 /** Shown to the client, and recorded on a refused delivery. */
 export const WEBHOOK_URL_UNREACHABLE =
   "That webhook URL isn't reachable from the internet.";
