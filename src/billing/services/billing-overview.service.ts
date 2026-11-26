@@ -1,3 +1,4 @@
+import type { PaymentProvider } from '../../drizzle/schema';
 import {
   BadGatewayException,
   Inject,
@@ -35,7 +36,7 @@ import { PAYMENT_GRACE_DAYS } from './webhook.service';
  * can say "couldn't load" instead of presenting a missing card as "No card yet".
  */
 export interface BillingOverview {
-  provider: 'lemonsqueezy' | 'stripe';
+  provider: PaymentProvider;
   plan: {
     code: string;
     name: string;

@@ -383,7 +383,11 @@ export class PlanChangeService {
       // An existing paid subscription: one abstracted operation. The adapter
       // owns the provider-specific shape of it - Stripe swaps the price on the
       // BASE_PLAN line item, Lemon Squeezy PATCHes the subscription's variant.
-      await adapter.changePlan(sub.id, newPlanCode);
+      await adapter.changePlan(
+        sub.id,
+        newPlanCode,
+        preview.isUpgrade ? 'up' : 'down',
+      );
 
       // Upgrades charge immediately (industry standard). This is Stripe-only
       // proration plumbing with no Lemon Squeezy equivalent - LS invoices the
@@ -930,7 +934,11 @@ export class PlanChangeService {
     // one. `changePlan` is the same abstracted operation an upgrade uses; the
     // difference between the two is our own scheduling, below, not the call.
     const adapter = await this.providers.adapterForSubscription(sub.id);
-    await adapter.changePlan(sub.id, target.code);
+    // Always `down` here by definition — this is the downgrade path. The
+    // adapter must NOT bill or credit now: the comment above says the current
+    // period was already invoiced at the old price, and the customer keeps
+    // that plan until `currentPeriodEnd`.
+    await adapter.changePlan(sub.id, target.code, 'down');
 
     // Record the pending downgrade — plan/limits stay as-is until period end.
     await db

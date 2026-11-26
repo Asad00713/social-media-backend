@@ -25,6 +25,9 @@ import { CatalogueService } from './providers/catalogue.service';
 import { LemonSqueezyClient } from './providers/lemonsqueezy.client';
 import { StripeAdapter } from './providers/stripe.adapter';
 import { LemonSqueezyAdapter } from './providers/lemonsqueezy.adapter';
+import { PaddleClient } from './providers/paddle.client';
+import { PaddleAdapter } from './providers/paddle.adapter';
+import { PaddleWebhookService } from './services/paddle-webhook.service';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 import { EmailModule } from '../email/email.module';
 import { NotificationPreferencesModule } from '../notification-preferences/notification-preferences.module';
@@ -44,14 +47,21 @@ import { PlanFeatureGuard } from './plan/plan-feature.guard';
  */
 const PROVIDER_ADAPTER_REGISTRATION = {
   provide: 'PROVIDER_ADAPTER_REGISTRATION',
-  inject: [ProviderRegistryService, StripeAdapter, LemonSqueezyAdapter],
+  inject: [
+    ProviderRegistryService,
+    StripeAdapter,
+    LemonSqueezyAdapter,
+    PaddleAdapter,
+  ],
   useFactory: (
     registry: ProviderRegistryService,
     stripe: StripeAdapter,
     lemonsqueezy: LemonSqueezyAdapter,
+    paddle: PaddleAdapter,
   ): true => {
     registry.register(stripe);
     registry.register(lemonsqueezy);
+    registry.register(paddle);
     return true;
   },
 };
@@ -88,8 +98,11 @@ const PROVIDER_ADAPTER_REGISTRATION = {
     ProviderRegistryService,
     CatalogueService,
     LemonSqueezyClient,
+    PaddleClient,
+    PaddleWebhookService,
     StripeAdapter,
     LemonSqueezyAdapter,
+    PaddleAdapter,
     PROVIDER_ADAPTER_REGISTRATION,
     // Not an APP_GUARD: plan gating is opt-in per controller via
     // @RequiresFeature. See requires-feature.decorator.ts for why a global
@@ -115,6 +128,7 @@ const PROVIDER_ADAPTER_REGISTRATION = {
     CatalogueService,
     StripeAdapter,
     LemonSqueezyAdapter,
+    PaddleAdapter,
     PlanFeatureGuard,
   ],
 })

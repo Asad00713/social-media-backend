@@ -121,10 +121,10 @@ async function bootstrap() {
   //      already parsed, so the new limit never applies. Measured: first=1mb
   //      + second=256kb accepts a 300kb body (200), while first=100kb refuses
   //      it (413). The limit has to be set on the parser that actually runs.
-  //   2. This is the API that keeps `rawBody`. Both the Stripe and the
-  //      LemonSqueezy webhooks verify their signature over `req.rawBody`
+  //   2. This is the API that keeps `rawBody`. The Stripe, LemonSqueezy and
+  //      Paddle webhooks all verify their signature over `req.rawBody`
   //      (billing.controller.ts), and a parser registered by hand would not
-  //      populate it — signature verification would fail for both providers,
+  //      populate it — signature verification would fail for every provider,
   //      i.e. a billing outage. `useBodyParser` passes the app's `rawBody`
   //      option through to the parser's `verify` hook.
   //

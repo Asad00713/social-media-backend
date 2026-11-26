@@ -100,6 +100,15 @@ export const periodOf = (
   days?: string | string[],
   from?: string | string[],
   to?: string | string[],
+  /**
+   * "Today", for a caller that has to agree with another date-aware function.
+   *
+   * Defaults to the real clock, so no production call site changes. It exists
+   * because `clampHistory` already takes a `now`, and a test that fixed one
+   * while the other read the wall clock passed only on the day it was
+   * written — `clamp-history.spec.ts` duly broke the next morning.
+   */
+  now: Date = new Date(),
 ): ResolvedPeriod =>
   parsePeriod(
     {
@@ -107,7 +116,7 @@ export const periodOf = (
       from: single(from, 'from'),
       to: single(to, 'to'),
     },
-    utcToday(new Date()),
+    utcToday(now),
   );
 
 /** A plan places no ceiling on how far back Insights reads. */

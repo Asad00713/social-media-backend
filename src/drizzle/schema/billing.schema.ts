@@ -188,7 +188,7 @@ export const providerSubscriptions = pgTable(
     subscriptionId: integer('subscription_id')
       .notNull()
       .references(() => subscriptions.id, { onDelete: 'cascade' }),
-    /** 'stripe' | 'lemonsqueezy'. A plain column, not an enum: adding a third
+    /** One of `PAYMENT_PROVIDERS`. A plain column, not an enum: adding a
      * provider must not require a migration. */
     provider: varchar('provider', { length: 20 }).notNull(),
     /**
@@ -688,8 +688,19 @@ export type NewProviderPrice = typeof providerPrices.$inferInsert;
  * returns once the LLC and a live Stripe account exist. Both stay — accounts
  * move over one at a time at their own renewal dates, so there is no moment
  * when only one provider is in use.
+ *
+ * Paddle joins them because Lemon Squeezy is CLOSING in March 2027. It is
+ * also a Merchant of Record, so it replaces Lemon Squeezy's role rather than
+ * Stripe's. The same one-at-a-time migration applies: nobody moves mid-period.
+ *
+ * `provider_subscriptions.provider` is a plain varchar, not a Postgres enum,
+ * precisely so adding one of these needs no migration.
  */
-export const PAYMENT_PROVIDERS = ['stripe', 'lemonsqueezy'] as const;
+export const PAYMENT_PROVIDERS = [
+  'stripe',
+  'lemonsqueezy',
+  'paddle',
+] as const;
 export type PaymentProvider = (typeof PAYMENT_PROVIDERS)[number];
 
 /** Which part of a subscription a provider record pays for. */

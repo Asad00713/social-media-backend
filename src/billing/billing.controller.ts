@@ -18,6 +18,7 @@ import {
 import { SubscriptionService } from './services/subscription.service';
 import { WebhookService } from './services/webhook.service';
 import { LemonSqueezyWebhookService } from './services/lemonsqueezy-webhook.service';
+import { PaddleWebhookService } from './services/paddle-webhook.service';
 import { UsageService } from './services/usage.service';
 import { AddonService } from './services/addon.service';
 import type { PurchaseAddonOutcome } from './services/addon.service';
@@ -53,6 +54,7 @@ export class BillingController {
     private subscriptionService: SubscriptionService,
     private webhookService: WebhookService,
     private lemonSqueezyWebhookService: LemonSqueezyWebhookService,
+    private paddleWebhookService: PaddleWebhookService,
     private usageService: UsageService,
     private addonService: AddonService,
     private planChangeService: PlanChangeService,
@@ -568,6 +570,62 @@ export class BillingController {
 
     const eventName = payload?.meta?.event_name ?? '';
     await this.lemonSqueezyWebhookService.handleEvent(eventName, payload);
+
+    return { received: true };
+  }
+
+  /**
+   * Paddle webhooks.
+   *
+   * Its own route with its own signature check, for the same reason the other
+   * two have theirs: neither route can reach another provider's
+   * subscriptions, and the provider is known from the URL rather than guessed
+   * from a payload.
+   *
+   * `req.rawBody` is load-bearing. Paddle signs `${timestamp}:${rawBody}`, so
+   * a re-serialised body — `JSON.parse` then `JSON.stringify` reorders keys
+   * and changes whitespace — would fail every genuine delivery, and the
+   * failure looks exactly like a wrong secret.
+   *
+   * The signature header is `Paddle-Signature`, not the `x-signature` Lemon
+   * Squeezy uses. Reading the wrong one rejects everything.
+   *
+   * A failed verification is a 400: a forged or unsigned body is a client
+   * error and Paddle should not retry it. A genuine handler failure is left to
+   * propagate so the delivery IS retried.
+   */
+  @Post('webhooks/paddle')
+  @HttpCode(HttpStatus.OK)
+  async handlePaddleWebhook(
+    @Req() req: RawBodyRequest<Request>,
+    @Headers('paddle-signature') signature: string,
+  ) {
+    const rawBody = req.rawBody;
+
+    if (!rawBody) {
+      throw new BadRequestException(
+        'Raw body is required for webhook verification',
+      );
+    }
+
+    if (!this.paddleWebhookService.verifySignature(rawBody, signature)) {
+      throw new BadRequestException('Invalid Paddle signature');
+    }
+
+    // Parsed only AFTER the signature passed, so nothing unverified is ever
+    // interpreted.
+    let payload: { event_type?: string };
+    try {
+      payload = JSON.parse(rawBody.toString('utf8')) as {
+        event_type?: string;
+      };
+    } catch {
+      throw new BadRequestException('Malformed Paddle webhook body');
+    }
+
+    // `event_type` is top level on Paddle's envelope, not nested under `meta`
+    // as Lemon Squeezy's `event_name` is.
+    await this.paddleWebhookService.handleEvent(payload?.event_type ?? '', payload);
 
     return { received: true };
   }

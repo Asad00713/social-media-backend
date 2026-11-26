@@ -75,4 +75,20 @@ describe('provider isolation', () => {
     );
     expect(offenders.map((f) => path.relative(SRC, f))).toEqual([]);
   });
+
+  it('has no Paddle API call outside the adapters', () => {
+    // Added with the adapter, not after it. The two rules above were written
+    // once their providers had already leaked; this one exists before Paddle
+    // has a second caller, so the boundary is held from the start.
+    //
+    // The host is matched as well as the key name because Paddle's sandbox
+    // and live hosts differ: a stray `sandbox-api.paddle.com` anywhere
+    // outside this folder is the PINTEREST_USE_SANDBOX shape all over again.
+    const offenders = files.filter((f) =>
+      /api\.paddle\.com|PADDLE_API_KEY|PADDLE_API_BASE/.test(
+        fs.readFileSync(f, 'utf8'),
+      ),
+    );
+    expect(offenders.map((f) => path.relative(SRC, f))).toEqual([]);
+  });
 });

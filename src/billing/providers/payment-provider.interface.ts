@@ -17,6 +17,17 @@ export type PurchaseResult =
   | { status: 'checkout_required'; url: string };
 
 /**
+ * Which way a plan change moves, which decides whether the remaining part of
+ * the period is billed now (`up`) or not at all (`down`).
+ *
+ * Named by DIRECTION rather than by proration mode, because each provider
+ * spells the mechanism differently — Paddle has `proration_billing_mode`,
+ * Lemon Squeezy has `invoice_immediately`, Stripe has proration behaviours —
+ * and the interface is meant to carry intent, not one provider's vocabulary.
+ */
+export type PlanChangeDirection = 'up' | 'down';
+
+/**
  * What the hosted billing portal should open on. `update_payment_method` goes
  * straight to the card form where the provider supports it; `portal` is the
  * provider's general customer page.
@@ -95,7 +106,30 @@ export interface PaymentProviderAdapter {
     workspaceId: string,
   ): Promise<{ url: string }>;
 
-  changePlan(subscriptionId: number, newPlanCode: string): Promise<void>;
+  /**
+   * Move the account to another paid plan.
+   *
+   * `direction` exists because the money moves differently each way and only
+   * the caller knows which way it is going:
+   *
+   * - `up`: the part of the period still to run is charged NOW, so an upgrade
+   *   on the 15th of a monthly cycle collects about half the difference. This
+   *   is the industry norm and what the plan UI promises.
+   * - `down`: nothing is billed now. The current period was already invoiced
+   *   at the OLD price, and `plan-change.service.ts` keeps the customer on
+   *   that plan until `currentPeriodEnd` — so charging or crediting here would
+   *   refund half a month the customer then goes on using.
+   *
+   * It is a required argument rather than something each adapter infers:
+   * inferring it means reading the old and new prices and comparing them,
+   * which is a second source of truth about which direction a change is, next
+   * to the `PLAN_HIERARCHY` the service already decided it with.
+   */
+  changePlan(
+    subscriptionId: number,
+    newPlanCode: string,
+    direction: PlanChangeDirection,
+  ): Promise<void>;
 
   purchaseAddon(
     subscriptionId: number,
