@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import {
+  plans,
   providerSubscriptions,
   subscriptions,
 } from '../../drizzle/schema';
@@ -269,7 +270,66 @@ export class PaddleWebhookService {
       `Attached Paddle subscription ${paddleId} to subscription ` +
         `${subscriptionId} for user ${userId}`,
     );
+
+    // The account is now on the plan they just bought. Nothing else writes
+    // this: `applyStatus` carries the STATUS (active, past_due, paused) but
+    // never the plan, so without this the customer pays, the provider row is
+    // written, the status goes `active` — and `subscriptions.plan_code` stays
+    // FREE. They are billed for Basic and hold Free's limits. Verified in
+    // sandbox on 2026-11-26, which is how this was found.
+    await this.applyPurchasedPlan(subscriptionId, custom ?? {});
+
     return inserted[0] ?? null;
+  }
+
+  /**
+   * Put the account on the plan its checkout named.
+   *
+   * The code is read from `custom_data`, which we set when creating the
+   * transaction — but it arrives back over a public endpoint, so it is
+   * validated against the `plans` table before it reaches the column every
+   * limit check reads. (Signature verification already proves the body is
+   * Paddle's; this guards against our own stale or mistyped metadata.)
+   *
+   * A code we cannot place is logged and skipped rather than thrown. The
+   * payment has already happened and the provider row is already written;
+   * throwing would 500 a delivery and lose the attachment too, which is
+   * strictly worse than an account on the wrong plan that a human can fix.
+   */
+  private async applyPurchasedPlan(
+    subscriptionId: number,
+    custom: Record<string, unknown>,
+  ): Promise<void> {
+    const planCode = strOf(custom['plan_code']);
+    if (!planCode) {
+      this.logger.error(
+        `Paddle checkout for account ${subscriptionId} carried no plan_code; ` +
+          'the account keeps its current plan.',
+      );
+      return;
+    }
+
+    const known = (await db
+      .select({ code: plans.code })
+      .from(plans)
+      .where(eq(plans.code, planCode))) as { code: string }[];
+
+    if (known.length === 0) {
+      this.logger.error(
+        `Paddle checkout for account ${subscriptionId} named plan ` +
+          `"${planCode}", which is not in the plans table; ignoring it.`,
+      );
+      return;
+    }
+
+    await db
+      .update(subscriptions)
+      .set({ planCode, updatedAt: new Date() })
+      .where(eq(subscriptions.id, subscriptionId));
+
+    this.logger.log(
+      `Account ${subscriptionId} is now on ${planCode} (Paddle checkout).`,
+    );
   }
 
   /**
