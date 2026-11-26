@@ -1182,12 +1182,13 @@ export class WorkspaceMembersService {
       );
     }
     // Leaving is everyone's right, an ADMIN's included.
+    const mayManageAdmins = isOwner || isSuperAdmin;
     if (!isSelf) {
-      this.assertMayManageRole(
-        isOwner || isSuperAdmin,
-        member.role as MemberRoleName,
-      );
+      this.assertMayManageRole(mayManageAdmins, member.role as MemberRoleName);
     }
+    // The UPDATE below carries the same rule, for a member promoted to ADMIN
+    // after the row above was read.
+    const guardAdmins = !isSelf && !mayManageAdmins;
 
     // Soft removal: the row is kept as REMOVED so the removal can be undone
     // (restoreMember). Every reader filters on ACCEPTED or PENDING, so a
@@ -1209,6 +1210,7 @@ export class WorkspaceMembersService {
         and(
           eq(workspaceInvitation.id, memberId),
           eq(workspaceInvitation.status, 'ACCEPTED'),
+          guardAdmins ? ne(workspaceInvitation.role, 'ADMIN') : undefined,
         ),
       )
       .returning({
@@ -1217,6 +1219,17 @@ export class WorkspaceMembersService {
       });
 
     if (!removed) {
+      if (guardAdmins) {
+        // Matched nothing: gone already (404), or made an ADMIN just now (403).
+        const now = await this.db.query.workspaceInvitation.findFirst({
+          where: and(
+            eq(workspaceInvitation.id, memberId),
+            eq(workspaceInvitation.status, 'ACCEPTED'),
+          ),
+          columns: { role: true },
+        });
+        if (now) this.assertMayManageRole(false, now.role as MemberRoleName);
+      }
       throw new NotFoundException('Member not found in this workspace');
     }
 
@@ -1352,15 +1365,19 @@ export class WorkspaceMembersService {
 
     const isRemover = row.removedBy === currentUserId;
     const isOwner = workspaceData.ownerId === currentUserId;
-    if (
-      !isRemover &&
-      !isOwner &&
-      !(await this.isPlatformSuperAdmin(currentUserId))
-    ) {
+    // The remover of a non-ADMIN needs neither lookup.
+    const ownerOrSuperAdmin =
+      isOwner ||
+      ((!isRemover || row.role === 'ADMIN') &&
+        (await this.isPlatformSuperAdmin(currentUserId)));
+    if (!isRemover && !ownerOrSuperAdmin) {
       throw new ForbiddenException(
         'Only the person who removed them or the workspace owner can undo this removal',
       );
     }
+    // Restoring an ADMIN puts an admin back: owner (or support) only, even for
+    // the ADMIN who removed them.
+    this.assertMayManageRole(ownerOrSuperAdmin, row.role as MemberRoleName);
 
     const windowStart = new Date(Date.now() - MEMBER_RESTORE_WINDOW_MS);
     if (!row.removedAt || row.removedAt <= windowStart) {

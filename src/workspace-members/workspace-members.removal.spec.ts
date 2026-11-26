@@ -487,7 +487,7 @@ describe('WorkspaceMembersService.restoreMember', () => {
     workspaceId: WS,
     userId: MEMBER_USER,
     email: 'Sana@X.pk',
-    role: 'ADMIN',
+    role: 'MEMBER',
     status: 'REMOVED',
     token: 'secret',
     removedBy: ADMIN,
@@ -553,7 +553,7 @@ describe('WorkspaceMembersService.restoreMember', () => {
     expect(calls[0].set.role).toBeUndefined();
     expect(res.member).toMatchObject({
       id: 'm1',
-      role: 'ADMIN',
+      role: 'MEMBER',
       status: 'ACCEPTED',
     });
     expect(res.droppedInvitations).toEqual([]);
@@ -612,6 +612,49 @@ describe('WorkspaceMembersService.restoreMember', () => {
     ).resolves.toMatchObject({ message: 'Member restored' });
   });
 
+  it('restoring an ADMIN is owner-only: the ADMIN who removed them gets 403 and nothing is written', async () => {
+    const t = restoreDb(removedRow({ role: 'ADMIN' }));
+    const err = await makeService(t.db, { usage: usageWith(5, 1) })
+      .restoreMember(WS, 'm1', ADMIN)
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(ForbiddenException);
+    expect(err.message).toBe('Only the workspace owner can manage admins.');
+    expect(t.calls).toHaveLength(0);
+    expect(t.db.execute).not.toHaveBeenCalled();
+  });
+
+  it('the OWNER and a platform super admin can restore an ADMIN', async () => {
+    const byOwner = restoreDb(removedRow({ role: 'ADMIN' }));
+    await expect(
+      makeService(byOwner.db, { usage: usageWith(5, 1) }).restoreMember(
+        WS,
+        'm1',
+        OWNER,
+      ),
+    ).resolves.toMatchObject({ member: { role: 'ADMIN' } });
+
+    roleService.isPlatformSuperAdmin.mockResolvedValue(true);
+    const bySupport = restoreDb(removedRow({ role: 'ADMIN' }));
+    await expect(
+      makeService(bySupport.db, { usage: usageWith(5, 1) }).restoreMember(
+        WS,
+        'm1',
+        OTHER_ADMIN,
+      ),
+    ).resolves.toMatchObject({ member: { role: 'ADMIN' } });
+  });
+
+  it('an ADMIN who removed a MEMBER can still restore them', async () => {
+    const t = restoreDb(removedRow());
+    await expect(
+      makeService(t.db, { usage: usageWith(5, 1) }).restoreMember(
+        WS,
+        'm1',
+        ADMIN,
+      ),
+    ).resolves.toMatchObject({ message: 'Member restored' });
+  });
+
   it('refuses after the 15-minute window: 409 RESTORE_WINDOW_PASSED', async () => {
     const { db, calls } = restoreDb(
       removedRow({
@@ -658,8 +701,8 @@ describe('WorkspaceMembersService.restoreMember', () => {
     expect(q.params).toEqual(
       expect.arrayContaining([WS, 'PENDING', 'sana@x.pk']),
     );
-    // Deliberate: the restored membership (role ADMIN) replaces the GUEST re-invite.
-    expect(res.member).toMatchObject({ role: 'ADMIN' });
+    // Deliberate: the restored membership (role MEMBER) replaces the GUEST re-invite.
+    expect(res.member).toMatchObject({ role: 'MEMBER' });
     expect(res.droppedInvitations).toEqual([reinvite]);
   });
 
@@ -907,12 +950,14 @@ describe('only the workspace owner manages admins', () => {
    * trailing 'ADMIN' param. Every write is recorded, so a refusal can be
    * proven to have written nothing.
    */
-  function policyDb(rows: Record<string, any>) {
+  function policyDb(rows: Record<string, any>, updateRows?: unknown[]) {
     // What any UPDATE ... RETURNING answers: enough of a row for a role
     // change, a removal and a resend alike.
-    const writes = updateChain([
-      { id: 'm1', role: 'MEMBER', status: 'PENDING', expiresAt: future },
-    ]);
+    const writes = updateChain(
+      updateRows ?? [
+        { id: 'm1', role: 'MEMBER', status: 'PENDING', expiresAt: future },
+      ],
+    );
     const insert = jest.fn(() => ({
       values: (v: { email: string; role: string }) => ({
         returning: () =>
@@ -1050,6 +1095,52 @@ describe('only the workspace owner manages admins', () => {
     const t = policyDb({ m1: member('m1', 'ADMIN') });
     await refused(svcOf(t).removeMember(WS, 'm1', ADMIN));
     noWrite(t);
+  });
+
+  it('an ADMIN removing a member who was made ADMIN since it was read: the UPDATE matches nothing and the answer is the 403', async () => {
+    const t = policyDb({ m1: member('m1', 'MEMBER') }, []);
+    const { lookup } = t;
+    const first = lookup.getMockImplementation()!;
+    // Reads: the caller's admin check, the member, then the re-read after the
+    // UPDATE matched no row.
+    lookup.mockImplementation((arg: unknown) =>
+      lookup.mock.calls.length > 2
+        ? Promise.resolve(member('m1', 'ADMIN'))
+        : first(arg),
+    );
+    const usageSpy = { ...usage, decrementMemberCount: jest.fn() };
+    await refused(
+      makeService(t.db, { usage: usageSpy, mail: makeMail() }).removeMember(
+        WS,
+        'm1',
+        ADMIN,
+      ),
+    );
+    // The UPDATE itself carried the role guard, so it could not have removed them.
+    expect(t.updates).toHaveLength(1);
+    expect(dialect.sqlToQuery(t.updates[0].where).params).toContain('ADMIN');
+    expect(usageSpy.decrementMemberCount).not.toHaveBeenCalled();
+  });
+
+  it('a removal that matched nothing for another reason is still a 404, for an ADMIN caller', async () => {
+    const t = policyDb({ m1: member('m1', 'MEMBER') }, []);
+    await expect(svcOf(t).removeMember(WS, 'm1', ADMIN)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+  });
+
+  it('the owner, a super admin and a self-removal carry no role guard in the UPDATE', async () => {
+    const paramsOf = async (caller: string, row: any) => {
+      roleService.isPlatformSuperAdmin.mockResolvedValue(caller === ROOT);
+      const t = policyDb({ m1: row });
+      await svcOf(t).removeMember(WS, 'm1', caller);
+      return dialect.sqlToQuery(t.updates[0].where).params;
+    };
+    expect(await paramsOf(OWNER, member('m1', 'ADMIN'))).not.toContain('ADMIN');
+    expect(await paramsOf(ROOT, member('m1', 'ADMIN'))).not.toContain('ADMIN');
+    expect(await paramsOf(ADMIN, member('m1', 'ADMIN', ADMIN))).not.toContain(
+      'ADMIN',
+    );
   });
 
   it('an ADMIN can still invite/change/remove MEMBER and GUEST', async () => {
