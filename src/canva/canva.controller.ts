@@ -31,6 +31,12 @@ import { WorkspaceAccessService } from '../workspace-members/workspace-access.se
 import { randomBytes } from 'crypto';
 import { db } from '../drizzle/db';
 import { oauthStates, NewOAuthState } from '../drizzle/schema/channels.schema';
+import { safeReturnUrl } from '../channels/lib/oauth-return-url';
+
+/** The frontend a Canva connect returns to. */
+function canvaFrontendUrl(): string {
+  return process.env.FRONTEND_URL || 'http://localhost:3001';
+}
 
 @Controller('canva')
 export class CanvaController {
@@ -92,8 +98,11 @@ export class CanvaController {
       workspaceId,
       userId: user.userId,
       platform: 'canva',
-      redirectUrl:
-        dto.redirectUrl || process.env.FRONTEND_URL || 'http://localhost:3001',
+      // Client-supplied: only a FRONTEND_URL-origin URL is stored, never
+      // another host or the API origin (whose callbacks would chain on).
+      redirectUrl: safeReturnUrl(dto.redirectUrl, canvaFrontendUrl(), [
+        canvaFrontendUrl(),
+      ]),
       codeVerifier: result.codeVerifier,
       expiresAt,
     } as NewOAuthState);
@@ -119,8 +128,7 @@ export class CanvaController {
     @Query('error_description') errorDescription: string,
     @Res() res: Response,
   ) {
-    const defaultFrontendUrl =
-      process.env.FRONTEND_URL || 'http://localhost:3001';
+    const defaultFrontendUrl = canvaFrontendUrl();
 
     this.logger.log(
       `Canva OAuth callback received. State: ${state?.substring(0, 10)}...`,
@@ -134,8 +142,14 @@ export class CanvaController {
       .limit(1);
 
     const stateData = stateRecords[0];
-    // Use base frontend URL (strip any path that might have been included)
-    let frontendUrl = stateData?.redirectUrl || defaultFrontendUrl;
+    // Use base frontend URL (strip any path that might have been included).
+    // The stored value is re-checked on use: a row written before the store
+    // check, or by another path, must not send the browser elsewhere.
+    let frontendUrl = safeReturnUrl(
+      stateData?.redirectUrl,
+      defaultFrontendUrl,
+      [defaultFrontendUrl],
+    );
     try {
       const urlObj = new URL(frontendUrl);
       frontendUrl = urlObj.origin; // Get just protocol + host

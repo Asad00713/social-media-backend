@@ -1,4 +1,12 @@
+import {
+  fetchPublic,
+  UnsafeUrlError,
+  type PublicRequestInit,
+} from '../../../../common/net/public-fetch';
 import type { MastodonAccount, MastodonStatus } from './mastodon.types';
+
+/** One HTTP request; injectable so tests can stub the network. */
+type FetchLike = (url: string, init?: PublicRequestInit) => Promise<Response>;
 
 export class MastodonApiError extends Error {
   constructor(
@@ -17,11 +25,12 @@ export class MastodonApiError extends Error {
 
 /**
  * Thin wrapper around the Mastodon v1 REST API. Constructor takes a fetch impl
- * so tests can inject a mock. Production uses global fetch.
+ * so tests can inject a mock. Production uses fetchPublic: the instance URL is
+ * user-supplied, so public hosts only, pinned at connect, no redirects.
  * No quota tracking — per-instance limits are generous for read-only use.
  */
 export class MastodonApiClient {
-  constructor(private readonly fetchImpl: typeof fetch = fetch) {}
+  constructor(private readonly fetchImpl: FetchLike = fetchPublic) {}
 
   async verifyCredentials(
     instanceUrl: string,
@@ -60,9 +69,21 @@ export class MastodonApiClient {
   }
 
   private async request<T>(url: string, accessToken: string): Promise<T> {
-    const res = await this.fetchImpl(url, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
+    let res: Response;
+    try {
+      res = await this.fetchImpl(url, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+    } catch (err) {
+      if (err instanceof UnsafeUrlError) {
+        throw new MastodonApiError(
+          'permanent',
+          0,
+          "That Mastodon server address isn't reachable from the internet.",
+        );
+      }
+      throw err;
+    }
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       const message = body.error ?? body.message ?? `HTTP ${res.status}`;
@@ -72,10 +93,14 @@ export class MastodonApiClient {
   }
 
   normalizeInstance(instanceUrl: string): string {
-    // Accept "mastodon.social", "https://mastodon.social", "https://mastodon.social/"
-    const trimmed = instanceUrl.replace(/\/$/, '');
-    if (/^https?:\/\//.test(trimmed)) return trimmed;
-    return `https://${trimmed}`;
+    // Accept "mastodon.social", "https://mastodon.social", "https://mastodon.social/".
+    // Always https: the guarded request follows no redirect, so a stored
+    // http:// address is rewritten here rather than bounced by the server.
+    const host = instanceUrl
+      .trim()
+      .replace(/^https?:\/\//i, '')
+      .replace(/\/+$/, '');
+    return `https://${host}`;
   }
 
   private mapCode(status: number): MastodonApiError['code'] {

@@ -1,6 +1,8 @@
 /* eslint-disable @typescript-eslint/require-await -- db double */
 import type { ConfigService } from '@nestjs/config';
 import { Logger } from '@nestjs/common';
+import * as http from 'http';
+import type { AddressInfo } from 'net';
 import { leadForms, leads } from '../../drizzle/schema/ads.schema';
 
 let updates: Record<string, unknown>[];
@@ -37,6 +39,15 @@ const mockDb = {
 
 jest.mock('../../drizzle/db', () => ({ db: mockDb }));
 
+// Count real requests: undici's fetch is what fetchPublic sends through.
+jest.mock('undici', () => {
+  const actual = jest.requireActual<typeof import('undici')>('undici');
+  return { ...actual, fetch: jest.fn() };
+});
+import { fetch as undiciFetch } from 'undici';
+const mockedFetch = undiciFetch as unknown as jest.Mock;
+import { publicAgent } from '../../common/net/public-fetch';
+
 import type { DeliverOptions, EmailService } from '../../email/email.service';
 import { AppLinks } from '../../email/links/app-links';
 import type { EmailSuppressionRepository } from '../../email/suppression/email-suppression.repository';
@@ -66,6 +77,10 @@ beforeEach(() => {
   form = { name: 'Spring menu waitlist' };
   LEAD.deliveryAttempts = [];
   jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+  // No real request may leave a test: the global fetch is stubbed as well.
+  jest
+    .spyOn(global, 'fetch')
+    .mockRejectedValue(new Error('global fetch is stubbed in this spec'));
 });
 afterEach(() => jest.restoreAllMocks());
 
@@ -182,5 +197,131 @@ describe('LeadRouterService email route', () => {
     const [{ subject, html }] = deliver.mock.calls[0];
     expect(subject).toBe('New lead captured: Unknown Form');
     expect(html).toContain('This lead has no fields.');
+  });
+});
+
+describe('LeadRouterService webhook route', () => {
+  const PUBLIC_URL = 'https://93.184.216.34/hook';
+  beforeEach(() => mockedFetch.mockReset());
+
+  it.each([
+    'http://127.0.0.1/hook',
+    'http://169.254.169.254/latest/meta-data/',
+    'http://10.0.0.8/hook',
+    'http://[::1]/hook',
+  ])(
+    'refuses a stored %s: nothing sent, a failed attempt, no retry',
+    async (url) => {
+      const warn = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+      const { service } = setup();
+      await expect(
+        service.deliver('lead-1', 'route-1', 'webhook', { url }),
+      ).resolves.toBeUndefined();
+      expect(mockedFetch).not.toHaveBeenCalled();
+      expect(updates.at(-1)).toMatchObject({ deliveryStatus: 'failed' });
+      const attempts = updates.at(-1)?.deliveryAttempts as {
+        error?: string;
+      }[];
+      expect(attempts.at(-1)?.error).toBe(
+        "That webhook URL isn't reachable from the internet.",
+      );
+      expect(warn).toHaveBeenCalled();
+    },
+  );
+
+  it('refuses localhost by name at connect time: the server is never reached, no retry', async () => {
+    jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const hits: string[] = [];
+    const server = http.createServer((req, res) => {
+      hits.push(req.url ?? '');
+      res.end('ok');
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const { port } = server.address() as AddressInfo;
+    mockedFetch.mockImplementation(
+      jest.requireActual<typeof import('undici')>('undici').fetch,
+    );
+    try {
+      const { service } = setup();
+      await expect(
+        service.deliver('lead-1', 'route-1', 'webhook', {
+          url: `http://localhost:${port}/hook`,
+        }),
+      ).resolves.toBeUndefined();
+      expect(hits).toEqual([]);
+      expect(updates.at(-1)).toMatchObject({ deliveryStatus: 'failed' });
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  });
+
+  it('POSTs a public URL through the pinned agent, redirects manual', async () => {
+    mockedFetch.mockResolvedValue(new Response('ok'));
+    const { service } = setup();
+    await service.deliver('lead-1', 'route-1', 'webhook', {
+      url: PUBLIC_URL,
+      secret: 's3cret',
+    });
+    expect(mockedFetch).toHaveBeenCalledTimes(1);
+    const [url, init] = mockedFetch.mock.calls[0] as [
+      string,
+      { method: string; redirect: string; dispatcher: unknown },
+    ];
+    expect(url).toBe(PUBLIC_URL);
+    expect(init.method).toBe('POST');
+    expect(init.redirect).toBe('manual');
+    expect(init.dispatcher).toBe(publicAgent);
+    expect(updates.at(-1)).toMatchObject({ deliveryStatus: 'delivered' });
+  });
+
+  it('gives the POST the same 10 s timeout as the test button', async () => {
+    const timeout = jest.spyOn(AbortSignal, 'timeout');
+    mockedFetch.mockResolvedValue(new Response('ok'));
+    const { service } = setup();
+    await service.deliver('lead-1', 'route-1', 'webhook', { url: PUBLIC_URL });
+    expect(timeout).toHaveBeenCalledWith(10_000);
+    const [, init] = mockedFetch.mock.calls[0] as [
+      string,
+      { signal?: AbortSignal },
+    ];
+    expect(init.signal).toBe(timeout.mock.results[0]?.value);
+  });
+
+  it('a webhook that never answers is cut off: failed attempt, rethrown for a retry', async () => {
+    const controller = new AbortController();
+    jest.spyOn(AbortSignal, 'timeout').mockReturnValue(controller.signal);
+    // The receiver hangs until the deadline fires; the deadline fires once
+    // the POST is in flight.
+    mockedFetch.mockImplementation(
+      (_url: string, init: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          init.signal.addEventListener('abort', () =>
+            reject(new DOMException('timed out', 'TimeoutError')),
+          );
+          controller.abort();
+        }),
+    );
+    const { service } = setup();
+    await expect(
+      service.deliver('lead-1', 'route-1', 'webhook', { url: PUBLIC_URL }),
+    ).rejects.toThrow('timed out');
+    expect(updates.at(-1)).toMatchObject({ deliveryStatus: 'failed' });
+  });
+
+  it('treats a 3xx as a failed delivery and does not follow it', async () => {
+    mockedFetch.mockResolvedValue(
+      new Response(null, {
+        status: 307,
+        headers: { location: 'http://169.254.169.254/' },
+      }),
+    );
+    const { service } = setup();
+    await expect(
+      service.deliver('lead-1', 'route-1', 'webhook', { url: PUBLIC_URL }),
+    ).rejects.toThrow(/HTTP 307/);
+    expect(mockedFetch).toHaveBeenCalledTimes(1);
+    expect(updates.at(-1)).toMatchObject({ deliveryStatus: 'failed' });
   });
 });

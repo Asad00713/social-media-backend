@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { BlueskyService } from './bluesky.service';
+import { fetchPublic } from '../../common/net/public-fetch';
 
 /** The answer the composer's mention menu shows beside a typed handle. */
 export interface MentionLookupResult {
@@ -82,9 +83,12 @@ export class MentionLookupService {
     if (typeof instanceUrl !== 'string' || !instanceUrl) {
       return { handle, found: false };
     }
-    const base = /^https?:\/\//i.test(instanceUrl)
-      ? instanceUrl.replace(/\/+$/, '')
-      : `https://${instanceUrl.replace(/\/+$/, '')}`;
+    // https only, like MastodonService: a stored http:// address is
+    // rewritten here, since the guarded request follows no redirect.
+    const base = `https://${instanceUrl
+      .trim()
+      .replace(/^https?:\/\//i, '')
+      .replace(/\/+$/, '')}`;
     const url = new URL(`${base}/api/v2/search`);
     url.searchParams.set('q', handle);
     url.searchParams.set('type', 'accounts');
@@ -92,7 +96,9 @@ export class MentionLookupService {
     url.searchParams.set('limit', '1');
 
     try {
-      const response = await fetch(url.toString(), {
+      // The server is the channel's stored, user-supplied address: public
+      // hosts only, no redirects. A refusal lands in the catch: not found.
+      const response = await fetchPublic(url.toString(), {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       if (!response.ok) return { handle, found: false };

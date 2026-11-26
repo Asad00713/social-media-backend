@@ -1,4 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { fetchPublicMedia } from '../../common/net/public-fetch';
+import { attachmentRefusal } from '../../common/net/attachment-refusal';
 import { TelegramService } from '../../channels/services/telegram.service';
 import type {
   PlatformDmAdapter,
@@ -67,13 +69,20 @@ export class TelegramDmAdapter implements PlatformDmAdapter {
       const isLast = i === attachments.length - 1;
       const caption = isLast && text ? text : undefined;
 
-      const res = await fetch(att.url);
-      if (!res.ok) {
-        throw new BadRequestException(
-          `Failed to fetch attachment ${i + 1}/${attachments.length} from R2 after ${successCount} uploaded: ${res.status} ${res.statusText}`,
-        );
+      // The URL comes from the request body (DmAttachmentDto): SSRF guard.
+      // A refused URL is a 400 with plain copy; other errors pass through.
+      let buffer: Buffer;
+      try {
+        const res = await fetchPublicMedia(att.url);
+        if (!res.ok) {
+          throw new BadRequestException(
+            `Failed to fetch attachment ${i + 1}/${attachments.length} from R2 after ${successCount} uploaded: ${res.status} ${res.statusText}`,
+          );
+        }
+        buffer = Buffer.from(await res.arrayBuffer());
+      } catch (err) {
+        throw attachmentRefusal(err) ?? err;
       }
-      const buffer = Buffer.from(await res.arrayBuffer());
 
       const tail = att.url.split('/').pop() ?? 'attachment';
       const filename = decodeURIComponent(tail);

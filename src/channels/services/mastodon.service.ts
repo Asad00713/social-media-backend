@@ -6,7 +6,57 @@ import type {
   DmConversationSummary,
   ResolvedChannel,
 } from '../../inbox/adapters/inbox-adapter.interface';
-import { fetchPublicMedia } from '../../common/net/public-fetch';
+import {
+  assertPublicHost,
+  fetchPublic,
+  fetchPublicMedia,
+  UnsafeUrlError,
+  type PublicRequestInit,
+} from '../../common/net/public-fetch';
+
+/** Shown when a Mastodon server address is not a public host. */
+export const MASTODON_SERVER_UNREACHABLE =
+  "That Mastodon server address isn't reachable from the internet.";
+
+/** Deadline for one Mastodon API call: a server that never answers. */
+const MASTODON_API_TIMEOUT_MS = 15_000;
+/**
+ * The media upload sends the whole file (up to Mastodon's 40 MB video cap)
+ * in one buffered POST, so it gets longer than an API call.
+ */
+const MASTODON_MEDIA_UPLOAD_TIMEOUT_MS = 120_000;
+
+/** A remote error body goes to the log, cut short; never to the client. */
+const MAX_LOGGED_BODY = 500;
+function truncateForLog(body: string): string {
+  return body.length > MAX_LOGGED_BODY
+    ? `${body.slice(0, MAX_LOGGED_BODY)}… [${body.length - MAX_LOGGED_BODY} more chars]`
+    : body;
+}
+
+/**
+ * Every request to a Mastodon server. The server address is user-supplied
+ * (typed at connect, then stored on the channel), so it goes through the SSRF
+ * guard: public hosts only, pinned at connect, redirects NOT followed (a 3xx
+ * is a non-ok answer and fails the call like any other).
+ */
+async function mastodonFetch(
+  url: string,
+  init: PublicRequestInit = {},
+  timeoutMs = MASTODON_API_TIMEOUT_MS,
+): Promise<Response> {
+  try {
+    return await fetchPublic(url, {
+      ...init,
+      signal: init.signal ?? AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    if (err instanceof UnsafeUrlError) {
+      throw new BadRequestException(MASTODON_SERVER_UNREACHABLE);
+    }
+    throw err;
+  }
+}
 
 export interface MastodonApp {
   id: string;
@@ -82,20 +132,19 @@ export class MastodonService {
   constructor(private readonly configService: ConfigService) {}
 
   /**
-   * Normalize instance URL (ensure https:// and no trailing slash)
+   * Normalize instance URL: always https://, no trailing slash.
+   *
+   * Mastodon requires TLS, and requests never follow redirects (SSRF guard),
+   * so an `http://` address, typed or already stored, is rewritten to
+   * https here, on every read, instead of relying on the server's redirect.
    */
   private normalizeInstanceUrl(instanceUrl: string): string {
-    let url = instanceUrl.trim().toLowerCase();
-
-    // Add https:// if no protocol
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      url = `https://${url}`;
-    }
-
-    // Remove trailing slash
-    url = url.replace(/\/+$/, '');
-
-    return url;
+    const host = instanceUrl
+      .trim()
+      .toLowerCase()
+      .replace(/^https?:\/\//, '')
+      .replace(/\/+$/, '');
+    return `https://${host}`;
   }
 
   /**
@@ -108,8 +157,15 @@ export class MastodonService {
     appName: string = 'Schedura',
   ): Promise<MastodonApp> {
     const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
+    // First contact with an address the user just typed: refuse localhost or
+    // an internal name up front, before anything is registered or stored.
+    try {
+      await assertPublicHost(normalizedUrl);
+    } catch {
+      throw new BadRequestException(MASTODON_SERVER_UNREACHABLE);
+    }
 
-    const response = await fetch(`${normalizedUrl}/api/v1/apps`, {
+    const response = await mastodonFetch(`${normalizedUrl}/api/v1/apps`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -124,10 +180,13 @@ export class MastodonService {
     });
 
     if (!response.ok) {
+      // The body is the remote server's: log it (truncated), never echo it.
       const errorData = await response.text();
-      this.logger.error(`Failed to register Mastodon app: ${errorData}`);
+      this.logger.error(
+        `Failed to register Mastodon app: HTTP ${response.status} ${truncateForLog(errorData)}`,
+      );
       throw new BadRequestException(
-        `Failed to register app with Mastodon instance: ${errorData}`,
+        'Failed to register app with Mastodon instance',
       );
     }
 
@@ -180,7 +239,7 @@ export class MastodonService {
   }> {
     const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
 
-    const response = await fetch(`${normalizedUrl}/oauth/token`, {
+    const response = await mastodonFetch(`${normalizedUrl}/oauth/token`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -197,10 +256,10 @@ export class MastodonService {
 
     if (!response.ok) {
       const errorData = await response.text();
-      this.logger.error(`Failed to exchange code for token: ${errorData}`);
-      throw new BadRequestException(
-        `Failed to authenticate with Mastodon: ${errorData}`,
+      this.logger.error(
+        `Failed to exchange code for token: HTTP ${response.status} ${truncateForLog(errorData)}`,
       );
+      throw new BadRequestException('Failed to authenticate with Mastodon');
     }
 
     const data = await response.json();
@@ -222,7 +281,7 @@ export class MastodonService {
   ): Promise<MastodonAccount> {
     const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
 
-    const response = await fetch(
+    const response = await mastodonFetch(
       `${normalizedUrl}/api/v1/accounts/verify_credentials`,
       {
         headers: {
@@ -264,7 +323,7 @@ export class MastodonService {
   ): Promise<MastodonAccount> {
     const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
 
-    const response = await fetch(
+    const response = await mastodonFetch(
       `${normalizedUrl}/api/v1/accounts/${accountId}`,
       {
         headers: {
@@ -389,7 +448,7 @@ export class MastodonService {
       }
     }
 
-    const response = await fetch(`${normalizedUrl}/api/v1/statuses`, {
+    const response = await mastodonFetch(`${normalizedUrl}/api/v1/statuses`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -501,14 +560,18 @@ export class MastodonService {
     );
     const body = Buffer.concat(bodyParts);
 
-    const response = await fetch(`${normalizedUrl}/api/v2/media`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+    const response = await mastodonFetch(
+      `${normalizedUrl}/api/v2/media`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        },
+        body,
       },
-      body: body as unknown as BodyInit,
-    });
+      MASTODON_MEDIA_UPLOAD_TIMEOUT_MS,
+    );
 
     if (!response.ok) {
       const errorData = await response.text();
@@ -543,11 +606,14 @@ export class MastodonService {
     maxAttempts: number = 30,
   ): Promise<MastodonMediaAttachment> {
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const response = await fetch(`${instanceUrl}/api/v1/media/${mediaId}`, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
+      const response = await mastodonFetch(
+        `${instanceUrl}/api/v1/media/${mediaId}`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
         },
-      });
+      );
 
       if (response.status === 200) {
         const data = await response.json();
@@ -640,7 +706,7 @@ export class MastodonService {
   ): Promise<void> {
     const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
 
-    const response = await fetch(
+    const response = await mastodonFetch(
       `${normalizedUrl}/api/v1/statuses/${statusId}`,
       {
         method: 'DELETE',
@@ -669,7 +735,7 @@ export class MastodonService {
   ): Promise<void> {
     const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
     const action = favourited ? 'favourite' : 'unfavourite';
-    const response = await fetch(
+    const response = await mastodonFetch(
       `${normalizedUrl}/api/v1/statuses/${statusId}/${action}`,
       {
         method: 'POST',
@@ -705,7 +771,7 @@ export class MastodonService {
       url.searchParams.set('max_id', maxId);
     }
 
-    const response = await fetch(url.toString(), {
+    const response = await mastodonFetch(url.toString(), {
       headers: {
         Authorization: `Bearer ${accessToken}`,
       },
@@ -748,7 +814,7 @@ export class MastodonService {
   ): Promise<void> {
     const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
 
-    const response = await fetch(`${normalizedUrl}/oauth/revoke`, {
+    const response = await mastodonFetch(`${normalizedUrl}/oauth/revoke`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -775,7 +841,7 @@ export class MastodonService {
   async getApiVersion(instanceUrl: string): Promise<number> {
     const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
     try {
-      const response = await fetch(`${normalizedUrl}/api/v2/instance`);
+      const response = await mastodonFetch(`${normalizedUrl}/api/v2/instance`);
       if (!response.ok) return 0;
       const data = (await response.json()) as {
         api_versions?: { mastodon?: unknown };
@@ -810,7 +876,7 @@ export class MastodonService {
     url.searchParams.set('resolve', 'true');
     url.searchParams.set('limit', '1');
 
-    const response = await fetch(url.toString(), {
+    const response = await mastodonFetch(url.toString(), {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (!response.ok) {
@@ -849,7 +915,7 @@ export class MastodonService {
     descendants: MastodonStatusContextEntry[];
   }> {
     const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
-    const response = await fetch(
+    const response = await mastodonFetch(
       `${normalizedUrl}/api/v1/statuses/${encodeURIComponent(statusId)}/context`,
       {
         headers: { Authorization: `Bearer ${accessToken}` },
@@ -962,7 +1028,7 @@ export class MastodonService {
       url.searchParams.set('limit', '40');
       if (maxId) url.searchParams.set('max_id', maxId);
 
-      const response = await fetch(url.toString(), {
+      const response = await mastodonFetch(url.toString(), {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
 
@@ -1033,7 +1099,7 @@ export class MastodonService {
       url.searchParams.set('limit', '40');
       if (maxId) url.searchParams.set('max_id', maxId);
 
-      const response = await fetch(url.toString(), {
+      const response = await mastodonFetch(url.toString(), {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
 
@@ -1155,7 +1221,7 @@ export class MastodonService {
     const url = new URL(`${instanceUrl}/api/v1/conversations`);
     url.searchParams.set('limit', '40');
 
-    const response = await fetch(url.toString(), {
+    const response = await mastodonFetch(url.toString(), {
       headers: { Authorization: `Bearer ${channel.accessToken}` },
     });
 
@@ -1324,7 +1390,7 @@ export class MastodonService {
     const lastStatus = convo.last_status;
     if (!lastStatus) return [];
 
-    const contextResponse = await fetch(
+    const contextResponse = await mastodonFetch(
       `${instanceUrl}/api/v1/statuses/${encodeURIComponent(lastStatus.id)}/context`,
       { headers: { Authorization: `Bearer ${channel.accessToken}` } },
     );
@@ -1461,7 +1527,7 @@ export class MastodonService {
 
     const statusBody = `${mentions} ${text}`.trim();
 
-    const response = await fetch(`${instanceUrl}/api/v1/statuses`, {
+    const response = await mastodonFetch(`${instanceUrl}/api/v1/statuses`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${channel.accessToken}`,
@@ -1570,7 +1636,7 @@ export class MastodonService {
       mediaIds.push(uploaded.id);
     }
 
-    const response = await fetch(`${instanceUrl}/api/v1/statuses`, {
+    const response = await mastodonFetch(`${instanceUrl}/api/v1/statuses`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${channel.accessToken}`,

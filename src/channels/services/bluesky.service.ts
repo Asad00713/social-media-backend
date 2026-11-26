@@ -7,8 +7,14 @@ import type {
 } from '../../inbox/adapters/inbox-adapter.interface';
 import {
   MAX_IMAGE_BYTES,
+  UnsafeUrlError,
+  fetchPublic,
   fetchPublicMedia,
 } from '../../common/net/public-fetch';
+
+/** Shown when the PDS host from a DID document is not a public address. */
+export const BLUESKY_SERVER_UNREACHABLE =
+  "That Bluesky server address isn't reachable from the internet.";
 
 export interface BlueskySession {
   did: string; // Decentralized Identifier
@@ -738,9 +744,16 @@ export class BlueskyService {
     // getServiceAuth endpoint must be called on the user's actual PDS
     // (e.g. stropharia.us-west.host.bsky.network), not the bsky.social
     // entryway — the access JWT is scoped to that specific PDS.
-    const serviceAuthUrl = new URL(
-      `https://${pdsHost}/xrpc/com.atproto.server.getServiceAuth`,
-    );
+    // A did:web host can be anything the DID says (`host%3Aport`, spaces,
+    // ...). An address that does not even parse is the user's to fix: 400.
+    let serviceAuthUrl: URL;
+    try {
+      serviceAuthUrl = new URL(
+        `https://${pdsHost}/xrpc/com.atproto.server.getServiceAuth`,
+      );
+    } catch {
+      throw new BadRequestException(BLUESKY_SERVER_UNREACHABLE);
+    }
     serviceAuthUrl.searchParams.set('aud', `did:web:${pdsHost}`);
     serviceAuthUrl.searchParams.set('lxm', 'com.atproto.repo.uploadBlob');
     serviceAuthUrl.searchParams.set(
@@ -748,9 +761,20 @@ export class BlueskyService {
       String(Math.floor(Date.now() / 1000) + 1800), // 30 min
     );
 
-    const authRes = await fetch(serviceAuthUrl.toString(), {
-      headers: { Authorization: `Bearer ${accessJwt}` },
-    });
+    // The PDS host comes from the account's DID document, not from us: the
+    // user's access JWT may only go to a public address (checked, pinned at
+    // connect), and a redirect is not followed (a 3xx fails below).
+    let authRes: Response;
+    try {
+      authRes = await fetchPublic(serviceAuthUrl.toString(), {
+        headers: { Authorization: `Bearer ${accessJwt}` },
+      });
+    } catch (err) {
+      if (err instanceof UnsafeUrlError) {
+        throw new BadRequestException(BLUESKY_SERVER_UNREACHABLE);
+      }
+      throw err;
+    }
     if (!authRes.ok) {
       const errText = await authRes.text();
       this.logger.error(`getServiceAuth failed: ${errText}`);

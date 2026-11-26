@@ -1,5 +1,23 @@
+// No real request may leave a test: undici's fetch is stubbed as well.
+jest.mock('undici', () => ({
+  ...jest.requireActual<typeof import('undici')>('undici'),
+  fetch: jest.fn(() =>
+    Promise.reject(new Error('undici fetch is stubbed in this spec')),
+  ),
+}));
+
 import { ConfigService } from '@nestjs/config';
 import { MastodonService } from './mastodon.service';
+
+// These tests stub the network with `global.fetch`. API calls go through the
+// SSRF guard (fetchPublic: undici + a pinned-DNS agent), so route them back to
+// the stub; the guard is covered in mastodon.service.ssrf.spec.
+jest.mock('../../common/net/public-fetch', () => ({
+  ...jest.requireActual<typeof import('../../common/net/public-fetch')>(
+    '../../common/net/public-fetch',
+  ),
+  fetchPublic: (url: string, init?: RequestInit) => global.fetch(url, init),
+}));
 
 /**
  * The poll on a status, and the one rule that shapes the whole feature:

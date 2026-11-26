@@ -1,5 +1,13 @@
+// The Mastodon search goes through the SSRF guard (fetchPublic → undici).
+// Hand undici's fetch to the global stub, so the guard itself still runs.
+jest.mock('undici', () => ({
+  ...jest.requireActual<typeof import('undici')>('undici'),
+  fetch: (...args: Parameters<typeof fetch>) => global.fetch(...args),
+}));
+
 import { MentionLookupService } from './mention-lookup.service';
 import { BlueskyService } from './bluesky.service';
+import { publicAgent } from '../../common/net/public-fetch';
 
 /**
  * The composer's check of a typed `@handle` for an account outside the
@@ -132,6 +140,45 @@ describe('MentionLookupService', () => {
       expect((await service.lookup('mastodon', 'tok', meta, 'ann')).found).toBe(
         false,
       );
+    });
+
+    it.each([
+      'http://127.0.0.1',
+      '169.254.169.254',
+      'https://10.0.0.8',
+      'http://[::1]',
+    ])(
+      'says not found for a private server %s, and asks nothing',
+      async (instanceUrl) => {
+        expect(
+          (await service.lookup('mastodon', 'tok', { instanceUrl }, 'ann'))
+            .found,
+        ).toBe(false);
+        expect(fetchMock).not.toHaveBeenCalled();
+      },
+    );
+
+    it('asks through the pinned agent and does not follow redirects', async () => {
+      fetchMock.mockImplementation(() => reply({ accounts: [] }));
+      await service.lookup('mastodon', 'tok', meta, 'ann');
+      const [, init] = fetchMock.mock.calls[0] as [
+        string,
+        { redirect: string; dispatcher: unknown },
+      ];
+      expect(init.redirect).toBe('manual');
+      expect(init.dispatcher).toBe(publicAgent);
+    });
+
+    it('asks a stored http:// server over https', async () => {
+      fetchMock.mockImplementation(() => reply({ accounts: [] }));
+      await service.lookup(
+        'mastodon',
+        'tok',
+        { instanceUrl: 'http://mastodon.social/' },
+        'ann',
+      );
+      const [url] = fetchMock.mock.calls[0] as [string];
+      expect(new URL(url).origin).toBe('https://mastodon.social');
     });
 
     it('says not found without a server to ask', async () => {

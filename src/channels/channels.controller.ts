@@ -48,6 +48,8 @@ import { InstagramService } from './services/instagram.service';
 import { ThreadsService } from './services/threads.service';
 import { BlueskyService } from './services/bluesky.service';
 import { MastodonService } from './services/mastodon.service';
+import { safeReturnUrl } from './lib/oauth-return-url';
+import { TrackUnsplashDownloadDto } from './dto/unsplash-download.dto';
 import {
   MENTION_LOOKUP_PLATFORMS,
   MentionLookupService,
@@ -4349,16 +4351,27 @@ export class ChannelsController {
         },
       );
 
-      // Redirect to frontend
-      const redirectUrl =
-        stateRecord.redirectUrl || '/channels/connect/success';
+      // Redirect to frontend: only a FRONTEND_URL-origin return URL is
+      // followed (never the API origin, whose callbacks would chain the
+      // redirect on); otherwise the absolute frontend page.
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      const redirectUrl = safeReturnUrl(
+        stateRecord.redirectUrl,
+        `${frontendUrl}/channels/connect/success`,
+        [frontendUrl],
+      );
       const separator = redirectUrl.includes('?') ? '&' : '?';
       return res.redirect(
         `${redirectUrl}${separator}platform=mastodon&success=true`,
       );
     } catch (error) {
       console.error('[Mastodon OAuth] Error:', error);
-      const redirectUrl = stateRecord.redirectUrl || '/channels/connect/error';
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      const redirectUrl = safeReturnUrl(
+        stateRecord.redirectUrl,
+        `${frontendUrl}/channels/connect/error`,
+        [frontendUrl],
+      );
       const separator = redirectUrl.includes('?') ? '&' : '?';
       return res.redirect(
         `${redirectUrl}${separator}error=oauth_failed&description=${encodeURIComponent(error.message || 'OAuth failed')}`,
@@ -5938,10 +5951,7 @@ export class ChannelsController {
   @Post('unsplash/download')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async trackUnsplashDownload(@Body() dto: { downloadLocation: string }) {
-    if (!dto.downloadLocation) {
-      throw new BadRequestException('downloadLocation is required');
-    }
+  async trackUnsplashDownload(@Body() dto: TrackUnsplashDownloadDto) {
     await this.unsplashService.trackDownload(dto.downloadLocation);
     return { success: true, message: 'Download tracked successfully' };
   }

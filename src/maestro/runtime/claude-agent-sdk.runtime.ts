@@ -1,9 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
-import type {
-  AgentEvent,
-  AgentRunInput,
-  AgentRuntime,
-} from '../maestro.types';
+import {
+  fetchPublicMedia,
+  MAX_IMAGE_BYTES,
+} from '../../common/net/public-fetch';
+import { attachmentRefusal } from '../../common/net/attachment-refusal';
+import type { AgentEvent, AgentRunInput, AgentRuntime } from '../maestro.types';
 import {
   buildMcpServer,
   MCP_SERVER_NAME,
@@ -249,7 +250,10 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
                 },
               };
             } else {
-              yield { type: 'error', message: `Agent ended: ${message.subtype}` };
+              yield {
+                type: 'error',
+                message: `Agent ended: ${message.subtype}`,
+              };
             }
             break;
           }
@@ -311,19 +315,31 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
       content.push({ type: 'text', text: input.userMessage || '' });
     }
     async function* once() {
-      yield { type: 'user' as const, message: { role: 'user' as const, content } };
+      yield {
+        type: 'user' as const,
+        message: { role: 'user' as const, content },
+      };
     }
     return once();
   }
 
-  /** Fetch a (public R2) URL and return its bytes as base64. */
+  /**
+   * Fetch an attachment URL and return its bytes as base64. The URL comes from
+   * the request body, so it goes through the SSRF guard (public hosts only,
+   * every redirect re-checked, body capped) rather than a bare fetch.
+   */
   private async fetchBase64(url: string): Promise<string> {
-    const res = await fetch(url);
-    if (!res.ok) {
-      throw new Error(`attachment fetch failed: ${res.status} ${url}`);
+    // A refused URL is a 400 with plain copy; other errors pass through.
+    try {
+      const res = await fetchPublicMedia(url, { maxBytes: MAX_IMAGE_BYTES });
+      if (!res.ok) {
+        throw new Error(`attachment fetch failed: ${res.status} ${url}`);
+      }
+      const buf = Buffer.from(await res.arrayBuffer());
+      return buf.toString('base64');
+    } catch (err) {
+      throw attachmentRefusal(err) ?? err;
     }
-    const buf = Buffer.from(await res.arrayBuffer());
-    return buf.toString('base64');
   }
 
   /**

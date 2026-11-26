@@ -1,5 +1,7 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { REST, Routes } from 'discord.js';
+import { fetchPublicMedia } from '../../common/net/public-fetch';
+import { attachmentRefusal } from '../../common/net/attachment-refusal';
 
 /**
  * Discord REST client (uses the single shared bot token). Handles the OUTBOUND
@@ -101,7 +103,13 @@ export class DiscordService {
     channelId: string,
     limit = 10,
   ): Promise<
-    { id: string; authorName: string; bot: boolean; content: string; timestamp: string }[]
+    {
+      id: string;
+      authorName: string;
+      bot: boolean;
+      content: string;
+      timestamp: string;
+    }[]
   > {
     const query = new URLSearchParams({
       limit: String(Math.min(Math.max(limit, 1), 50)),
@@ -153,18 +161,27 @@ export class DiscordService {
     }
   }
 
-  /** Download a Discord-hosted attachment (CDN urls are public + unauth). */
+  /**
+   * Download an attachment: a Discord CDN url on ingest, or a client-supplied
+   * url when the user sends a DM with files. Either way it goes through the
+   * SSRF guard (public hosts only, every redirect re-checked).
+   */
   async downloadAttachment(
     url: string,
   ): Promise<{ buffer: Buffer; contentType: string }> {
-    const res = await fetch(url);
-    if (!res.ok) {
-      throw new BadRequestException(`Discord attachment fetch ${res.status}`);
+    // A refused URL is a 400 with plain copy; other errors pass through.
+    try {
+      const res = await fetchPublicMedia(url);
+      if (!res.ok) {
+        throw new BadRequestException(`Discord attachment fetch ${res.status}`);
+      }
+      const contentType =
+        res.headers.get('content-type')?.split(';')[0]?.trim() ??
+        'application/octet-stream';
+      return { buffer: Buffer.from(await res.arrayBuffer()), contentType };
+    } catch (err) {
+      throw attachmentRefusal(err) ?? err;
     }
-    const contentType =
-      res.headers.get('content-type')?.split(';')[0]?.trim() ??
-      'application/octet-stream';
-    return { buffer: Buffer.from(await res.arrayBuffer()), contentType };
   }
 
   /** Exchange the bot-invite OAuth code for the guild the bot was added to.

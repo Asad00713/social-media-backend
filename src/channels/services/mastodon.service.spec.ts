@@ -1,14 +1,23 @@
+// No real request may leave a test: undici's fetch is stubbed as well.
+jest.mock('undici', () => ({
+  ...jest.requireActual<typeof import('undici')>('undici'),
+  fetch: jest.fn(() =>
+    Promise.reject(new Error('undici fetch is stubbed in this spec')),
+  ),
+}));
+
 import { ConfigService } from '@nestjs/config';
 import { MastodonService } from './mastodon.service';
 
-// These tests stub the network with `global.fetch`. The media download goes
-// through the SSRF-guarded fetchPublicMedia (undici + a pinned-DNS agent), so
-// route it back to the stub; the guard itself is covered in public-fetch.spec.
+// These tests stub the network with `global.fetch`. The media download and
+// every API call go through the SSRF guard (fetchPublicMedia / fetchPublic:
+// undici + a pinned-DNS agent), so route them back to the stub; the guard itself is covered in public-fetch.spec.
 jest.mock('../../common/net/public-fetch', () => ({
   ...jest.requireActual<typeof import('../../common/net/public-fetch')>(
     '../../common/net/public-fetch',
   ),
   fetchPublicMedia: (url: string) => global.fetch(url),
+  fetchPublic: (url: string, init?: RequestInit) => global.fetch(url, init),
 }));
 
 /**

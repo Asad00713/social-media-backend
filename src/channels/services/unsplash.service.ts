@@ -1,4 +1,9 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { fetchPublic, UnsafeUrlError } from '../../common/net/public-fetch';
+
+/** The only host a download-tracking ping may go to. */
+const UNSPLASH_API_HOST = 'api.unsplash.com';
+const UNSPLASH_DOWNLOAD_LINK_INVALID = "That isn't an Unsplash download link.";
 
 export interface UnsplashPhoto {
   id: string;
@@ -170,21 +175,28 @@ export class UnsplashService {
   /**
    * Track a photo download (required by Unsplash API guidelines)
    * Must be called when a user downloads/uses a photo
+   *
+   * `downloadLocation` reaches us from a request body, and our access key is
+   * appended to it, so only a genuine https://api.unsplash.com URL is called
+   * (exact host, default port, no userinfo). Anything else is a 400 before
+   * any request: otherwise the route leaks the key and proxies requests.
    */
   async trackDownload(downloadLocation: string): Promise<void> {
-    const accessKey = this.getAccessKey();
+    const target = this.unsplashApiUrl(downloadLocation);
+    target.searchParams.set('client_id', this.getAccessKey());
 
-    // The downloadLocation URL already includes the client_id param format
-    // but we need to ensure it has our client_id
-    const url = downloadLocation.includes('?')
-      ? `${downloadLocation}&client_id=${accessKey}`
-      : `${downloadLocation}?client_id=${accessKey}`;
-
-    const response = await fetch(url, {
-      headers: {
-        'Accept-Version': 'v1',
-      },
-    });
+    let response: Response;
+    try {
+      response = await fetchPublic(target.href, {
+        headers: { 'Accept-Version': 'v1' },
+      });
+    } catch (err) {
+      if (err instanceof UnsafeUrlError) {
+        throw new BadRequestException(UNSPLASH_DOWNLOAD_LINK_INVALID);
+      }
+      throw err;
+    }
+    await response.body?.cancel().catch(() => undefined);
 
     if (!response.ok) {
       this.logger.warn(`Unsplash download tracking failed: ${response.status}`);
@@ -192,6 +204,25 @@ export class UnsplashService {
     } else {
       this.logger.log('Unsplash download tracked successfully');
     }
+  }
+
+  /** Parse `raw` and accept it only as an https://api.unsplash.com URL. */
+  private unsplashApiUrl(raw: string): URL {
+    let url: URL;
+    try {
+      url = new URL(raw);
+    } catch {
+      throw new BadRequestException(UNSPLASH_DOWNLOAD_LINK_INVALID);
+    }
+    if (
+      url.protocol !== 'https:' ||
+      url.host !== UNSPLASH_API_HOST ||
+      url.username !== '' ||
+      url.password !== ''
+    ) {
+      throw new BadRequestException(UNSPLASH_DOWNLOAD_LINK_INVALID);
+    }
+    return url;
   }
 
   /**
