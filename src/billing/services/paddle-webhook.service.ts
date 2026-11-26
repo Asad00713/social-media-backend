@@ -336,6 +336,31 @@ export class PaddleWebhookService {
       .set({ planCode, updatedAt: new Date() })
       .where(eq(subscriptions.id, subscriptionId));
 
+    // `plan_code` is what the UI shows; `workspace_usage` is what actually
+    // GATES. They are separate rows and nothing on this path wrote the second
+    // one, so the account read "Basic plan" while still holding Free's
+    // channel, seat, AI and storage limits — paying for a plan it could not
+    // use. Only plan CHANGES and the Stripe webhook refreshed limits; a first
+    // purchase through a hosted checkout had no such moment. This is it.
+    //
+    // Add-ons are zero here on purpose: this is the base plan arriving, and
+    // any add-on bought later fans its own limits out through
+    // `addon.service`. Passing anything else would count a purchase twice.
+    const owner = (await db
+      .select({ userId: subscriptions.userId })
+      .from(subscriptions)
+      .where(eq(subscriptions.id, subscriptionId))) as { userId: string }[];
+    const userId = owner[0]?.userId;
+
+    if (userId) {
+      await this.lookup.applyLimitsToAllWorkspaces(userId, planCode, {
+        extraChannels: 0,
+        extraMembers: 0,
+        extraWorkspaces: 0,
+        extraAiTokens: 0,
+      });
+    }
+
     this.logger.log(
       `Account ${subscriptionId} is now on ${planCode} (Paddle checkout).`,
     );

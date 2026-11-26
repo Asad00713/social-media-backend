@@ -203,6 +203,62 @@ describe('PaddleWebhookService: subscription.created', () => {
     expect(subRow()).toMatchObject({ planCode: 'BASIC' });
   });
 
+  it('refreshes the workspace limits, not just the plan column', async () => {
+    // `plan_code` is what the UI shows; `workspace_usage` is what GATES. They
+    // are separate rows, and writing only the first leaves the account reading
+    // "Basic plan" while still holding Free's channel, seat, AI and storage
+    // limits — paying for a plan it cannot use. Caught in sandbox after the
+    // plan column was already correct: 3/1/100 against Basic's 5/2/10000.
+    const { service, limits } = seed({
+      subscriptions: [
+        { id: 42, userId: 'user-1', planCode: 'FREE', status: 'active' },
+      ],
+      provider_subscriptions: [],
+      plans: [{ code: 'BASIC' }],
+    });
+
+    await service.handleEvent(
+      'subscription.created',
+      subEvent('active', {
+        customData: { user_id: 'user-1', plan_code: 'BASIC' },
+      }),
+    );
+
+    // Add-ons are zero: this is the base plan arriving, and an add-on bought
+    // later fans its own limits out. Anything else would count it twice.
+    expect(limits.applyLimitsToAllWorkspaces).toHaveBeenCalledWith(
+      'user-1',
+      'BASIC',
+      {
+        extraChannels: 0,
+        extraMembers: 0,
+        extraWorkspaces: 0,
+        extraAiTokens: 0,
+      },
+    );
+  });
+
+  it('does not refresh limits for a plan it refused to apply', async () => {
+    // An unknown plan code leaves the account where it was; raising limits for
+    // a plan nothing can resolve would hand out entitlements nobody bought.
+    const { service, limits } = seed({
+      subscriptions: [
+        { id: 42, userId: 'user-1', planCode: 'FREE', status: 'active' },
+      ],
+      provider_subscriptions: [],
+      plans: [{ code: 'BASIC' }],
+    });
+
+    await service.handleEvent(
+      'subscription.created',
+      subEvent('active', {
+        customData: { user_id: 'user-1', plan_code: 'ENTERPRISE_XL' },
+      }),
+    );
+
+    expect(limits.applyLimitsToAllWorkspaces).not.toHaveBeenCalled();
+  });
+
   it('applies the plan on a REDELIVERED created event, not just the first', async () => {
     // Paddle delivers at-least-once and out of order, so `subscription.created`
     // arriving twice is normal rather than exceptional.
