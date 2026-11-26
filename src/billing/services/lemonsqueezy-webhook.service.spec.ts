@@ -93,13 +93,48 @@ function predicateFrom(condition: unknown): Predicate {
   }
   const chunks = flatten(top);
 
-  const pairs: { column: string; value: unknown }[] = [];
+  const pairs: {
+    column: string;
+    value: unknown;
+    nullCheck?: 'is' | 'not';
+    oneOf?: unknown[];
+  }[] = [];
   for (let i = 0; i < chunks.length; i++) {
     const chunk: any = chunks[i];
     if (chunk && typeof chunk === 'object' && typeof chunk.name === 'string') {
       // ['', {name}, ' = ', value, ...]
       const op = chunks[i + 1] as any;
       const opText = Array.isArray(op?.value) ? String(op.value[0]) : '';
+
+      // `isNull()` / `isNotNull()` bind no value, so they take no third chunk.
+      // The soft-delete helpers are built from these.
+      if (opText.includes('is not null')) {
+        pairs.push({ column: camel(chunk.name), value: null, nullCheck: 'not' });
+        i += 1;
+        continue;
+      }
+      if (opText.includes('is null')) {
+        pairs.push({ column: camel(chunk.name), value: null, nullCheck: 'is' });
+        i += 1;
+        continue;
+      }
+
+      // `inArray(col, [a, b])` binds ONE Param holding the whole array.
+      if (opText.includes(' in ')) {
+        const listParam = chunks[i + 2] as any;
+        const list =
+          listParam && typeof listParam === 'object' && 'value' in listParam
+            ? listParam.value
+            : listParam;
+        pairs.push({
+          column: camel(chunk.name),
+          value: null,
+          oneOf: Array.isArray(list) ? list : [list],
+        });
+        i += 2;
+        continue;
+      }
+
       if (!opText.includes('=')) {
         throw new Error(`The db fake only understands '=', saw "${opText}".`);
       }
@@ -121,6 +156,14 @@ function predicateFrom(condition: unknown): Predicate {
   return (row: Row) =>
     pairs.every((p) => {
       const actual = row[p.column];
+
+      // A null check asks only about presence, and a seed row that omits the
+      // column counts as NULL — the same as a fresh row in Postgres.
+      if (p.nullCheck === 'is') return actual === null || actual === undefined;
+      if (p.nullCheck === 'not') return actual !== null && actual !== undefined;
+
+      if (p.oneOf) return p.oneOf.some((v) => v === actual);
+
       // Dates compare by value; ids arrive as numbers or strings.
       if (actual instanceof Date && p.value instanceof Date) {
         return actual.getTime() === p.value.getTime();

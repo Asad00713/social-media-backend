@@ -89,14 +89,54 @@ export function predicateFrom(condition: unknown): Predicate {
   if (!Array.isArray(top)) {
     throw new Error('The db fake only understands drizzle eq()/and() clauses.');
   }
+
   const chunks = flatten(top);
 
-  const pairs: { column: string; value: unknown }[] = [];
+  const pairs: {
+    column: string;
+    value: unknown;
+    nullCheck?: 'is' | 'not';
+    oneOf?: unknown[];
+  }[] = [];
   for (let i = 0; i < chunks.length; i++) {
     const chunk: any = chunks[i];
     if (chunk && typeof chunk === 'object' && typeof chunk.name === 'string') {
       const op = chunks[i + 1] as any;
       const opText = Array.isArray(op?.value) ? String(op.value[0]) : '';
+
+      // `isNull(col)` / `isNotNull(col)` serialise the whole comparison into
+      // the operator chunk and bind NO value, so they take no third chunk.
+      // The soft-delete helpers (`liveWorkspaces()`, `liveChannel()`) are
+      // built from these, so a fake that cannot read them cannot exercise any
+      // query that excludes deleted rows.
+      if (opText.includes('is not null')) {
+        pairs.push({ column: camel(chunk.name), value: null, nullCheck: 'not' });
+        i += 1;
+        continue;
+      }
+      if (opText.includes('is null')) {
+        pairs.push({ column: camel(chunk.name), value: null, nullCheck: 'is' });
+        i += 1;
+        continue;
+      }
+
+      // `inArray(col, [a, b])` binds ONE Param whose value is the array, so
+      // it reads like any other comparison but matches on membership.
+      if (opText.includes(' in ')) {
+        const param = chunks[i + 2] as any;
+        const list =
+          param && typeof param === 'object' && 'value' in param
+            ? param.value
+            : param;
+        pairs.push({
+          column: camel(chunk.name),
+          value: null,
+          oneOf: Array.isArray(list) ? list : [list],
+        });
+        i += 2;
+        continue;
+      }
+
       if (!opText.includes('=')) {
         throw new Error(`The db fake only understands '=', saw "${opText}".`);
       }
@@ -118,6 +158,18 @@ export function predicateFrom(condition: unknown): Predicate {
   return (row: Row) =>
     pairs.every((p) => {
       const actual = row[p.column];
+
+      // A null check asks only about presence. A seed row that omits the
+      // column entirely counts as NULL, which is what a fresh row is in
+      // Postgres too — otherwise every fixture would have to spell out
+      // `deletedAt: null` to be seen as live.
+      if (p.nullCheck === 'is') return actual === null || actual === undefined;
+      if (p.nullCheck === 'not') return actual !== null && actual !== undefined;
+
+      // Membership, for `inArray`. Ids arrive as numbers or strings, so
+      // compare loosely the way the equality branch below does.
+      if (p.oneOf) return p.oneOf.some((v) => v === actual);
+
       // Dates compare by value; ids arrive as numbers or strings.
       if (actual instanceof Date && p.value instanceof Date) {
         return actual.getTime() === p.value.getTime();
