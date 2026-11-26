@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { and, eq, isNotNull } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, or } from 'drizzle-orm';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
   socialMediaChannels,
@@ -8,6 +8,7 @@ import {
   type SupportedPlatform,
 } from '../../drizzle/schema/channels.schema';
 import { ChannelHealthNotifier } from '../services/channel-health-notifier.service';
+import { LONG_LIVED_PLATFORMS, isLongLivedPlatform } from '../lib/long-lived-token';
 
 const WARNING_THRESHOLD_DAYS = 7;
 
@@ -41,14 +42,28 @@ export class RefreshTokenExpiryScheduler {
         username: socialMediaChannels.username,
         workspaceId: socialMediaChannels.workspaceId,
         refreshTokenIssuedAt: socialMediaChannels.refreshTokenIssuedAt,
+        tokenExpiresAt: socialMediaChannels.tokenExpiresAt,
       })
       .from(socialMediaChannels)
       .where(
         and(
           eq(socialMediaChannels.connectionStatus, 'connected'),
           eq(socialMediaChannels.isActive, true),
-          isNotNull(socialMediaChannels.refreshToken),
-          isNotNull(socialMediaChannels.refreshTokenIssuedAt),
+          // Either a refresh-token grant whose TTL we track, OR a long-lived
+          // Meta token that expires outright. The second arm is why Instagram
+          // and Threads were invisible here: they store no refresh token, so
+          // the original two conditions excluded them and no warning was ever
+          // sent for the one platform family that can actually go dark.
+          or(
+            and(
+              isNotNull(socialMediaChannels.refreshToken),
+              isNotNull(socialMediaChannels.refreshTokenIssuedAt),
+            ),
+            and(
+              inArray(socialMediaChannels.platform, [...LONG_LIVED_PLATFORMS]),
+              isNotNull(socialMediaChannels.tokenExpiresAt),
+            ),
+          ),
         ),
       );
 
@@ -65,10 +80,24 @@ export class RefreshTokenExpiryScheduler {
     }> = [];
 
     for (const r of rows) {
-      const ttlDays = getRefreshTokenTtlDays(r.platform as SupportedPlatform);
-      if (ttlDays === null) continue; // platform refresh tokens don't expire
-      const issuedAt = new Date(r.refreshTokenIssuedAt).getTime();
-      const expiresAt = issuedAt + ttlDays * 24 * 60 * 60 * 1000;
+      let expiresAt: number;
+
+      if (isLongLivedPlatform(r.platform)) {
+        // Instagram / Threads: no refresh token, so the deadline is the
+        // access token's own expiry. `LongLivedTokenScheduler` renews these
+        // daily, so a warning here means the renewal has been failing — which
+        // is exactly when someone should hear about it.
+        if (!r.tokenExpiresAt) continue;
+        expiresAt = new Date(r.tokenExpiresAt).getTime();
+        if (Number.isNaN(expiresAt)) continue;
+      } else {
+        const ttlDays = getRefreshTokenTtlDays(r.platform as SupportedPlatform);
+        if (ttlDays === null) continue; // platform refresh tokens don't expire
+        if (!r.refreshTokenIssuedAt) continue;
+        const issuedAt = new Date(r.refreshTokenIssuedAt).getTime();
+        expiresAt = issuedAt + ttlDays * 24 * 60 * 60 * 1000;
+      }
+
       const daysLeft = Math.floor(
         (expiresAt - Date.now()) / (24 * 60 * 60 * 1000),
       );
@@ -80,7 +109,13 @@ export class RefreshTokenExpiryScheduler {
           accountType: r.accountType,
           username: r.username,
           workspaceId: r.workspaceId,
-          refreshTokenIssuedAt: new Date(r.refreshTokenIssuedAt),
+          // The notifier keys its once-per-token claim on this. For a
+          // long-lived channel there is no issue date, so the token's own
+          // expiry stands in: it changes on every renewal, which is exactly
+          // the "new token, new warning allowed" behaviour the claim wants.
+          refreshTokenIssuedAt: new Date(
+            r.refreshTokenIssuedAt ?? (r.tokenExpiresAt as Date),
+          ),
           endsAt: new Date(expiresAt),
           daysLeft,
         });
