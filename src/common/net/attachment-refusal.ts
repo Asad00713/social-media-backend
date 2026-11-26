@@ -36,6 +36,25 @@ export function attachmentRefusal(err: unknown): BadRequestException | null {
 }
 
 /**
+ * `attachmentRefusal` for attachment `index` (0-based) of `total`, when
+ * `uploaded` attachments already went out: the 400 keeps that count, in the
+ * wording of the adapters' non-2xx message, since the person sees a partial
+ * send. The first attachment's refusal stays the plain copy. Null as above.
+ */
+export function partialSendRefusal(
+  err: unknown,
+  index: number,
+  total: number,
+  uploaded: number,
+): BadRequestException | null {
+  const refusal = attachmentRefusal(err);
+  if (!refusal || uploaded === 0) return refusal;
+  return new BadRequestException(
+    `Failed to fetch attachment ${index + 1}/${total} after ${uploaded} uploaded: ${refusal.message}`,
+  );
+}
+
+/**
  * Up-front check of a client-supplied attachment URL (http(s), not a private
  * literal, resolves only to public addresses): a 400 before any work starts.
  * The download itself is still pinned at connect time.
