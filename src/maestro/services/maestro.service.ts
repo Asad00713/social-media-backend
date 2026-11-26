@@ -406,7 +406,7 @@ export class MaestroService {
    * private questions, so owners and admins do not read each other's history.
    */
   async listConversations(userId: string, workspaceId: string) {
-    return this.conversations.list(userId, workspaceId, { scope: 'own' });
+    return this.conversations.list(userId, workspaceId);
   }
 
   /**

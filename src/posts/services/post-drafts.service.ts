@@ -128,10 +128,10 @@ export class PostDraftsService {
   }
 
   /**
-   * "Copy to a new draft": any member, Guest included, may copy any post in
-   * the workspace (`opts` narrows which channels the copy targets). The
-   * source is looked up inside the workspace, so another
-   * tenant's id is a 404 and inserts nothing.
+   * "Copy to a new draft": anyone who can draft (`posts:draft`, Member and up;
+   * a Viewer cannot) may copy any post in the workspace (`opts` narrows which
+   * channels the copy targets). The source is looked up inside the workspace,
+   * so another tenant's id is a 404 and inserts nothing.
    */
   async duplicate(
     workspaceId: string,

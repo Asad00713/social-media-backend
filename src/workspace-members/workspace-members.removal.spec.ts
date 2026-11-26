@@ -7,6 +7,7 @@ import {
   ParseUUIDPipe,
 } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
+import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { ROUTE_ARGS_METADATA } from '@nestjs/common/constants';
 import { AppLinks } from 'src/email/links/app-links';
@@ -55,9 +56,7 @@ function updateChain(rows: unknown[]) {
 
 /** The SQL of every statement run through `db.execute` (the seat lock). */
 const executed = (db: any): string[] =>
-  db.execute.mock.calls.map(
-    (c: any[]) => dialect.sqlToQuery(c[0]).sql as string,
-  );
+  db.execute.mock.calls.map((c: any[]) => dialect.sqlToQuery(c[0]).sql);
 
 /** The email and notification collaborators, faked; tests read the calls. */
 function makeMail() {
@@ -500,6 +499,17 @@ describe('WorkspaceMembersService.restoreMember', () => {
     ...over,
   });
 
+  /** The fake restoreMember reads and writes through. */
+  interface RestoreFakeDb {
+    query: {
+      workspace: { findFirst: jest.Mock };
+      workspaceInvitation: { findFirst: jest.Mock; findMany: jest.Mock };
+    };
+    update: ReturnType<typeof updateChain>['update'];
+    delete: jest.Mock;
+    execute: jest.Mock;
+  }
+
   function restoreDb(
     row: unknown,
     opts: {
@@ -512,8 +522,8 @@ describe('WorkspaceMembersService.restoreMember', () => {
   ) {
     const restored = { ...(row as object), status: 'ACCEPTED' };
     const { update, calls } = updateChain([restored]);
-    const deleted: any[] = [];
-    const db: any = {
+    const deleted: SQL[] = [];
+    const db: RestoreFakeDb = {
       query: {
         workspace: {
           findFirst: jest.fn().mockResolvedValue({ id: WS, ownerId: OWNER }),
@@ -539,8 +549,9 @@ describe('WorkspaceMembersService.restoreMember', () => {
         },
       },
       update,
+      execute: jest.fn().mockResolvedValue(undefined),
       delete: jest.fn(() => ({
-        where: (w: any) => {
+        where: (w: SQL) => {
           deleted.push(w);
           return { returning: () => Promise.resolve(opts.dropped ?? []) };
         },
@@ -635,9 +646,11 @@ describe('WorkspaceMembersService.restoreMember', () => {
     const t = restoreDb(removedRow({ role: 'ADMIN' }));
     const err = await makeService(t.db, { usage: usageWith(5, 1) })
       .restoreMember(WS, 'm1', ADMIN)
-      .catch((e) => e);
+      .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ForbiddenException);
-    expect(err.message).toBe('Only the workspace owner can manage admins.');
+    expect((err as Error).message).toBe(
+      'Only the workspace owner can manage admins.',
+    );
     expect(t.calls).toHaveLength(0);
     expect(t.db.execute).not.toHaveBeenCalled();
   });
@@ -730,14 +743,17 @@ describe('WorkspaceMembersService.restoreMember', () => {
       const t = restoreDb(removedRow(), { pendingAdminInvite: true });
       const err = await makeService(t.db, { usage: usageWith(5, 1) })
         .restoreMember(WS, 'm1', ADMIN)
-        .catch((e) => e);
+        .catch((e: unknown) => e);
       expect(err).toBeInstanceOf(ForbiddenException);
-      expect(err.message).toBe('Only the workspace owner can manage admins.');
+      expect((err as Error).message).toBe(
+        'Only the workspace owner can manage admins.',
+      );
       expect(t.calls).toHaveLength(0);
       expect(t.deleted).toHaveLength(0);
       expect(t.db.execute).not.toHaveBeenCalled();
       // The lookup is scoped to this workspace, PENDING, ADMIN and the address.
-      const asked = t.db.query.workspaceInvitation.findFirst.mock.calls[1][0];
+      const [asked] = t.db.query.workspaceInvitation.findFirst.mock
+        .calls[1] as [{ where: SQL }];
       expect(dialect.sqlToQuery(asked.where).params).toEqual(
         expect.arrayContaining([WS, 'PENDING', 'ADMIN', 'sana@x.pk']),
       );
@@ -833,8 +849,10 @@ describe('WorkspaceMembersService.restoreMember', () => {
     const usage = usageWith(5, 1);
     const err = await makeService(db, { usage })
       .restoreMember(WS, 'm1', ADMIN)
-      .catch((e) => e);
-    expect(err.getResponse()).toMatchObject({ code: 'RESTORE_WINDOW_PASSED' });
+      .catch((e: unknown) => e);
+    expect((err as ConflictException).getResponse()).toMatchObject({
+      code: 'RESTORE_WINDOW_PASSED',
+    });
     expect(usage.incrementMemberCount).not.toHaveBeenCalled();
   });
 
@@ -851,8 +869,10 @@ describe('WorkspaceMembersService.restoreMember', () => {
     const usage = usageWith(5, 1);
     const err = await makeService(db, { usage })
       .restoreMember(WS, 'm1', ADMIN)
-      .catch((e) => e);
-    expect(err.getResponse()).toMatchObject({ code: 'ALREADY_MEMBER' });
+      .catch((e: unknown) => e);
+    expect((err as ConflictException).getResponse()).toMatchObject({
+      code: 'ALREADY_MEMBER',
+    });
     expect(usage.incrementMemberCount).not.toHaveBeenCalled();
   });
 });
@@ -1056,7 +1076,7 @@ describe('only the workspace owner manages admins', () => {
       const id = Object.keys(rows).find((k) => params.includes(k));
       return Promise.resolve(id ? rows[id] : undefined);
     });
-    const db: any = {
+    const db = {
       query: {
         workspace: {
           findFirst: jest
@@ -1203,7 +1223,7 @@ describe('only the workspace owner manages admins', () => {
   });
 
   it('the owner, a super admin and a self-removal carry no role guard in the UPDATE', async () => {
-    const paramsOf = async (caller: string, row: any) => {
+    const paramsOf = async (caller: string, row: ReturnType<typeof member>) => {
       roleService.isPlatformSuperAdmin.mockResolvedValue(caller === ROOT);
       const t = policyDb({ m1: row });
       await svcOf(t).removeMember(WS, 'm1', caller);
@@ -1314,7 +1334,7 @@ describe('only the workspace owner manages admins', () => {
         const t = policyDb(rows());
         const svc = svcOf(t);
         await expect(svc.getInvitationLink(WS, id, ADMIN)).resolves.toEqual({
-          url: expect.stringContaining('tok'),
+          url: expect.stringContaining('tok') as string,
           expiresAt: future,
         });
         await expect(svc.resendInvitation(WS, id, ADMIN)).resolves.toBeTruthy();

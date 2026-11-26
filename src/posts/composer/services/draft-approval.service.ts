@@ -173,10 +173,10 @@ export class DraftApprovalService {
   /**
    * Switch the requirement on (the draft's author or an approver) or off
    * (approvers only: otherwise the person waiting for approval could simply
-   * turn it off and schedule). Turning it on again after it was on is a no-op, except for
-   * a request the workspace approval policy wrote, which tells the approvers
-   * the first time. A policy request cannot be switched off while the policy
-   * still covers its author.
+   * turn it off and schedule). Turning it on again after it was on is a
+   * no-op, except for a request the workspace approval policy wrote, which
+   * tells the approvers the first time. A policy request cannot be switched
+   * off while the policy still covers its author.
    */
   async setRequired(
     workspaceId: string,

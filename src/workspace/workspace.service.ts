@@ -462,7 +462,7 @@ export class WorkspaceService {
     };
   }
 
-  /** The composer's starting switches, readable by anyone who can draft. */
+  /** The composer's starting switches, readable by anyone who can view posts. */
   async getPublishingDefaults(
     workspaceId: string,
   ): Promise<PublishingDefaults> {

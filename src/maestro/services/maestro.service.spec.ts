@@ -948,11 +948,7 @@ describe('MaestroService.streamMessage', () => {
 
         await h.service.listConversations(USER_ID, WORKSPACE_ID);
 
-        expect(h.listConversations).toHaveBeenCalledWith(
-          USER_ID,
-          WORKSPACE_ID,
-          { scope: 'own' },
-        );
+        expect(h.listConversations).toHaveBeenCalledWith(USER_ID, WORKSPACE_ID);
       },
     );
 

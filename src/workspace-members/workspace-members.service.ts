@@ -1221,14 +1221,16 @@ export class WorkspaceMembersService {
     if (!removed) {
       if (guardAdmins) {
         // Matched nothing: gone already (404), or made an ADMIN just now (403).
-        const now = await this.db.query.workspaceInvitation.findFirst({
+        const stillThere = await this.db.query.workspaceInvitation.findFirst({
           where: and(
             eq(workspaceInvitation.id, memberId),
             eq(workspaceInvitation.status, 'ACCEPTED'),
           ),
           columns: { role: true },
         });
-        if (now) this.assertMayManageRole(false, now.role as MemberRoleName);
+        if (stillThere) {
+          this.assertMayManageRole(false, stillThere.role as MemberRoleName);
+        }
       }
       throw new NotFoundException('Member not found in this workspace');
     }
