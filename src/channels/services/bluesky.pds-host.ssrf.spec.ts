@@ -126,3 +126,29 @@ describe('Bluesky video upload: the PDS host from the DID document', () => {
     expect(mockedFetch).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('Bluesky video upload: a malformed did:web host', () => {
+  it.each(['host%3A2583', 'exa mple.com', 'a%2Fb'])(
+    'answers did:web:%s with a 400, and sends nothing',
+    async (host) => {
+      mockedFetch.mockResolvedValue(
+        new Response('video', { headers: { 'content-type': 'video/mp4' } }),
+      );
+      const err: unknown = await service
+        .createVideoPost(
+          'user-access-jwt',
+          `did:web:${host}`,
+          'hello',
+          'https://93.184.216.34/v.mp4',
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(BadRequestException);
+      expect((err as BadRequestException).getStatus()).toBe(400);
+      // Only the video download was requested; no PDS call.
+      expect(
+        (mockedFetch.mock.calls as [string][]).map(([url]) => url),
+      ).toEqual(['https://93.184.216.34/v.mp4']);
+      expect(globalFetch).not.toHaveBeenCalled();
+    },
+  );
+});

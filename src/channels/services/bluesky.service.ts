@@ -744,9 +744,16 @@ export class BlueskyService {
     // getServiceAuth endpoint must be called on the user's actual PDS
     // (e.g. stropharia.us-west.host.bsky.network), not the bsky.social
     // entryway — the access JWT is scoped to that specific PDS.
-    const serviceAuthUrl = new URL(
-      `https://${pdsHost}/xrpc/com.atproto.server.getServiceAuth`,
-    );
+    // A did:web host can be anything the DID says (`host%3Aport`, spaces,
+    // ...). An address that does not even parse is the user's to fix: 400.
+    let serviceAuthUrl: URL;
+    try {
+      serviceAuthUrl = new URL(
+        `https://${pdsHost}/xrpc/com.atproto.server.getServiceAuth`,
+      );
+    } catch {
+      throw new BadRequestException(BLUESKY_SERVER_UNREACHABLE);
+    }
     serviceAuthUrl.searchParams.set('aud', `did:web:${pdsHost}`);
     serviceAuthUrl.searchParams.set('lxm', 'com.atproto.repo.uploadBlob');
     serviceAuthUrl.searchParams.set(
