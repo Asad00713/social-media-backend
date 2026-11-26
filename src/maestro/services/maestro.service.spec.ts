@@ -2,6 +2,7 @@ import { NotFoundException } from '@nestjs/common';
 import {
   roleCan,
   type Capability,
+  type WorkspaceRole,
 } from '../../workspace-members/role-capabilities';
 import { MaestroService } from './maestro.service';
 import type { AgentEvent } from '../maestro.types';
@@ -71,6 +72,17 @@ interface Harness {
   runInputs: { systemPrompt: string | string[] }[];
   users: { getMaestroTone: jest.Mock };
   inbox: { sendDm: jest.Mock };
+  /** The conversation list the history route reads. */
+  listConversations: jest.Mock;
+  /** The key store the settings routes reach. */
+  keys: {
+    getStatus: jest.Mock;
+    setKey: jest.Mock;
+    removeKey: jest.Mock;
+    markOnboarded: jest.Mock;
+  };
+  /** The live-workspace load the key routes make after the capability check. */
+  findDetail: jest.Mock;
 }
 
 function makeHarness(
@@ -84,8 +96,11 @@ function makeHarness(
     tone?: 'simple' | 'professional' | 'detailed';
     /** Stands in for the Slack connection the approved tool resolves. */
     slackConn?: unknown;
-    /** Roles the caller holds: 'viewer' may not start a turn; default is a member. */
-    role?: 'viewer' | 'removed';
+    /**
+     * The role the caller holds. 'viewer' may not start a turn, 'removed' is
+     * no longer in the workspace at all; default is a member.
+     */
+    role?: 'viewer' | 'removed' | 'admin' | 'owner';
   } = {},
 ): Harness {
   const runInputs: { systemPrompt: string | string[] }[] = [];
@@ -120,7 +135,9 @@ function makeHarness(
   const deleteMessage = jest
     .fn<Promise<void>, unknown[]>()
     .mockResolvedValue(undefined);
+  const listConversations = jest.fn().mockResolvedValue([]);
   const conversations = {
+    list: listConversations,
     findById: jest.fn().mockResolvedValue({
       id: CONVERSATION_ID,
       userId: USER_ID,
@@ -179,20 +196,38 @@ function makeHarness(
   // A viewer holds only the read capabilities (the real role map), so the turn
   // gate (posts:draft) refuses them. Someone removed from the workspace is
   // refused everything.
+  const heldRole: WorkspaceRole | null =
+    opts.role === 'removed'
+      ? null
+      : opts.role === 'viewer'
+        ? 'GUEST'
+        : opts.role === 'admin'
+          ? 'ADMIN'
+          : opts.role === 'owner'
+            ? 'OWNER'
+            : 'MEMBER';
   const access = {
     assertCan: jest.fn((_ws: string, _user: string, cap: Capability) =>
-      opts.role === 'removed' ||
-      (opts.role === 'viewer' && !roleCan('GUEST', cap))
-        ? Promise.reject(new NotFoundException('Not found'))
-        : Promise.resolve('MEMBER'),
+      heldRole && roleCan(heldRole, cap)
+        ? Promise.resolve(heldRole)
+        : Promise.reject(new NotFoundException('Not found')),
     ),
   } as never;
+  const roles = { getRole: jest.fn().mockResolvedValue(heldRole) } as never;
+  const keys = {
+    getDecryptedKey,
+    getStatus: jest.fn().mockResolvedValue({ hasOwnKey: false }),
+    setKey: jest.fn().mockResolvedValue({ hasOwnKey: true }),
+    removeKey: jest.fn().mockResolvedValue({ hasOwnKey: false }),
+    markOnboarded: jest.fn().mockResolvedValue({ onboarded: true }),
+  };
+  const findDetail = jest.fn().mockResolvedValue({ id: WORKSPACE_ID });
 
   const service = new MaestroService(
     runtimes as never,
     conversations as never,
     users as never,
-    stub, // workspaceService
+    { findDetail } as never, // workspaceService
     tokens as never,
     groq,
     stub, // pexels
@@ -206,7 +241,7 @@ function makeHarness(
     stub, // conversationList
     stub, // conversationDetail
     stub, // r2
-    { getDecryptedKey } as never,
+    keys as never,
     stub, // channels
     stub, // campaigns
     stub, // libraryItems
@@ -216,7 +251,7 @@ function makeHarness(
     stub, // libraryCategories
     stub, // scheduledMessages
     stub, // drips
-    stub, // roles
+    roles,
     access,
   );
 
@@ -235,6 +270,9 @@ function makeHarness(
     runInputs,
     users,
     inbox: inbox as unknown as { sendDm: jest.Mock },
+    listConversations,
+    keys,
+    findDetail,
   };
 }
 
@@ -869,6 +907,97 @@ describe('MaestroService.streamMessage', () => {
 
       expect(names(events)).toEqual(['error']);
       expect(h.inbox.sendDm).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('the role copy', () => {
+    it('a viewer (GUEST) is told their role cannot use Maestro, not that they left', async () => {
+      const h = makeHarness([...textDeltas('should not run'), DONE_EVENT], {
+        role: 'viewer',
+      });
+
+      const events = await run(h);
+
+      expect(names(events)).toEqual(['error']);
+      expect(events[0].data.message).toBe(
+        "Your role can't use Maestro in this workspace.",
+      );
+      expect(h.addMessage).not.toHaveBeenCalled();
+    });
+
+    it("a removed user's turn still says they are no longer a member", async () => {
+      const h = makeHarness([...textDeltas('should not run'), DONE_EVENT], {
+        role: 'removed',
+      });
+
+      const events = await run(h);
+
+      expect(events[0].data.message).toBe(
+        "You're no longer a member of this workspace.",
+      );
+    });
+  });
+
+  describe('history and the key', () => {
+    it.each(['owner', 'admin', 'member'] as const)(
+      "listConversations returns only the caller's own conversations (%s)",
+      async (role) => {
+        const h = makeHarness([DONE_EVENT], {
+          role: role === 'member' ? undefined : role,
+        });
+
+        await h.service.listConversations(USER_ID, WORKSPACE_ID);
+
+        expect(h.listConversations).toHaveBeenCalledWith(
+          USER_ID,
+          WORKSPACE_ID,
+          { scope: 'own' },
+        );
+      },
+    );
+
+    it('an ADMIN cannot read or set the workspace key (404, as assertCan answers)', async () => {
+      const h = makeHarness([DONE_EVENT], { role: 'admin' });
+
+      await expect(
+        h.service.getKeyStatus(USER_ID, WORKSPACE_ID),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      await expect(
+        h.service.setOwnKey(USER_ID, WORKSPACE_ID, 'sk-ant-x'),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      await expect(
+        h.service.removeOwnKey(USER_ID, WORKSPACE_ID),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      await expect(
+        h.service.completeOnboarding(USER_ID, WORKSPACE_ID),
+      ).rejects.toBeInstanceOf(NotFoundException);
+
+      expect(h.keys.getStatus).not.toHaveBeenCalled();
+      expect(h.keys.setKey).not.toHaveBeenCalled();
+      expect(h.keys.removeKey).not.toHaveBeenCalled();
+      expect(h.keys.markOnboarded).not.toHaveBeenCalled();
+    });
+
+    it('the OWNER can read, set and remove the key and finish onboarding', async () => {
+      const h = makeHarness([DONE_EVENT], { role: 'owner' });
+
+      await h.service.getKeyStatus(USER_ID, WORKSPACE_ID);
+      await h.service.setOwnKey(USER_ID, WORKSPACE_ID, 'sk-ant-x');
+      await h.service.removeOwnKey(USER_ID, WORKSPACE_ID);
+      await h.service.completeOnboarding(USER_ID, WORKSPACE_ID);
+
+      expect(h.keys.getStatus).toHaveBeenCalledWith(WORKSPACE_ID);
+      expect(h.keys.setKey).toHaveBeenCalledWith(WORKSPACE_ID, 'sk-ant-x');
+      expect(h.keys.removeKey).toHaveBeenCalledWith(WORKSPACE_ID);
+      expect(h.keys.markOnboarded).toHaveBeenCalledWith(WORKSPACE_ID);
+    });
+
+    it('the key routes load the live workspace by id, not by owner', async () => {
+      const h = makeHarness([DONE_EVENT], { role: 'owner' });
+
+      await h.service.getKeyStatus(USER_ID, WORKSPACE_ID);
+
+      expect(h.findDetail).toHaveBeenCalledWith(WORKSPACE_ID);
     });
   });
 
