@@ -48,6 +48,7 @@ import { InstagramService } from './services/instagram.service';
 import { ThreadsService } from './services/threads.service';
 import { BlueskyService } from './services/bluesky.service';
 import { MastodonService } from './services/mastodon.service';
+import { safeReturnUrl } from './lib/oauth-return-url';
 import {
   MENTION_LOOKUP_PLATFORMS,
   MentionLookupService,
@@ -4350,15 +4351,22 @@ export class ChannelsController {
       );
 
       // Redirect to frontend
-      const redirectUrl =
-        stateRecord.redirectUrl || '/channels/connect/success';
+      const redirectUrl = safeReturnUrl(
+        stateRecord.redirectUrl,
+        '/channels/connect/success',
+        [process.env.FRONTEND_URL, process.env.APP_URL],
+      );
       const separator = redirectUrl.includes('?') ? '&' : '?';
       return res.redirect(
         `${redirectUrl}${separator}platform=mastodon&success=true`,
       );
     } catch (error) {
       console.error('[Mastodon OAuth] Error:', error);
-      const redirectUrl = stateRecord.redirectUrl || '/channels/connect/error';
+      const redirectUrl = safeReturnUrl(
+        stateRecord.redirectUrl,
+        '/channels/connect/error',
+        [process.env.FRONTEND_URL, process.env.APP_URL],
+      );
       const separator = redirectUrl.includes('?') ? '&' : '?';
       return res.redirect(
         `${redirectUrl}${separator}error=oauth_failed&description=${encodeURIComponent(error.message || 'OAuth failed')}`,
