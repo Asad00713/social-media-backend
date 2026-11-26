@@ -26,9 +26,12 @@ describe('MaestroController.sendMessage attachment URLs', () => {
     const controller = Object.create(
       MaestroController.prototype,
     ) as MaestroController;
-    streamMessage = jest.fn(async function* () {
-      yield* [];
-    });
+    // An empty event stream.
+    streamMessage = jest.fn(() => ({
+      [Symbol.asyncIterator]: () => ({
+        next: () => Promise.resolve({ done: true, value: undefined }),
+      }),
+    }));
     (controller as any).maestro = { streamMessage };
     (controller as any).logger = { error: jest.fn(), log: jest.fn() };
     return controller;
