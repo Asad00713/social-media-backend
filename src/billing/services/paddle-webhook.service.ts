@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import {
+  plans,
   providerSubscriptions,
   subscriptions,
 } from '../../drizzle/schema';
@@ -179,6 +180,23 @@ export class PaddleWebhookService {
       target = await this.createRowFromCheckout(paddleId, sub);
     }
 
+    // The plan the checkout bought, applied on EVERY `subscription.created`
+    // rather than only the one that creates the row.
+    //
+    // Putting it inside `createRowFromCheckout` looked equivalent and is not:
+    // that runs only when no row exists yet. Paddle delivers at-least-once
+    // and out of order, so a redelivered or replayed `subscription.created`
+    // finds the row already there, skips the creation — and would skip the
+    // plan with it, leaving an account paying for Basic on Free's limits with
+    // no way to recover short of editing the database. Writing it here makes
+    // the event idempotent in the way Paddle's delivery guarantees require.
+    // Found by replaying a real sandbox event, 2026-11-26.
+    if (target && eventType === 'subscription.created') {
+      const custom = (sub as { custom_data?: Record<string, unknown> | null })
+        .custom_data;
+      await this.applyPurchasedPlan(target.subscriptionId, custom ?? {});
+    }
+
     if (!target) {
       this.logger.warn(
         `No Paddle provider row for subscription ${paddleId} (${eventType}); ` +
@@ -269,7 +287,58 @@ export class PaddleWebhookService {
       `Attached Paddle subscription ${paddleId} to subscription ` +
         `${subscriptionId} for user ${userId}`,
     );
+
     return inserted[0] ?? null;
+  }
+
+  /**
+   * Put the account on the plan its checkout named.
+   *
+   * The code is read from `custom_data`, which we set when creating the
+   * transaction — but it arrives back over a public endpoint, so it is
+   * validated against the `plans` table before it reaches the column every
+   * limit check reads. (Signature verification already proves the body is
+   * Paddle's; this guards against our own stale or mistyped metadata.)
+   *
+   * A code we cannot place is logged and skipped rather than thrown. The
+   * payment has already happened and the provider row is already written;
+   * throwing would 500 a delivery and lose the attachment too, which is
+   * strictly worse than an account on the wrong plan that a human can fix.
+   */
+  private async applyPurchasedPlan(
+    subscriptionId: number,
+    custom: Record<string, unknown>,
+  ): Promise<void> {
+    const planCode = strOf(custom['plan_code']);
+    if (!planCode) {
+      this.logger.error(
+        `Paddle checkout for account ${subscriptionId} carried no plan_code; ` +
+          'the account keeps its current plan.',
+      );
+      return;
+    }
+
+    const known = (await db
+      .select({ code: plans.code })
+      .from(plans)
+      .where(eq(plans.code, planCode))) as { code: string }[];
+
+    if (known.length === 0) {
+      this.logger.error(
+        `Paddle checkout for account ${subscriptionId} named plan ` +
+          `"${planCode}", which is not in the plans table; ignoring it.`,
+      );
+      return;
+    }
+
+    await db
+      .update(subscriptions)
+      .set({ planCode, updatedAt: new Date() })
+      .where(eq(subscriptions.id, subscriptionId));
+
+    this.logger.log(
+      `Account ${subscriptionId} is now on ${planCode} (Paddle checkout).`,
+    );
   }
 
   /**

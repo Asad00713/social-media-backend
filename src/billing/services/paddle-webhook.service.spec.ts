@@ -176,6 +176,118 @@ describe('PaddleWebhookService: subscription.created', () => {
     });
   });
 
+  it('puts the account on the plan the checkout named', async () => {
+    // THE point of the purchase. `applyStatus` carries the STATUS but never
+    // the plan, so without this the customer pays, the provider row is
+    // written, the status goes `active` — and `plan_code` stays FREE. They
+    // are billed for Basic and hold Free's limits.
+    //
+    // Every other test in this file seeds an account ALREADY on a paid plan,
+    // which is why 33 of them passed while this was broken. A new signup
+    // starts on FREE, so that is what this seeds.
+    const { service } = seed({
+      subscriptions: [
+        { id: 42, userId: 'user-1', planCode: 'FREE', status: 'active' },
+      ],
+      provider_subscriptions: [],
+      plans: [{ code: 'BASIC' }, { code: 'PRO' }, { code: 'MAX' }],
+    });
+
+    await service.handleEvent(
+      'subscription.created',
+      subEvent('active', {
+        customData: { user_id: 'user-1', plan_code: 'BASIC' },
+      }),
+    );
+
+    expect(subRow()).toMatchObject({ planCode: 'BASIC' });
+  });
+
+  it('applies the plan on a REDELIVERED created event, not just the first', async () => {
+    // Paddle delivers at-least-once and out of order, so `subscription.created`
+    // arriving twice is normal rather than exceptional.
+    //
+    // This is the test the first version of the fix would have failed. The
+    // plan write lived inside `createRowFromCheckout`, which runs only when no
+    // provider row exists yet — so a redelivery found the row, skipped the
+    // creation, and skipped the plan with it. The account stayed on FREE while
+    // paying for Basic, and no replay could repair it.
+    //
+    // Seeded with the row ALREADY present, which is exactly the state a
+    // redelivery meets.
+    const { service } = seed({
+      subscriptions: [
+        { id: 42, userId: 'user-1', planCode: 'FREE', status: 'active' },
+      ],
+      provider_subscriptions: [
+        {
+          id: 7,
+          subscriptionId: 42,
+          provider: 'paddle',
+          itemType: 'BASE_PLAN',
+          providerSubscriptionId: PADDLE_SUB,
+          isDefault: true,
+          providerStatus: 'active',
+        },
+      ],
+      plans: [{ code: 'BASIC' }],
+    });
+
+    await service.handleEvent(
+      'subscription.created',
+      subEvent('active', {
+        customData: { user_id: 'user-1', plan_code: 'BASIC' },
+      }),
+    );
+
+    expect(subRow()).toMatchObject({ planCode: 'BASIC' });
+    // And no duplicate row: the event is idempotent, not additive.
+    expect(providerRows()).toHaveLength(1);
+  });
+
+  it('keeps the current plan when the checkout names an unknown one', async () => {
+    // The code comes back over a public endpoint. An unvalidated value would
+    // put an arbitrary string in the column every limit check reads — and a
+    // plan nothing can resolve is worse than the plan they already had.
+    const { service } = seed({
+      subscriptions: [
+        { id: 42, userId: 'user-1', planCode: 'FREE', status: 'active' },
+      ],
+      provider_subscriptions: [],
+      plans: [{ code: 'BASIC' }],
+    });
+
+    await service.handleEvent(
+      'subscription.created',
+      subEvent('active', {
+        customData: { user_id: 'user-1', plan_code: 'ENTERPRISE_XL' },
+      }),
+    );
+
+    expect(subRow()).toMatchObject({ planCode: 'FREE' });
+    // The attachment still happened: the payment is real and the row must not
+    // be lost over bad metadata.
+    expect(providerRows()).toHaveLength(1);
+  });
+
+  it('keeps the current plan when the checkout carries no plan_code', async () => {
+    const { service } = seed({
+      subscriptions: [
+        { id: 42, userId: 'user-1', planCode: 'FREE', status: 'active' },
+      ],
+      provider_subscriptions: [],
+      plans: [{ code: 'BASIC' }],
+    });
+
+    await service.handleEvent(
+      'subscription.created',
+      subEvent('active', { customData: { user_id: 'user-1' } }),
+    );
+
+    expect(subRow()).toMatchObject({ planCode: 'FREE' });
+    expect(providerRows()).toHaveLength(1);
+  });
+
   it('writes nothing when custom_data names no user', async () => {
     // Nothing is inferred from the email: two accounts can share one, and
     // billing the wrong one is not recoverable by a later event.
