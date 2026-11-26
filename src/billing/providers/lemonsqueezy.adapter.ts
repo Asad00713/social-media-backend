@@ -23,6 +23,7 @@ import {
   PaymentProviderAdapter,
   ProviderInvoice,
   PurchaseResult,
+  PlanChangeDirection,
 } from './payment-provider.interface';
 
 const PROVIDER = 'lemonsqueezy' as const;
@@ -33,6 +34,15 @@ interface ProviderRow {
   itemType: string;
   providerSubscriptionId: string | null;
   providerItemId: string | null;
+  /**
+   * What we last told the provider to bill. Read to tell a raise from a cut.
+   *
+   * Nullable in practice as well as in the column's history: a row written
+   * before this was tracked, or a projection that did not select it, leaves it
+   * undefined — and `quantity > undefined` is ALWAYS false, which would make
+   * every such change look like a cut and quietly stop invoicing upgrades.
+   */
+  providerQuantity?: number | null;
 }
 
 /** JSON:API envelope shapes the Lemon Squeezy API answers with. */
@@ -144,7 +154,11 @@ export class LemonSqueezyAdapter implements PaymentProviderAdapter {
 
   // ------------------------------------------------------------------- plan
 
-  async changePlan(subscriptionId: number, newPlanCode: string): Promise<void> {
+  async changePlan(
+    subscriptionId: number,
+    newPlanCode: string,
+    direction: PlanChangeDirection,
+  ): Promise<void> {
     const base = await this.requireRow(subscriptionId, 'BASE_PLAN');
     const variantId = await this.catalogue.resolveRef(
       PROVIDER,
@@ -160,7 +174,12 @@ export class LemonSqueezyAdapter implements PaymentProviderAdapter {
           id: String(base.providerSubscriptionId),
           attributes: {
             variant_id: Number(variantId),
-            invoice_immediately: true,
+            // Only an upgrade bills now. This was unconditionally `true`,
+            // which meant a DOWNGRADE also invoiced immediately — and
+            // `plan-change.service.ts` keeps a downgrading customer on the
+            // old plan until `currentPeriodEnd`, so Lemon Squeezy credited
+            // back part of a month the customer went on using in full.
+            invoice_immediately: direction === 'up',
           },
         },
       },
@@ -213,6 +232,13 @@ export class LemonSqueezyAdapter implements PaymentProviderAdapter {
    * once and does NOT move `renews_at`. Without it the customer gets the extra
    * capacity now and is billed for it only at renewal. Note the path is keyed
    * on the ITEM id, not the subscription id.
+   *
+   * It is sent only when the quantity GOES UP. This call serves both
+   * directions — `addon.service.ts` uses it to raise a count and to lower one
+   * — and it was unconditionally `true`, so reducing from 4 channels to 2
+   * invoiced the reduction immediately and credited back part of a month the
+   * customer had already bought and could still use. A cut now bills nothing;
+   * the next invoice is simply smaller.
    */
   async changeAddonQuantity(
     subscriptionId: number,
@@ -220,6 +246,10 @@ export class LemonSqueezyAdapter implements PaymentProviderAdapter {
     quantity: number,
   ): Promise<void> {
     const row = await this.requireRow(subscriptionId, itemType);
+    // Unknown previous quantity is treated as a RAISE: billing for capacity
+    // the customer now has is recoverable, silently not billing for it is not.
+    const previous = row.providerQuantity;
+    const isRaise = typeof previous === 'number' ? quantity > previous : true;
 
     await this.client.patch<LsSubscriptionResponse>(
       `subscription-items/${row.providerItemId}`,
@@ -227,7 +257,7 @@ export class LemonSqueezyAdapter implements PaymentProviderAdapter {
         data: {
           type: 'subscription-items',
           id: String(row.providerItemId),
-          attributes: { quantity, invoice_immediately: true },
+          attributes: { quantity, invoice_immediately: isRaise },
         },
       },
     );

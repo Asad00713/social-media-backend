@@ -17,6 +17,10 @@ import { mapLemonSqueezyStatus } from '../providers/lemonsqueezy-status.util';
 // two. It was a private method here until the Stripe direction of the same
 // cutover turned out to have no equivalent at all.
 import { rehomeDefault } from './rehome-default.util';
+import {
+  revokeAddon as revokeAddonShared,
+  revokeBasePlan as revokeBasePlanShared,
+} from './revoke-entitlements.util';
 import { BillingEmailService, billingEmailKey } from './billing-email.service';
 
 const PROVIDER = 'lemonsqueezy' as const;
@@ -40,13 +44,6 @@ const PROVIDER = 'lemonsqueezy' as const;
 const LS_TERMINAL_STATUSES = new Set(['expired']);
 
 /** The item types an add-on event can concern. */
-const ADDON_ITEM_TYPES: ProviderItemType[] = [
-  'EXTRA_CHANNEL',
-  'EXTRA_MEMBER',
-  'EXTRA_WORKSPACE',
-  'EXTRA_AI_TOKENS',
-];
-
 /** Lifecycle events carry a Subscription object. */
 const LIFECYCLE_EVENTS = new Set([
   'subscription_created',
@@ -712,51 +709,16 @@ export class LemonSqueezyWebhookService {
    * bills nothing.
    */
   private async revokeBasePlan(target: Target): Promise<void> {
-    const sub = await db
-      .select({ userId: subscriptions.userId })
-      .from(subscriptions)
-      .where(eq(subscriptions.id, target.subscriptionId));
-
-    const userId = (sub as { userId: string }[])[0]?.userId;
-    if (!userId) return;
-
-    // The add-on items are deleted just below, so pass zeroes explicitly
-    // rather than reading quantities that are about to disappear.
-    await this.lookup.applyLimitsToAllWorkspaces(userId, 'FREE', {
-      extraChannels: 0,
-      extraMembers: 0,
-      extraWorkspaces: 0,
-      extraAiTokens: 0,
+    // Shared with the Paddle webhook (`revoke-entitlements.util.ts`). It was
+    // private here, and nothing in it ever read a Lemon Squeezy field: the
+    // only provider-specific parts were the `provider` column filter and a log
+    // line, both now arguments. One copy, because these invariants have broken
+    // twice already and the second copy is the one nobody checks.
+    await revokeBasePlanShared({
+      provider: PROVIDER,
+      subscriptionId: target.subscriptionId,
+      limits: this.lookup,
     });
-
-    await db
-      .delete(subscriptionItems)
-      .where(eq(subscriptionItems.subscriptionId, target.subscriptionId));
-
-    // Every Lemon Squeezy add-on is its OWN subscription, so the base plan
-    // expiring does not expire them at the provider — but nothing is entitled
-    // by them any more either, and their rows would otherwise go on reading as
-    // live billing. Mark them dead and release any default flag they hold, so
-    // the account can subscribe again through either provider.
-    await db
-      .update(providerSubscriptions)
-      .set({
-        providerStatus: 'expired',
-        isDefault: false,
-        renewsAt: null,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(providerSubscriptions.subscriptionId, target.subscriptionId),
-          eq(providerSubscriptions.provider, PROVIDER),
-        ),
-      );
-
-    this.logger.log(
-      `User ${userId} reset to FREE after their Lemon Squeezy subscription ` +
-        `expired`,
-    );
   }
 
   /**
@@ -806,36 +768,11 @@ export class LemonSqueezyWebhookService {
 
   /** One expired add-on: drop its bookkeeping row and re-apply limits. */
   private async revokeAddon(target: Target): Promise<void> {
-    if (!ADDON_ITEM_TYPES.includes(target.itemType as ProviderItemType)) {
-      return;
-    }
-
-    await db
-      .delete(subscriptionItems)
-      .where(
-        and(
-          eq(subscriptionItems.subscriptionId, target.subscriptionId),
-          eq(subscriptionItems.itemType, target.itemType),
-        ),
-      );
-
-    const sub = await db
-      .select({
-        userId: subscriptions.userId,
-        planCode: subscriptions.planCode,
-      })
-      .from(subscriptions)
-      .where(eq(subscriptions.id, target.subscriptionId));
-
-    const account = (sub as { userId: string; planCode: string }[])[0];
-    if (!account) return;
-
-    const addons = await this.lookup.getAddonQuantities(target.subscriptionId);
-    await this.lookup.applyLimitsToAllWorkspaces(
-      account.userId,
-      account.planCode,
-      addons,
-    );
+    await revokeAddonShared({
+      subscriptionId: target.subscriptionId,
+      itemType: target.itemType,
+      limits: this.lookup,
+    });
   }
 
   // ---------------------------------------------------------------- payments

@@ -269,7 +269,7 @@ describe('a real Stripe subscriber with no provider rows (production shape)', ()
     expect(mockCreateStripeSubscriptionDirect).not.toHaveBeenCalled();
 
     // ...and the change went through the existing subscription instead.
-    expect(adapter.changePlan).toHaveBeenCalledWith(42, 'PRO');
+    expect(adapter.changePlan).toHaveBeenCalledWith(42, 'PRO', 'up');
 
     // The user is told, by email and bell, through the one service.
     expect(billingEmail.planChanged).toHaveBeenCalledWith(

@@ -1,5 +1,8 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   LEMONSQUEEZY_PRICES,
+  PADDLE_PRICES,
   resolvePrices,
   upsertProviderPrices,
   billableCatalogueKeys,
@@ -768,3 +771,158 @@ const _typecheck: ResolvedPrice = {
   providerRef: '1000002',
 };
 void _typecheck;
+
+/**
+ * Paddle's fifteen rows.
+ *
+ * These assert PROPERTIES rather than restating the table: a test that lists
+ * the same fifteen tuples the seed lists would pass with both copies wrong in
+ * the same way, which is the defect this file's header warns about. So the
+ * coverage test derives what is required from `plans` and `addon_pricing` —
+ * the same tables `billableCatalogueKeys` reads — and the shape tests check
+ * the rules every row must satisfy.
+ */
+describe('PADDLE_PRICES', () => {
+  const PADDLE_ENV = Object.fromEntries(
+    PADDLE_PRICES.map((row, i) => [row.envVar, `pri_test_${i}`]),
+  ) as NodeJS.ProcessEnv;
+
+  it('covers the WHOLE billable catalogue, leaving no gap to seed later', async () => {
+    // Derived from the catalogue tables, not from PADDLE_PRICES, so a row this
+    // seed forgot shows up here as a gap rather than agreeing with itself.
+    const db = {
+      select: (projection: Record<string, unknown>) => ({
+        from: () => ({
+          where: () =>
+            Promise.resolve(
+              'code' in projection
+                ? [
+                    { code: 'FREE', basePriceCents: 0 },
+                    { code: 'BASIC', basePriceCents: 1200 },
+                    { code: 'PRO', basePriceCents: 2900 },
+                    { code: 'MAX', basePriceCents: 7900 },
+                  ]
+                : ['BASIC', 'PRO', 'MAX'].flatMap((planCode) =>
+                    [
+                      'EXTRA_CHANNEL',
+                      'EXTRA_MEMBER',
+                      'EXTRA_WORKSPACE',
+                      'EXTRA_AI_TOKENS',
+                    ].map((addonType) => ({ planCode, addonType })),
+                  ),
+            ),
+        }),
+      }),
+    };
+
+    const wanted = await billableCatalogueKeys(db as never);
+    const seeded = new Set(
+      PADDLE_PRICES.map((p) => `${p.planCode}/${p.itemType}`),
+    );
+
+    const uncovered = wanted
+      .map((k) => `${k.planCode}/${k.itemType}`)
+      .filter((key) => !seeded.has(key));
+
+    expect(uncovered).toEqual([]);
+    // And nothing extra: a row for something no customer can buy would be a
+    // price pointing at an item the app never resolves.
+    expect(seeded.size).toBe(wanted.length);
+  });
+
+  it('prices every add-on PER PLAN, because a tier charges its own rate', () => {
+    // A channel is $5 on BASIC and PRO but $3 on MAX, so one shared add-on row
+    // cannot serve three tiers. Each add-on type must appear once per paid plan.
+    for (const itemType of [
+      'EXTRA_CHANNEL',
+      'EXTRA_MEMBER',
+      'EXTRA_WORKSPACE',
+      'EXTRA_AI_TOKENS',
+    ]) {
+      const plans = PADDLE_PRICES.filter((p) => p.itemType === itemType)
+        .map((p) => p.planCode)
+        .sort();
+      expect(plans).toEqual(['BASIC', 'MAX', 'PRO']);
+    }
+  });
+
+  it('names a real plan code on every row, never null', () => {
+    // Same load-bearing rule as Lemon Squeezy: Postgres treats NULLs as
+    // distinct in a UNIQUE constraint, so a null plan_code could never
+    // conflict and the upsert would duplicate on every run.
+    for (const row of PADDLE_PRICES) {
+      expect(typeof row.planCode).toBe('string');
+      expect(row.planCode.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('gives every row its own distinct env var', () => {
+    // Two rows sharing a variable would point two different Paddle prices at
+    // one id — the BASIC and MAX channel add-ons silently billing the same
+    // amount, which is the exact bug the per-plan rule above exists to prevent.
+    const vars = PADDLE_PRICES.map((p) => p.envVar);
+    expect(new Set(vars).size).toBe(vars.length);
+    expect(vars.every((v) => v.startsWith('PADDLE_PRICE'))).toBe(true);
+  });
+
+  it('commits no provider id: every ref comes from the environment', () => {
+    // The rule the whole seed exists to enforce. A Paddle price id is not
+    // reusable across accounts, so a committed sandbox id would point
+    // production at a price that does not exist there.
+    const src = fs.readFileSync(
+      path.join(__dirname, 'provider-prices.seed.ts'),
+      'utf8',
+    );
+
+    expect(src.length).toBeGreaterThan(1000);
+    // Paddle ids are `pri_...`/`pro_...`; none may appear in the source.
+    expect(src).not.toMatch(/pri_[0-9a-z]{20,}/);
+    expect(src).not.toMatch(/pro_[0-9a-z]{20,}/);
+  });
+
+  it('resolves all fifteen when every variable is set, and skips what is unset', () => {
+    const { resolved, skipped } = resolvePrices(PADDLE_ENV, PADDLE_PRICES);
+    expect(resolved).toHaveLength(15);
+    expect(skipped).toHaveLength(0);
+    expect(resolved.every((r) => r.provider === 'paddle')).toBe(true);
+
+    const partial = { ...PADDLE_ENV };
+    delete partial.PADDLE_PRICE_MAX_EXTRA_AI_TOKENS;
+    const second = resolvePrices(partial, PADDLE_PRICES);
+    expect(second.resolved).toHaveLength(14);
+    expect(second.skipped.map((s) => s.envVar)).toEqual([
+      'PADDLE_PRICE_MAX_EXTRA_AI_TOKENS',
+    ]);
+  });
+
+  it('does not collide with the Lemon Squeezy rows on the unique key', async () => {
+    // Same (plan, item) pairs, different provider: both must coexist, because
+    // accounts migrate one at a time and never mid-period.
+    const { db, rows } = makeStore();
+    await upsertProviderPrices(
+      resolvePrices(PADDLE_ENV, PADDLE_PRICES).resolved,
+      db as never,
+    );
+    await upsertProviderPrices(
+      [
+        {
+          provider: 'lemonsqueezy',
+          planCode: 'PRO',
+          itemType: 'BASE_PLAN',
+          envVar: 'LEMONSQUEEZY_VARIANT_PRO',
+          providerRef: '1000002',
+        },
+      ],
+      db as never,
+    );
+
+    expect(rows).toHaveLength(16);
+    const pro = rows.filter(
+      (r) => r.planCode === 'PRO' && r.itemType === 'BASE_PLAN',
+    );
+    expect(pro.map((r) => r.provider).sort()).toEqual([
+      'lemonsqueezy',
+      'paddle',
+    ]);
+  });
+});

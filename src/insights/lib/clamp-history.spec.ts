@@ -16,8 +16,16 @@ import {
 // A fixed "today" so the expectations are dates, not arithmetic.
 const TODAY = new Date(Date.UTC(2026, 10, 24)); // 2026-11-24
 
+/**
+ * `TODAY` is passed to `periodOf` as well as to `clampHistory`.
+ *
+ * It used to be given only to `clampHistory`, while `periodOf` read the real
+ * clock — so the two disagreed about what day it was, and every expectation
+ * here held for exactly one day. These tests passed when written and failed
+ * the following morning.
+ */
 function preset(days: '7' | '30' | '90'): ResolvedPeriod {
-  return periodOf(days);
+  return periodOf(days, undefined, undefined, TODAY);
 }
 
 describe('clampHistory', () => {
@@ -52,7 +60,7 @@ describe('clampHistory', () => {
     // The one that catches a "last N days" shortcut: this range ends in
     // September. Replacing it with the last 7 days would answer about
     // November and the chart would look perfectly healthy.
-    const p = periodOf(undefined, '2026-09-01', '2026-09-30');
+    const p = periodOf(undefined, '2026-09-01', '2026-09-30', TODAY);
     const out = clampHistory(p, 90, TODAY);
     expect(out.window.to).toBe('2026-09-30');
     // 90 days before 2026-11-24 is 2026-08-26, which is EARLIER than the
@@ -62,7 +70,7 @@ describe('clampHistory', () => {
   });
 
   it('clamps a custom range that starts before the plan can see', () => {
-    const p = periodOf(undefined, '2026-09-01', '2026-11-20');
+    const p = periodOf(undefined, '2026-09-01', '2026-11-20', TODAY);
     const out = clampHistory(p, 30, TODAY);
     // 30 days back from 2026-11-24 is 2026-10-25.
     expect(out.window.from).toBe('2026-10-25');
@@ -77,7 +85,7 @@ describe('clampHistory', () => {
     // Without this the clamp would produce `from` AFTER `to`, and a reversed
     // range reaches SQL as a BETWEEN that silently matches nothing — an empty
     // chart with no explanation.
-    const p = periodOf(undefined, '2026-01-01', '2026-01-31');
+    const p = periodOf(undefined, '2026-01-01', '2026-01-31', TODAY);
     const out = clampHistory(p, 7, TODAY);
     expect(out.window.from).toBe('2026-11-17');
     expect(out.window.to).toBe('2026-11-17');

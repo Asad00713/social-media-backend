@@ -1,3 +1,5 @@
+import type { PaymentProvider } from '../../drizzle/schema';
+
 /**
  * Events sent to ONE user on the `/realtime` namespace, rather than to a
  * workspace room.
@@ -27,7 +29,7 @@ export interface BillingPaymentCard {
  */
 export interface BillingPaymentChangedPayload {
   state: 'failed' | 'recovered';
-  provider: 'stripe' | 'lemonsqueezy';
+  provider: PaymentProvider;
   /**
    * The owner's primary workspace, for routing to its billing page when the
    * tab is not inside a workspace the owner bills. Null when they own none.

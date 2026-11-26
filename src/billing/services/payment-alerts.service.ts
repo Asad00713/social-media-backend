@@ -13,7 +13,14 @@ import type { BillingPaymentCard } from '../../realtime/types/user-events.types'
 import { PaymentMethodService } from './payment-method.service';
 import { SubscriptionLookupService } from './subscription-lookup.service';
 
-export type PaymentProvider = 'stripe' | 'lemonsqueezy';
+/**
+ * Re-exported, not redeclared. This file had its own copy of the union, which
+ * is how three places came to disagree about which providers exist the moment
+ * a third one was added. Imported as well as re-exported, because a bare
+ * `export type { ... } from` does not bring the name into this file's scope.
+ */
+import type { PaymentProvider } from '../../drizzle/schema';
+export type { PaymentProvider };
 
 export interface PaymentFailedInput {
   /** The billing owner: `subscriptions.user_id`. */

@@ -1,3 +1,4 @@
+import type { PaymentProvider } from '../../drizzle/schema';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { and, asc, eq } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
@@ -51,7 +52,7 @@ export interface PlanChangedInput {
   endsOn: Date | null;
   dedupeKey: string;
   /** Only Stripe sends a receipt of its own (an upgrade says so). */
-  provider?: 'stripe' | 'lemonsqueezy';
+  provider?: PaymentProvider;
 }
 
 interface PlanRow {
