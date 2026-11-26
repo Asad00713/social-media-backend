@@ -12,6 +12,12 @@ export interface MentionLookupResult {
   avatarUrl?: string;
 }
 
+/**
+ * The composer's `@` menu waits on the Mastodon search: past this it says
+ * "not found" rather than hang on a stalled server. Covers the body read too.
+ */
+export const MENTION_LOOKUP_TIMEOUT_MS = 5_000;
+
 /** The networks a typed handle can be checked on cheaply. */
 export const MENTION_LOOKUP_PLATFORMS = ['bluesky', 'mastodon'] as const;
 export type MentionLookupPlatform = (typeof MENTION_LOOKUP_PLATFORMS)[number];
@@ -97,9 +103,11 @@ export class MentionLookupService {
 
     try {
       // The server is the channel's stored, user-supplied address: public
-      // hosts only, no redirects. A refusal lands in the catch: not found.
+      // hosts only, no redirects. A refusal or the deadline lands in the
+      // catch: not found.
       const response = await fetchPublic(url.toString(), {
         headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(MENTION_LOOKUP_TIMEOUT_MS),
       });
       if (!response.ok) return { handle, found: false };
       const data = (await response.json()) as {
