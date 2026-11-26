@@ -12,11 +12,26 @@ import {
 
 jest.mock('undici', () => {
   const actual = jest.requireActual<typeof import('undici')>('undici');
-  return { ...actual, fetch: jest.fn(actual.fetch) };
+  // Stubbed by default: no test may reach the network. A test that needs
+  // the real client (the loopback checks) opts in with realUndiciFetch.
+  return {
+    ...actual,
+    fetch: jest.fn(() =>
+      Promise.reject(new Error('undici fetch is stubbed in this spec')),
+    ),
+  };
 });
 const mockedFetch = undiciFetch as unknown as jest.Mock;
 // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access -- requireActual is untyped under this jest config
 const realUndiciFetch = jest.requireActual('undici').fetch as never;
+
+// No real request may leave a test: the global fetch is stubbed as well.
+beforeEach(() => {
+  jest
+    .spyOn(global, 'fetch')
+    .mockRejectedValue(new Error('global fetch is stubbed in this spec'));
+});
+afterEach(() => jest.restoreAllMocks());
 
 function redirect(location: string, status = 302): Response {
   return new Response(null, { status, headers: { location } });

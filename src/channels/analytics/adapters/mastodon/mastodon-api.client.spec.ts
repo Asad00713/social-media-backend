@@ -6,6 +6,14 @@ import { fetch as undiciFetch } from 'undici';
 import { publicAgent } from '../../../../common/net/public-fetch';
 import { MastodonApiClient, MastodonApiError } from './mastodon-api.client';
 
+// No real request may leave a test: the global fetch is stubbed as well.
+beforeEach(() => {
+  jest
+    .spyOn(global, 'fetch')
+    .mockRejectedValue(new Error('global fetch is stubbed in this spec'));
+});
+afterEach(() => jest.restoreAllMocks());
+
 describe('MastodonApiClient', () => {
   let client: MastodonApiClient;
   const mockFetch = jest.fn();

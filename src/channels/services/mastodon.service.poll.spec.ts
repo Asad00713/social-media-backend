@@ -1,3 +1,11 @@
+// No real request may leave a test: undici's fetch is stubbed as well.
+jest.mock('undici', () => ({
+  ...jest.requireActual<typeof import('undici')>('undici'),
+  fetch: jest.fn(() =>
+    Promise.reject(new Error('undici fetch is stubbed in this spec')),
+  ),
+}));
+
 import { ConfigService } from '@nestjs/config';
 import { MastodonService } from './mastodon.service';
 

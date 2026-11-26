@@ -77,6 +77,10 @@ beforeEach(() => {
   form = { name: 'Spring menu waitlist' };
   LEAD.deliveryAttempts = [];
   jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+  // No real request may leave a test: the global fetch is stubbed as well.
+  jest
+    .spyOn(global, 'fetch')
+    .mockRejectedValue(new Error('global fetch is stubbed in this spec'));
 });
 afterEach(() => jest.restoreAllMocks());
 
