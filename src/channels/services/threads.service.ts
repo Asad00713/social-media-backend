@@ -173,6 +173,15 @@ function applySettings(
   }
 }
 
+/**
+ * The token endpoints live at the graph ROOT, not under `/v1.0` like the
+ * posting endpoints, so they need their own base. Both `graph.threads.net`
+ * (used by our OAuth config) and `graph.threads.com` (named in current docs)
+ * answer `th_refresh_token` identically; this keeps the host the rest of the
+ * file already uses so there is one Threads host to change, not two.
+ */
+const THREADS_GRAPH_HOST = 'https://graph.threads.net';
+
 @Injectable()
 export class ThreadsService {
   private readonly logger = new Logger(ThreadsService.name);
@@ -886,6 +895,47 @@ export class ThreadsService {
         error.error?.message || 'Failed to hide/unhide reply',
       );
     }
+  }
+
+  /**
+   * Renew a long-lived token for another 60 days.
+   *
+   * Threads has no OAuth2 refresh token: the 60-day access token is handed
+   * back to Meta under `grant_type=th_refresh_token` and a NEW token comes
+   * out. Neither client id nor secret is sent — the token itself is the
+   * credential. Verified against the live endpoint, which answers this exact
+   * shape.
+   *
+   * Meta requires the token to be at least 24 hours old and not yet expired;
+   * an expired one cannot be renewed at all and needs the user to reconnect.
+   * `shouldRenew` in `lib/long-lived-token.ts` enforces both before we call.
+   */
+  async refreshLongLivedToken(longLivedToken: string): Promise<{
+    accessToken: string;
+    expiresIn: number | null;
+  }> {
+    const url = new URL(`${THREADS_GRAPH_HOST}/refresh_access_token`);
+    url.searchParams.set('grant_type', 'th_refresh_token');
+    url.searchParams.set('access_token', longLivedToken);
+
+    const response = await fetch(url.toString());
+    if (!response.ok) {
+      const error = await response.text();
+      this.logger.error(`Failed to renew Threads token: ${error}`);
+      throw new BadRequestException(`Failed to renew token: ${error}`);
+    }
+
+    const data = (await response.json()) as {
+      access_token?: string;
+      expires_in?: number;
+    };
+    if (!data.access_token) {
+      throw new BadRequestException('Token renewal returned no access_token');
+    }
+    return {
+      accessToken: data.access_token,
+      expiresIn: typeof data.expires_in === 'number' ? data.expires_in : null,
+    };
   }
 
   /**
