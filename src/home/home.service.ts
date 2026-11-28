@@ -36,9 +36,11 @@ import {
   followersGainedOf,
   summarizeChannel,
   weekStart,
+  localDateOf,
   weekWindowOf,
   type FollowerRow,
   type PulseRange,
+  type WeekStartDay,
 } from './lib/home-summary';
 import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
@@ -73,6 +75,13 @@ function pulseOf(
   };
 }
 
+/** The caller's week, for the "this week" numbers. Both default to Monday, UTC. */
+export interface WeekOptions {
+  weekStart?: WeekStartDay;
+  /** IANA time zone. Absent: UTC, cut by each post's UTC date as ever. */
+  tz?: string;
+}
+
 interface ActiveChannel {
   id: number;
   platform: SupportedPlatform;
@@ -104,14 +113,19 @@ export class HomeService {
   async getSummary(
     workspaceId: string,
     now = new Date(),
+    options: WeekOptions = {},
   ): Promise<HomeSummaryDto> {
     const today = utcToday(now);
     const window = windowOf(today, 7);
-    const week = weekWindowOf(now);
+    const week = weekWindowOf(now, options.weekStart, options.tz);
     // One read serves both views: the 7-day window ends yesterday, the week
     // runs through today, and both reach back no further than the window's
-    // previous span. The fetch ends tomorrow so today's rows are included;
-    // pulseOf and the per-channel filters below cut each view to its own days.
+    // previous span. That holds for the caller's local week too, in any zone:
+    // its previous span starts at local midnight of a date no earlier than
+    // UTC today - 14, which is no earlier than UTC midnight of that date
+    // minus a day's offset (pinned by "never starts before the read" in the
+    // spec). The fetch ends tomorrow so today's rows are included; pulseOf
+    // and the per-channel filters below cut each view to its own days.
     const tomorrow = new Date(today.getTime() + DAY_MS);
     const channels = await this.activeChannels(workspaceId);
     const followers = await this.followerRows(
@@ -155,6 +169,18 @@ export class HomeService {
     const social = new Set(channels.filter(isSocial).map((c) => c.id));
     const socialPosts = published.filter((p) => social.has(p.channelId));
     const socialFollowers = followers.filter((r) => social.has(r.channelId));
+    // Posts are dated by their UTC day. For the caller's week, in a zone, each
+    // takes the day it fell on locally, so a post just after local midnight
+    // counts toward the new day (the same as cutting by the zone's UTC
+    // instants). Follower rows are already dated, in UTC, and are matched by
+    // those dates as they are: approximate by up to the zone's offset.
+    const { tz } = options;
+    const weekPosts = tz
+      ? socialPosts.map((p) => ({
+          ...p,
+          publishedOn: localDateOf(new Date(p.publishedAt), tz),
+        }))
+      : socialPosts;
 
     const publishedDates = streakPosts
       .filter((p): p is { publishedAt: Date } => p.publishedAt !== null)
@@ -166,7 +192,7 @@ export class HomeService {
       pulse: pulseOf(socialPosts, socialFollowers, window),
       week: {
         window: week,
-        pulse: pulseOf(socialPosts, socialFollowers, week),
+        pulse: pulseOf(weekPosts, socialFollowers, week),
       },
       channels: channels.map(({ id }) =>
         summarizeChannel(

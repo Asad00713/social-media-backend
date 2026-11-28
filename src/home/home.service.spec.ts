@@ -495,6 +495,484 @@ describe('HomeService.getSummary', () => {
   });
 });
 
+describe("HomeService.getSummary with the caller's week start and time zone", () => {
+  const instagramDb = (followers: unknown[] = []) =>
+    fakeDb([
+      [{ id: 1, platform: 'instagram' }],
+      followers,
+      [],
+      [{ weeklyPostGoal: 5 }],
+    ]).db;
+  const row = (date: string, followersGained: number) => ({
+    channelId: 1,
+    date,
+    followersAtEndOfDay: null,
+    followersGained,
+  });
+
+  it('is byte-identical to the Monday-UTC week when the options are absent, empty or monday', async () => {
+    // NOW is Wed 2026-09-30. Week Sep 28-30; the same days last week Sep 21-23.
+    const posts = () =>
+      fakePosts([
+        post({
+          postId: 'a',
+          publishedOn: '2026-09-28',
+          publishedAt: '2026-09-28T09:00:00.000Z',
+          likes: 10,
+          impressions: 100,
+        }),
+        post({
+          postId: 'b',
+          publishedOn: '2026-09-30',
+          publishedAt: '2026-09-30T08:00:00.000Z',
+          likes: 5,
+          impressions: 50,
+        }),
+        post({
+          postId: 'c',
+          publishedOn: '2026-09-22',
+          publishedAt: '2026-09-22T08:00:00.000Z',
+          likes: 4,
+          impressions: 40,
+        }),
+      ]);
+    const run = (options?: { weekStart?: 'monday'; tz?: string }) => {
+      const repo = posts();
+      return new HomeService(instagramDb() as any, repo as any)
+        .getSummary('ws1', NOW, options)
+        .then((summary) => ({ summary, repo }));
+    };
+    const absent = await run();
+    const empty = await run({});
+    const monday = await run({ weekStart: 'monday' });
+
+    expect(empty.summary).toEqual(absent.summary);
+    expect(monday.summary).toEqual(absent.summary);
+    expect(absent.summary.week.window).toEqual({
+      from: '2026-09-28',
+      to: '2026-09-30',
+      previousFrom: '2026-09-21',
+      previousTo: '2026-09-23',
+    });
+    // This week: a + b. posts 2, impressions 150, engagements 15, rate 10.
+    // Same days last week: c. posts 1, impressions 40, engagements 4.
+    expect(absent.summary.week.pulse.postsPublished).toEqual({
+      value: 2,
+      previous: 1,
+      deltaPct: 100,
+    });
+    expect(absent.summary.week.pulse.impressions).toEqual({
+      value: 150,
+      previous: 40,
+      deltaPct: 275,
+    });
+    expect(absent.summary.week.pulse.engagements).toEqual({
+      value: 15,
+      previous: 4,
+      deltaPct: 275,
+      rate: 10,
+    });
+    // The read range is the one it always was.
+    for (const r of [absent, empty, monday]) {
+      expect(r.repo.publishedPosts).toHaveBeenCalledWith(
+        'ws1',
+        [1],
+        '2026-09-16',
+        '2026-10-01',
+      );
+    }
+  });
+
+  it('counts a Sunday-start week from the Sunday', async () => {
+    // Sat 2026-11-28: the week is Sun Nov 22 - Sat Nov 28, the same days last
+    // week Nov 15-21. Nov 14 sits in neither.
+    const repo = fakePosts([
+      post({
+        postId: 'prev',
+        publishedOn: '2026-11-21',
+        likes: 3,
+        impressions: 30,
+      }),
+      post({
+        postId: 'sun',
+        publishedOn: '2026-11-22',
+        likes: 6,
+        impressions: 60,
+      }),
+      post({
+        postId: 'sat',
+        publishedOn: '2026-11-28',
+        likes: 1,
+        impressions: 10,
+      }),
+      post({
+        postId: 'out',
+        publishedOn: '2026-11-14',
+        likes: 99,
+        impressions: 999,
+      }),
+    ]);
+    const db = instagramDb([
+      row('2026-11-22', 4),
+      row('2026-11-21', 2),
+      row('2026-11-14', 50),
+    ]);
+    const s = await new HomeService(db as any, repo as any).getSummary(
+      'ws1',
+      new Date('2026-11-28T10:00:00Z'),
+      { weekStart: 'sunday' },
+    );
+
+    expect(s.week.window).toEqual({
+      from: '2026-11-22',
+      to: '2026-11-28',
+      previousFrom: '2026-11-15',
+      previousTo: '2026-11-21',
+    });
+    // Week: sun + sat = 2 posts, 70 impressions, 7 engagements (rate 10).
+    // Before: prev = 1 post, 30 impressions, 3 engagements.
+    expect(s.week.pulse.postsPublished).toEqual({
+      value: 2,
+      previous: 1,
+      deltaPct: 100,
+    });
+    expect(s.week.pulse.impressions).toEqual({
+      value: 70,
+      previous: 30,
+      deltaPct: 133.3,
+    });
+    expect(s.week.pulse.engagements).toEqual({
+      value: 7,
+      previous: 3,
+      deltaPct: 133.3,
+      rate: 10,
+    });
+    expect(s.week.pulse.followersGained).toEqual({
+      value: 4,
+      previous: 2,
+      deltaPct: 100,
+    });
+  });
+
+  it('counts a Saturday-start week as one day on a Saturday', async () => {
+    const repo = fakePosts([
+      post({
+        postId: 'prev',
+        publishedOn: '2026-11-21',
+        likes: 2,
+        impressions: 20,
+      }),
+      post({
+        postId: 'fri',
+        publishedOn: '2026-11-27',
+        likes: 9,
+        impressions: 90,
+      }),
+      post({
+        postId: 'sat',
+        publishedOn: '2026-11-28',
+        likes: 4,
+        impressions: 40,
+      }),
+    ]);
+    const s = await new HomeService(
+      instagramDb() as any,
+      repo as any,
+    ).getSummary('ws1', new Date('2026-11-28T10:00:00Z'), {
+      weekStart: 'saturday',
+    });
+
+    expect(s.week.window).toEqual({
+      from: '2026-11-28',
+      to: '2026-11-28',
+      previousFrom: '2026-11-21',
+      previousTo: '2026-11-21',
+    });
+    // Sat 28 alone against Sat 21 alone; Friday 27 is last week's.
+    expect(s.week.pulse.postsPublished).toEqual({
+      value: 1,
+      previous: 1,
+      deltaPct: 0,
+    });
+    expect(s.week.pulse.impressions).toEqual({
+      value: 40,
+      previous: 20,
+      deltaPct: 100,
+    });
+  });
+
+  it('puts Monday 02:00 in Karachi in the new week, though UTC is still Sunday', async () => {
+    // 2026-11-29T21:00Z = Mon 2026-11-30 02:00 PKT (UTC+5). Local Monday starts
+    // 2026-11-29T19:00Z; the same Monday last week starts 2026-11-22T19:00Z.
+    const repo = fakePosts([
+      // Sun 23:59:59 PKT: last week's, though its UTC date is the same Sunday.
+      post({
+        postId: 'sun',
+        publishedOn: '2026-11-29',
+        publishedAt: '2026-11-29T18:59:59.000Z',
+        likes: 77,
+        impressions: 770,
+      }),
+      // Mon 00:00:00 PKT sharp: this week.
+      post({
+        postId: 'mon0',
+        publishedOn: '2026-11-29',
+        publishedAt: '2026-11-29T19:00:00.000Z',
+        likes: 10,
+        impressions: 100,
+      }),
+      // Mon 01:30 PKT: this week.
+      post({
+        postId: 'mon1',
+        publishedOn: '2026-11-29',
+        publishedAt: '2026-11-29T20:30:00.000Z',
+        likes: 5,
+        impressions: 50,
+      }),
+      // Last Monday 00:00 PKT sharp: the same day last week.
+      post({
+        postId: 'p0',
+        publishedOn: '2026-11-22',
+        publishedAt: '2026-11-22T19:00:00.000Z',
+        likes: 4,
+        impressions: 40,
+      }),
+      // Last Monday 15:00 PKT.
+      post({
+        postId: 'p1',
+        publishedOn: '2026-11-23',
+        publishedAt: '2026-11-23T10:00:00.000Z',
+        likes: 6,
+        impressions: 60,
+      }),
+      // Last Tuesday 00:00 PKT sharp: neither.
+      post({
+        postId: 'tue',
+        publishedOn: '2026-11-23',
+        publishedAt: '2026-11-23T19:00:00.000Z',
+        likes: 99,
+        impressions: 999,
+      }),
+      // Last Sunday 23:59:59 PKT: neither.
+      post({
+        postId: 'sun-before',
+        publishedOn: '2026-11-22',
+        publishedAt: '2026-11-22T18:59:59.000Z',
+        likes: 88,
+        impressions: 888,
+      }),
+    ]);
+    const db = instagramDb([row('2026-11-23', 7), row('2026-11-29', 3)]);
+    const s = await new HomeService(db as any, repo as any).getSummary(
+      'ws1',
+      new Date('2026-11-29T21:00:00Z'),
+      { weekStart: 'monday', tz: 'Asia/Karachi' },
+    );
+
+    expect(s.week.window).toEqual({
+      from: '2026-11-30',
+      to: '2026-11-30',
+      previousFrom: '2026-11-23',
+      previousTo: '2026-11-23',
+    });
+    // This week: mon0 + mon1 = 2 posts, 150 impressions, 15 engagements (10%).
+    // Last Monday: p0 + p1 = 2 posts, 100 impressions, 10 engagements.
+    expect(s.week.pulse.postsPublished).toEqual({
+      value: 2,
+      previous: 2,
+      deltaPct: 0,
+    });
+    expect(s.week.pulse.impressions).toEqual({
+      value: 150,
+      previous: 100,
+      deltaPct: 50,
+    });
+    expect(s.week.pulse.engagements).toEqual({
+      value: 15,
+      previous: 10,
+      deltaPct: 50,
+      rate: 10,
+    });
+    // Follower rows are keyed by date: nothing yet for the 30th; the 23rd is
+    // last Monday's 7. The 29th's 3 belongs to last week.
+    expect(s.week.pulse.followersGained).toEqual({
+      value: null,
+      previous: 7,
+      deltaPct: null,
+    });
+    // The 7-day window and the streak stay UTC: it ends Nov 28.
+    expect(s.window.to).toBe('2026-11-28');
+    // One read, from UTC today - 14 days to tomorrow, as before.
+    expect(repo.publishedPosts).toHaveBeenCalledWith(
+      'ws1',
+      [1],
+      '2026-11-15',
+      '2026-11-30',
+    );
+  });
+
+  it('reads back to the UTC date the previous local week began on, east of UTC', async () => {
+    // Sun 2026-11-29 15:00 PKT. The week is Mon Nov 23 - Sun Nov 29, the
+    // previous one Nov 16-22. Nov 16 00:00 PKT is 2026-11-15T19:00Z: the UTC
+    // date Nov 15, which is also where the read starts (UTC today - 14).
+    const repo = fakePosts([
+      post({
+        postId: 'before',
+        publishedOn: '2026-11-15',
+        publishedAt: '2026-11-15T18:59:00.000Z',
+        likes: 88,
+        impressions: 880,
+      }),
+      post({
+        postId: 'first-hour',
+        publishedOn: '2026-11-15',
+        publishedAt: '2026-11-15T19:30:00.000Z',
+        likes: 2,
+        impressions: 20,
+      }),
+      post({
+        postId: 'mon',
+        publishedOn: '2026-11-22',
+        publishedAt: '2026-11-22T19:00:00.000Z',
+        likes: 5,
+        impressions: 50,
+      }),
+    ]);
+    const s = await new HomeService(
+      instagramDb() as any,
+      repo as any,
+    ).getSummary('ws1', new Date('2026-11-29T10:00:00Z'), {
+      weekStart: 'monday',
+      tz: 'Asia/Karachi',
+    });
+
+    expect(repo.publishedPosts).toHaveBeenCalledWith(
+      'ws1',
+      [1],
+      '2026-11-15',
+      '2026-11-30',
+    );
+    expect(s.week.window).toEqual({
+      from: '2026-11-23',
+      to: '2026-11-29',
+      previousFrom: '2026-11-16',
+      previousTo: '2026-11-22',
+    });
+    // 'mon' (Nov 23 00:00 PKT) is this week's; 'first-hour' (Nov 16 00:30 PKT)
+    // is the previous week's; 'before' (Nov 15 23:59 PKT) is neither.
+    expect(s.week.pulse.impressions).toEqual({
+      value: 50,
+      previous: 20,
+      deltaPct: 150,
+    });
+    expect(s.week.pulse.engagements).toEqual({
+      value: 5,
+      previous: 2,
+      deltaPct: 150,
+      rate: 10,
+    });
+  });
+
+  it('covers a local window that starts on the earliest UTC date read, west of UTC', async () => {
+    // 2026-11-30T02:00Z = Sun 2026-11-29 21:00 EST. UTC is already Monday the
+    // 30th, but the local week is Nov 23-29 and the one before Nov 16-22.
+    const repo = fakePosts([
+      // Sat Nov 15 23:59:59 EST: its UTC date is Nov 16, yet it is local Nov 15.
+      post({
+        postId: 'q1',
+        publishedOn: '2026-11-16',
+        publishedAt: '2026-11-16T04:59:59.000Z',
+        likes: 50,
+        impressions: 500,
+      }),
+      // Mon Nov 16 00:00:00 EST sharp: the previous week's first moment.
+      post({
+        postId: 'q2',
+        publishedOn: '2026-11-16',
+        publishedAt: '2026-11-16T05:00:00.000Z',
+        likes: 3,
+        impressions: 30,
+      }),
+      // Sun Nov 22 23:59:59 EST: the previous week's last moment (UTC Nov 23).
+      post({
+        postId: 'q3',
+        publishedOn: '2026-11-23',
+        publishedAt: '2026-11-23T04:59:59.000Z',
+        likes: 7,
+        impressions: 70,
+      }),
+      // Mon Nov 23 00:00:00 EST sharp: this week.
+      post({
+        postId: 'q4',
+        publishedOn: '2026-11-23',
+        publishedAt: '2026-11-23T05:00:00.000Z',
+        likes: 20,
+        impressions: 200,
+      }),
+      // Sun Nov 29 20:30 EST: this week, though its UTC date is Nov 30.
+      post({
+        postId: 'q5',
+        publishedOn: '2026-11-30',
+        publishedAt: '2026-11-30T01:30:00.000Z',
+        likes: 8,
+        impressions: 80,
+      }),
+    ]);
+    const s = await new HomeService(
+      instagramDb() as any,
+      repo as any,
+    ).getSummary('ws1', new Date('2026-11-30T02:00:00Z'), {
+      weekStart: 'monday',
+      tz: 'America/New_York',
+    });
+
+    expect(s.week.window).toEqual({
+      from: '2026-11-23',
+      to: '2026-11-29',
+      previousFrom: '2026-11-16',
+      previousTo: '2026-11-22',
+    });
+    // The read starts at UTC today - 14 = Nov 16, which holds the local
+    // previous week's first moment (05:00Z) and runs to tomorrow.
+    expect(repo.publishedPosts).toHaveBeenCalledWith(
+      'ws1',
+      [1],
+      '2026-11-16',
+      '2026-12-01',
+    );
+    // This week: q4 + q5 = 2 posts, 280 impressions, 28 engagements (10%).
+    // Before: q2 + q3 = 2 posts, 100 impressions, 10 engagements. q1 is out.
+    expect(s.week.pulse.postsPublished).toEqual({
+      value: 2,
+      previous: 2,
+      deltaPct: 0,
+    });
+    expect(s.week.pulse.impressions).toEqual({
+      value: 280,
+      previous: 100,
+      deltaPct: 180,
+    });
+    expect(s.week.pulse.engagements).toEqual({
+      value: 28,
+      previous: 10,
+      deltaPct: 180,
+      rate: 10,
+    });
+    // The 7-day pulse is still cut by UTC dates (Nov 23-29 against Nov 16-22):
+    // now q3 + q4 against q1 + q2.
+    expect(s.pulse.postsPublished).toEqual({
+      value: 2,
+      previous: 2,
+      deltaPct: 0,
+    });
+    expect(s.pulse.impressions).toEqual({
+      value: 270,
+      previous: 530,
+      deltaPct: -49.1,
+    });
+  });
+});
+
 describe('HomeService.getPulse', () => {
   it('compares the chosen number of days with the same span before, with a point per day', async () => {
     const { db } = fakeDb([

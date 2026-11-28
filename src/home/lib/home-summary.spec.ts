@@ -1,3 +1,4 @@
+import { wallClockToUtc } from '../../common/utils/wall-clock';
 import type { PublishedPost } from '../../post-performance/post-performance';
 import {
   computeStreakWeeks,
@@ -7,6 +8,7 @@ import {
   isPulseRange,
   summarizeChannel,
   weekStart,
+  localDateOf,
   weekWindowOf,
   type FollowerRow,
 } from './home-summary';
@@ -148,6 +150,121 @@ describe('weekWindowOf', () => {
       previousTo: '2026-11-22',
     });
   });
+
+  describe('with a week start', () => {
+    // 2026-11-28 is a Saturday; 11-22 and 11-29 are Sundays.
+    it('starts on the Sunday before a Saturday', () => {
+      expect(weekWindowOf(new Date('2026-11-28T10:00:00Z'), 'sunday')).toEqual({
+        from: '2026-11-22',
+        to: '2026-11-28',
+        previousFrom: '2026-11-15',
+        previousTo: '2026-11-21',
+      });
+    });
+
+    it('is one day on a Sunday, for a Sunday start', () => {
+      expect(weekWindowOf(new Date('2026-11-29T01:00:00Z'), 'sunday')).toEqual({
+        from: '2026-11-29',
+        to: '2026-11-29',
+        previousFrom: '2026-11-22',
+        previousTo: '2026-11-22',
+      });
+    });
+
+    it('is one day on a Saturday, for a Saturday start', () => {
+      expect(
+        weekWindowOf(new Date('2026-11-28T10:00:00Z'), 'saturday'),
+      ).toEqual({
+        from: '2026-11-28',
+        to: '2026-11-28',
+        previousFrom: '2026-11-21',
+        previousTo: '2026-11-21',
+      });
+    });
+
+    it('starts on the Saturday before a Friday, for a Saturday start', () => {
+      expect(
+        weekWindowOf(new Date('2026-11-27T23:00:00Z'), 'saturday'),
+      ).toEqual({
+        from: '2026-11-21',
+        to: '2026-11-27',
+        previousFrom: '2026-11-14',
+        previousTo: '2026-11-20',
+      });
+    });
+
+    it('stays Monday-based when asked for monday', () => {
+      expect(weekWindowOf(new Date('2026-11-27T13:48:00Z'), 'monday')).toEqual(
+        weekWindowOf(new Date('2026-11-27T13:48:00Z')),
+      );
+    });
+  });
+
+  describe('in a time zone', () => {
+    it('uses the local date: Monday 02:00 in Karachi is still Sunday in UTC', () => {
+      // 2026-11-29T21:00Z = Mon 2026-11-30 02:00 PKT (UTC+5, no DST).
+      const now = new Date('2026-11-29T21:00:00Z');
+      expect(weekWindowOf(now, 'monday', 'Asia/Karachi')).toEqual({
+        from: '2026-11-30',
+        to: '2026-11-30',
+        previousFrom: '2026-11-23',
+        previousTo: '2026-11-23',
+      });
+      // The same moment in UTC is the last day of the old week.
+      expect(weekWindowOf(now)).toEqual({
+        from: '2026-11-23',
+        to: '2026-11-29',
+        previousFrom: '2026-11-16',
+        previousTo: '2026-11-22',
+      });
+    });
+
+    it('combines with a Sunday start: Karachi Monday is the second day', () => {
+      expect(
+        weekWindowOf(
+          new Date('2026-11-29T21:00:00Z'),
+          'sunday',
+          'Asia/Karachi',
+        ),
+      ).toEqual({
+        from: '2026-11-29',
+        to: '2026-11-30',
+        previousFrom: '2026-11-22',
+        previousTo: '2026-11-23',
+      });
+    });
+
+    it('uses the local date west of UTC: Sunday 21:00 in New York is Monday in UTC', () => {
+      // 2026-11-30T02:00Z = Sun 2026-11-29 21:00 EST (UTC-5).
+      const now = new Date('2026-11-30T02:00:00Z');
+      expect(weekWindowOf(now, 'monday', 'America/New_York')).toEqual({
+        from: '2026-11-23',
+        to: '2026-11-29',
+        previousFrom: '2026-11-16',
+        previousTo: '2026-11-22',
+      });
+      expect(weekWindowOf(now).from).toBe('2026-11-30');
+    });
+
+    it('UTC given explicitly is the same as no zone', () => {
+      const now = new Date('2026-11-27T13:48:00Z');
+      expect(weekWindowOf(now, 'monday', 'UTC')).toEqual(weekWindowOf(now));
+    });
+  });
+});
+
+describe('localDateOf', () => {
+  it('is the calendar date of an instant in a zone', () => {
+    expect(localDateOf(new Date('2026-11-29T19:00:00Z'), 'Asia/Karachi')).toBe(
+      '2026-11-30',
+    );
+    expect(localDateOf(new Date('2026-11-29T18:59:59Z'), 'Asia/Karachi')).toBe(
+      '2026-11-29',
+    );
+    expect(
+      localDateOf(new Date('2026-11-23T04:59:59Z'), 'America/New_York'),
+    ).toBe('2026-11-22');
+  });
 });
 
 describe('computeStreakWeeks', () => {
@@ -265,4 +382,54 @@ describe('isPulseRange', () => {
     expect([7, 30, 90].every(isPulseRange)).toBe(true);
     expect([0, 1, 14, 31, 365, NaN].some(isPulseRange)).toBe(false);
   });
+});
+
+describe('weekWindowOf never starts before the read', () => {
+  // The Home read starts at UTC midnight 14 days before today (UTC) and the
+  // summary relies on the local window never reaching back past it. Walk every
+  // hour of three weeks (crossing both 2026 DST changes of the northern
+  // zones used) through zones from UTC-12 to UTC+14, for each week start.
+  const zones = [
+    'Etc/GMT+12',
+    'Pacific/Pago_Pago',
+    'America/Los_Angeles',
+    'America/New_York',
+    'UTC',
+    'Europe/Paris',
+    'Asia/Karachi',
+    'Asia/Kolkata',
+    'Australia/Lord_Howe',
+    'Pacific/Auckland',
+    'Pacific/Kiritimati',
+  ];
+  const starts = ['monday', 'sunday', 'saturday'] as const;
+  const HOUR = 60 * 60 * 1000;
+  const from = Date.parse('2026-10-20T00:00:00Z');
+  const hours = (21 * 24 * HOUR) / HOUR;
+
+  it.each(zones)(
+    '%s: the previous week begins at or after the read start',
+    (zone) => {
+      for (const weekStartDay of starts) {
+        for (let h = 0; h < hours; h++) {
+          const now = new Date(from + h * HOUR);
+          const w = weekWindowOf(now, weekStartDay, zone);
+          const readStart = new Date(
+            Date.UTC(
+              now.getUTCFullYear(),
+              now.getUTCMonth(),
+              now.getUTCDate() - 14,
+            ),
+          );
+          const begins = wallClockToUtc(w.previousFrom, '00:00', zone);
+          expect(begins).not.toBeNull();
+          if (begins!.getTime() < readStart.getTime()) {
+            throw new Error(
+              `${zone} ${weekStartDay} at ${now.toISOString()}: previous week begins ${begins!.toISOString()}, before the read at ${readStart.toISOString()}`,
+            );
+          }
+        }
+      }
+    },
+  );
 });

@@ -6,17 +6,17 @@
  * numbers come from the daily rollup, whose follower columns, unlike its
  * engagement ones, are genuinely per day.
  */
+import { utcToWallClock } from '../../common/utils/wall-clock';
 import {
   followersGainedOf,
   type FollowerRow,
 } from '../../post-performance/followers';
 import {
   PERIOD_DAYS,
+  addDays,
   deltaPct,
-  isoDate,
   isPeriodDays,
   round1,
-  utcToday,
   type PeriodDays,
   type PeriodWindow,
 } from '../../post-performance/period';
@@ -24,6 +24,7 @@ import {
   engagementsOf,
   type PublishedPost,
 } from '../../post-performance/post-performance';
+import type { WEEK_STARTS } from '../../users/preferences/user-preferences';
 
 // Home's names for the shared period helpers; its specs and DTOs use them.
 export { deltaPct, followersGainedOf, type FollowerRow };
@@ -94,19 +95,45 @@ export function weekStart(d: Date): Date {
   );
 }
 
+/** A user's week-start preference. */
+export type WeekStartDay = (typeof WEEK_STARTS)[number];
+
+/** `Date.getUTCDay()` of each week start (0 = Sunday). */
+const WEEK_START_DAY: Record<WeekStartDay, number> = {
+  monday: 1,
+  sunday: 0,
+  saturday: 6,
+};
+
+/** The calendar date (`YYYY-MM-DD`) of an instant in a time zone. */
+export function localDateOf(at: Date, timeZone: string): string {
+  return utcToWallClock(at, timeZone).date;
+}
+
 /**
- * The calendar week so far: Monday (UTC) to today, both counted, against the
- * same days of the week before. Unlike the 7-day windows it includes today, so
- * a Monday is one day against one day rather than an empty week.
+ * The calendar week so far: the last `weekStartDay` on or before today, to
+ * today, both counted, against the same days of the week before. Unlike the
+ * 7-day windows it includes today, so a first day is one day against one day
+ * rather than an empty week.
+ *
+ * Today is the date in `timeZone` (UTC by default), so the dates are the
+ * caller's local dates. With no arguments beyond `now` this is the Monday-UTC
+ * week it always was.
  */
-export function weekWindowOf(now: Date): PeriodWindow {
-  const from = weekStart(now).getTime();
-  const to = utcToday(now).getTime();
+export function weekWindowOf(
+  now: Date,
+  weekStartDay: WeekStartDay = 'monday',
+  timeZone = 'UTC',
+): PeriodWindow {
+  const to = localDateOf(now, timeZone);
+  const day = new Date(`${to}T00:00:00Z`).getUTCDay();
+  const back = (day - WEEK_START_DAY[weekStartDay] + 7) % 7;
+  const from = addDays(to, -back);
   return {
-    from: isoDate(new Date(from)),
-    to: isoDate(new Date(to)),
-    previousFrom: isoDate(new Date(from - WEEK_MS)),
-    previousTo: isoDate(new Date(to - WEEK_MS)),
+    from,
+    to,
+    previousFrom: addDays(from, -7),
+    previousTo: addDays(to, -7),
   };
 }
 
