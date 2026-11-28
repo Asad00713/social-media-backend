@@ -30,10 +30,13 @@ const CALLER = { userId: 'user-1', email: 'a@example.test' };
 
 function makeController() {
   const preferences = {
-    get: jest.fn().mockResolvedValue(DEFAULT_PREFERENCES),
-    update: jest.fn().mockResolvedValue({
+    getWithExplicitKeys: jest
+      .fn()
+      .mockResolvedValue({ ...DEFAULT_PREFERENCES, explicitKeys: [] }),
+    updateWithExplicitKeys: jest.fn().mockResolvedValue({
       ...DEFAULT_PREFERENCES,
       theme: 'dark',
+      explicitKeys: ['theme'],
     }),
   };
   const myWorkspaces = {
@@ -71,10 +74,11 @@ describe('AccountSettingsController', () => {
 
   it('GET preferences reads the caller own row, never an id from the URL', async () => {
     const { controller, preferences } = makeController();
-    expect(await controller.getPreferences(CALLER)).toEqual(
-      DEFAULT_PREFERENCES,
-    );
-    expect(preferences.get).toHaveBeenCalledWith('user-1');
+    expect(await controller.getPreferences(CALLER)).toEqual({
+      ...DEFAULT_PREFERENCES,
+      explicitKeys: [],
+    });
+    expect(preferences.getWithExplicitKeys).toHaveBeenCalledWith('user-1');
   });
 
   it('PATCH preferences writes the caller own row', async () => {
@@ -83,7 +87,8 @@ describe('AccountSettingsController', () => {
       theme: 'dark',
     });
     expect(result.theme).toBe('dark');
-    expect(preferences.update).toHaveBeenCalledWith('user-1', {
+    expect(result.explicitKeys).toEqual(['theme']);
+    expect(preferences.updateWithExplicitKeys).toHaveBeenCalledWith('user-1', {
       theme: 'dark',
     });
   });

@@ -54,4 +54,75 @@ describe('UserPreferencesService', () => {
       service.update('missing', { theme: 'dark' }),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
+
+  describe('with explicitKeys', () => {
+    it('getWithExplicitKeys() lists the stored valid keys', async () => {
+      const { service } = makeService([
+        {
+          preferences: { weekStart: 'sunday', theme: 'dark', timeFormat: 'x' },
+        },
+      ]);
+      expect(await service.getWithExplicitKeys('u1')).toEqual({
+        ...DEFAULT_PREFERENCES,
+        theme: 'dark',
+        weekStart: 'sunday',
+        explicitKeys: ['theme', 'weekStart'],
+      });
+    });
+
+    it('getWithExplicitKeys() of a user with {} has none explicit', async () => {
+      const { service } = makeService([{ preferences: {} }]);
+      expect(await service.getWithExplicitKeys('u1')).toEqual({
+        ...DEFAULT_PREFERENCES,
+        explicitKeys: [],
+      });
+    });
+
+    it('getWithExplicitKeys() of an unknown user is a 404', async () => {
+      const { service } = makeService([]);
+      await expect(
+        service.getWithExplicitKeys('missing'),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('updateWithExplicitKeys() returns the keys of the row the UPDATE returned', async () => {
+      const { service } = makeService([
+        { preferences: { theme: 'dark', timeFormat: '24h' } },
+      ]);
+      expect(
+        await service.updateWithExplicitKeys('u1', { timeFormat: '24h' }),
+      ).toEqual({
+        ...DEFAULT_PREFERENCES,
+        theme: 'dark',
+        timeFormat: '24h',
+        explicitKeys: ['theme', 'timeFormat'],
+      });
+    });
+
+    it('updateWithExplicitKeys() with nothing to store reads instead, with explicitKeys', async () => {
+      const { service, execute } = makeService([
+        { preferences: { startPage: 'inbox' } },
+      ]);
+      const result = await service.updateWithExplicitKeys('u1', {
+        bogus: 1,
+      } as never);
+      expect(result.explicitKeys).toEqual(['startPage']);
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+
+    it('never stores an explicitKeys sent in the patch', async () => {
+      const { service, execute } = makeService([
+        { preferences: { theme: 'dark' } },
+      ]);
+      const result = await service.updateWithExplicitKeys('u1', {
+        theme: 'dark',
+        explicitKeys: ['weekStart', 'timeFormat'],
+      } as never);
+      expect(result.explicitKeys).toEqual(['theme']);
+      // The one UPDATE carries only the real preference key.
+      const query = JSON.stringify((execute.mock.calls as unknown[][])[0][0]);
+      expect(query).toContain('theme');
+      expect(query).not.toContain('explicitKeys');
+    });
+  });
 });
