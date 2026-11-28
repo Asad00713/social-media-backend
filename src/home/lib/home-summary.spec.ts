@@ -9,6 +9,7 @@ import {
   summarizeChannel,
   weekStart,
   localDateOf,
+  splitWeekPosts,
   weekWindowOf,
   type FollowerRow,
 } from './home-summary';
@@ -430,6 +431,90 @@ describe('weekWindowOf never starts before the read', () => {
           }
         }
       }
+    },
+  );
+});
+
+describe('splitWeekPosts', () => {
+  const at = (id: string, publishedAt: string) => ({ id, publishedAt });
+  const ids = (xs: { id: string }[]) => xs.map((x) => x.id);
+
+  it('cuts at the UTC instants of local midnight (Karachi, UTC+5)', () => {
+    // Window: this week Nov 30 (Mon), last Monday Nov 23. Local midnights:
+    //   Nov 22 00:00 PKT = 11-21T19:00Z   (not in either; the day before)
+    //   Nov 23 00:00 PKT = 11-22T19:00Z   previous starts
+    //   Nov 24 00:00 PKT = 11-23T19:00Z   previous ends (exclusive)
+    //   Nov 30 00:00 PKT = 11-29T19:00Z   current starts
+    //   Dec 01 00:00 PKT = 11-30T19:00Z   current ends (exclusive)
+    const window = {
+      from: '2026-11-30',
+      to: '2026-11-30',
+      previousFrom: '2026-11-23',
+      previousTo: '2026-11-23',
+    };
+    const posts = [
+      at('before-prev', '2026-11-22T18:59:59.999Z'),
+      at('prev-first', '2026-11-22T19:00:00.000Z'),
+      at('prev-last', '2026-11-23T18:59:59.999Z'),
+      at('gap', '2026-11-23T19:00:00.000Z'),
+      at('cur-before', '2026-11-29T18:59:59.999Z'),
+      at('cur-first', '2026-11-29T19:00:00.000Z'),
+      at('cur-last', '2026-11-30T18:59:59.999Z'),
+      at('after', '2026-11-30T19:00:00.000Z'),
+    ];
+    const { current, previous } = splitWeekPosts(posts, window, 'Asia/Karachi');
+    expect(ids(current)).toEqual(['cur-first', 'cur-last']);
+    expect(ids(previous)).toEqual(['prev-first', 'prev-last']);
+  });
+
+  it('cuts at the UTC instants of local midnight (New York, UTC-5)', () => {
+    // Week Nov 23-29 against Nov 16-22. Local midnights:
+    //   Nov 16 = 11-16T05:00Z, Nov 23 = 11-23T05:00Z, Nov 30 = 11-30T05:00Z.
+    const window = {
+      from: '2026-11-23',
+      to: '2026-11-29',
+      previousFrom: '2026-11-16',
+      previousTo: '2026-11-22',
+    };
+    const posts = [
+      at('before', '2026-11-16T04:59:59.999Z'),
+      at('prev-first', '2026-11-16T05:00:00.000Z'),
+      at('prev-last', '2026-11-23T04:59:59.999Z'),
+      at('cur-first', '2026-11-23T05:00:00.000Z'),
+      at('cur-last', '2026-11-30T04:59:59.999Z'),
+      at('after', '2026-11-30T05:00:00.000Z'),
+    ];
+    const { current, previous } = splitWeekPosts(
+      posts,
+      window,
+      'America/New_York',
+    );
+    expect(ids(current)).toEqual(['cur-first', 'cur-last']);
+    expect(ids(previous)).toEqual(['prev-first', 'prev-last']);
+  });
+
+  it.each(['Asia/Karachi', 'America/New_York', 'Pacific/Kiritimati', 'UTC'])(
+    'equals the per-post local-date split, every half hour around both midnights (%s)',
+    (zone) => {
+      const now = new Date('2026-11-29T21:00:00Z');
+      const window = weekWindowOf(now, 'monday', zone);
+      const HALF_HOUR = 30 * 60 * 1000;
+      const start = Date.parse('2026-11-14T00:00:00Z');
+      const posts = Array.from({ length: 48 * 18 }, (_, i) =>
+        at(String(i), new Date(start + i * HALF_HOUR).toISOString()),
+      );
+      const { current, previous } = splitWeekPosts(posts, window, zone);
+      const byDate = (from: string, to: string) =>
+        posts.filter((p) => {
+          const d = localDateOf(new Date(p.publishedAt), zone);
+          return d >= from && d <= to;
+        });
+      expect(ids(current)).toEqual(ids(byDate(window.from, window.to)));
+      expect(ids(previous)).toEqual(
+        ids(byDate(window.previousFrom, window.previousTo)),
+      );
+      expect(current.length).toBeGreaterThan(0);
+      expect(previous.length).toBeGreaterThan(0);
     },
   );
 });

@@ -36,7 +36,7 @@ import {
   followersGainedOf,
   summarizeChannel,
   weekStart,
-  localDateOf,
+  splitWeekPosts,
   weekWindowOf,
   type FollowerRow,
   type PulseRange,
@@ -56,12 +56,18 @@ function pulseOf(
   published: PublishedPost[],
   followers: FollowerRow[],
   window: PulseWindow,
+  /** Posts already cut to the window and its previous span, by instant. */
+  split?: { current: PublishedPost[]; previous: PublishedPost[] },
 ): Pulse {
   const inWindow = (d: string) => d >= window.from && d <= window.to;
   const inPrevious = (d: string) =>
     d >= window.previousFrom && d <= window.previousTo;
-  const cur = totalsOf(published.filter((p) => inWindow(p.publishedOn)));
-  const prev = totalsOf(published.filter((p) => inPrevious(p.publishedOn)));
+  const cur = totalsOf(
+    split?.current ?? published.filter((p) => inWindow(p.publishedOn)),
+  );
+  const prev = totalsOf(
+    split?.previous ?? published.filter((p) => inPrevious(p.publishedOn)),
+  );
   return {
     postsPublished: metric(cur.postsPublished, prev.postsPublished),
     impressions: metric(cur.impressions, prev.impressions),
@@ -170,18 +176,13 @@ export class HomeService {
     const social = new Set(channels.filter(isSocial).map((c) => c.id));
     const socialPosts = published.filter((p) => social.has(p.channelId));
     const socialFollowers = followers.filter((r) => social.has(r.channelId));
-    // Posts are dated by their UTC day. For the caller's week, in a zone, each
-    // takes the day it fell on locally, so a post just after local midnight
-    // counts toward the new day (the same as cutting by the zone's UTC
-    // instants). Follower rows are already dated, in UTC, and are matched by
-    // those dates as they are: approximate by up to the zone's offset.
+    // Posts are dated by their UTC day. For the caller's week, in a zone, they
+    // are cut by the UTC instants of local midnight instead, so a post just
+    // after local midnight counts toward the new day. Follower rows are dated
+    // in UTC and are matched by those dates as they are: approximate by up to
+    // the zone's offset.
     const { tz } = options;
-    const weekPosts = tz
-      ? socialPosts.map((p) => ({
-          ...p,
-          publishedOn: localDateOf(new Date(p.publishedAt), tz),
-        }))
-      : socialPosts;
+    const weekSplit = tz ? splitWeekPosts(socialPosts, week, tz) : undefined;
 
     const publishedDates = streakPosts
       .filter((p): p is { publishedAt: Date } => p.publishedAt !== null)
@@ -200,7 +201,7 @@ export class HomeService {
       pulse: pulseOf(socialPosts, socialFollowers, window),
       week: {
         window: week,
-        pulse: pulseOf(weekPosts, socialFollowers, week),
+        pulse: pulseOf(socialPosts, socialFollowers, week, weekSplit),
       },
       channels: channels.map(({ id }) =>
         summarizeChannel(

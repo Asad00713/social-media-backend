@@ -6,7 +6,7 @@
  * numbers come from the daily rollup, whose follower columns, unlike its
  * engagement ones, are genuinely per day.
  */
-import { utcToWallClock } from '../../common/utils/wall-clock';
+import { utcToWallClock, wallClockToUtc } from '../../common/utils/wall-clock';
 import {
   followersGainedOf,
   type FollowerRow,
@@ -135,6 +135,40 @@ export function weekWindowOf(
     previousFrom: addDays(from, -7),
     previousTo: addDays(to, -7),
   };
+}
+
+/** UTC instant (ms) of local 00:00 on `date` in `timeZone`. */
+function localMidnightMs(date: string, timeZone: string): number {
+  return (
+    wallClockToUtc(date, '00:00', timeZone) ?? new Date(`${date}T00:00:00Z`)
+  ).getTime();
+}
+
+/**
+ * The posts of the window and of the span before it, cut by the UTC instants
+ * of local midnight in `timeZone`: the window runs from local 00:00 on
+ * `from` up to, not including, local 00:00 the day after `to`; likewise the
+ * previous span. The four instants are worked out once, not per post. This is
+ * the same split as comparing each post's local date to the window's dates.
+ */
+export function splitWeekPosts<T extends { publishedAt: string }>(
+  posts: T[],
+  window: PeriodWindow,
+  timeZone: string,
+): { current: T[]; previous: T[] } {
+  const at = (date: string) => localMidnightMs(date, timeZone);
+  const currentFrom = at(window.from);
+  const currentEnd = at(addDays(window.to, 1));
+  const previousFrom = at(window.previousFrom);
+  const previousEnd = at(addDays(window.previousTo, 1));
+  const current: T[] = [];
+  const previous: T[] = [];
+  for (const p of posts) {
+    const t = Date.parse(p.publishedAt);
+    if (t >= currentFrom && t < currentEnd) current.push(p);
+    else if (t >= previousFrom && t < previousEnd) previous.push(p);
+  }
+  return { current, previous };
 }
 
 /**
