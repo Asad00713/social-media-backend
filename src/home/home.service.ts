@@ -36,10 +36,13 @@ import {
   followersGainedOf,
   summarizeChannel,
   weekStart,
+  splitWeekPosts,
   weekWindowOf,
   type FollowerRow,
   type PulseRange,
+  type WeekStartDay,
 } from './lib/home-summary';
+import { wallClockToUtc } from '../common/utils/wall-clock';
 import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 const PUBLISHED_STATUSES = ['published', 'partially_published'] as const;
@@ -53,12 +56,18 @@ function pulseOf(
   published: PublishedPost[],
   followers: FollowerRow[],
   window: PulseWindow,
+  /** Posts already cut to the window and its previous span, by instant. */
+  split?: { current: PublishedPost[]; previous: PublishedPost[] },
 ): Pulse {
   const inWindow = (d: string) => d >= window.from && d <= window.to;
   const inPrevious = (d: string) =>
     d >= window.previousFrom && d <= window.previousTo;
-  const cur = totalsOf(published.filter((p) => inWindow(p.publishedOn)));
-  const prev = totalsOf(published.filter((p) => inPrevious(p.publishedOn)));
+  const cur = totalsOf(
+    split?.current ?? published.filter((p) => inWindow(p.publishedOn)),
+  );
+  const prev = totalsOf(
+    split?.previous ?? published.filter((p) => inPrevious(p.publishedOn)),
+  );
   return {
     postsPublished: metric(cur.postsPublished, prev.postsPublished),
     impressions: metric(cur.impressions, prev.impressions),
@@ -71,6 +80,13 @@ function pulseOf(
       followersGainedOf(followers.filter((r) => inPrevious(r.date))),
     ),
   };
+}
+
+/** The caller's week, for the "this week" numbers. Both default to Monday, UTC. */
+export interface WeekOptions {
+  weekStart?: WeekStartDay;
+  /** IANA time zone. Absent: UTC, cut by each post's UTC date as ever. */
+  tz?: string;
 }
 
 interface ActiveChannel {
@@ -104,14 +120,19 @@ export class HomeService {
   async getSummary(
     workspaceId: string,
     now = new Date(),
+    options: WeekOptions = {},
   ): Promise<HomeSummaryDto> {
     const today = utcToday(now);
     const window = windowOf(today, 7);
-    const week = weekWindowOf(now);
+    const week = weekWindowOf(now, options.weekStart, options.tz);
     // One read serves both views: the 7-day window ends yesterday, the week
     // runs through today, and both reach back no further than the window's
-    // previous span. The fetch ends tomorrow so today's rows are included;
-    // pulseOf and the per-channel filters below cut each view to its own days.
+    // previous span. That holds for the caller's local week too, in any zone:
+    // its previous span starts at local midnight of a date no earlier than
+    // UTC today - 14, which is no earlier than UTC midnight of that date
+    // minus a day's offset (pinned by "never starts before the read" in the
+    // spec). The fetch ends tomorrow so today's rows are included; pulseOf
+    // and the per-channel filters below cut each view to its own days.
     const tomorrow = new Date(today.getTime() + DAY_MS);
     const channels = await this.activeChannels(workspaceId);
     const followers = await this.followerRows(
@@ -155,18 +176,32 @@ export class HomeService {
     const social = new Set(channels.filter(isSocial).map((c) => c.id));
     const socialPosts = published.filter((p) => social.has(p.channelId));
     const socialFollowers = followers.filter((r) => social.has(r.channelId));
+    // Posts are dated by their UTC day. For the caller's week, in a zone, they
+    // are cut by the UTC instants of local midnight instead, so a post just
+    // after local midnight counts toward the new day. Follower rows are dated
+    // in UTC and are matched by those dates as they are: approximate by up to
+    // the zone's offset.
+    const { tz } = options;
+    const weekSplit = tz ? splitWeekPosts(socialPosts, week, tz) : undefined;
 
     const publishedDates = streakPosts
       .filter((p): p is { publishedAt: Date } => p.publishedAt !== null)
       .map((p) => new Date(p.publishedAt));
-    const thisWeek = weekStart(now).getTime();
+    // The same week as `week`: from local 00:00 on its first day. In UTC
+    // (no `tz`) that is the Monday 00:00 UTC it always was.
+    const thisWeek = (
+      tz
+        ? (wallClockToUtc(week.from, '00:00', tz) ??
+          new Date(`${week.from}T00:00:00Z`))
+        : new Date(`${week.from}T00:00:00Z`)
+    ).getTime();
 
     return {
       window,
       pulse: pulseOf(socialPosts, socialFollowers, window),
       week: {
         window: week,
-        pulse: pulseOf(socialPosts, socialFollowers, week),
+        pulse: pulseOf(socialPosts, socialFollowers, week, weekSplit),
       },
       channels: channels.map(({ id }) =>
         summarizeChannel(

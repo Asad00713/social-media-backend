@@ -122,6 +122,15 @@ describe('UpdatePreferencesDto', () => {
         metatype: UpdatePreferencesDto,
       });
 
+    it('rejects explicitKeys with a 400: only the server says what is explicit', async () => {
+      await expect(run({ explicitKeys: ['weekStart'] })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      await expect(
+        run({ theme: 'dark', explicitKeys: [] }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
     it('rejects an unknown key with a 400 (it is not stripped)', async () => {
       await expect(run({ bogus: 1 })).rejects.toBeInstanceOf(
         BadRequestException,

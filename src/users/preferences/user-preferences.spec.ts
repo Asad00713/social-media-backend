@@ -1,7 +1,9 @@
 import {
   DEFAULT_PREFERENCES,
+  explicitKeysOf,
   mergePreferences,
   pickPreferencePatch,
+  toPreferencesResponse,
 } from './user-preferences';
 
 describe('DEFAULT_PREFERENCES', () => {
@@ -92,5 +94,127 @@ describe('pickPreferencePatch', () => {
 
   it('is empty for an unknown-only patch', () => {
     expect(pickPreferencePatch({ bogus: 1 } as never)).toEqual({});
+  });
+});
+
+describe('explicitKeysOf', () => {
+  it('is empty for an empty stored object (the user chose nothing)', () => {
+    expect(explicitKeysOf({})).toEqual([]);
+  });
+
+  it.each([null, undefined, 'dark', 5, [], [1]])(
+    'is empty for the non-object %p',
+    (stored) => {
+      expect(explicitKeysOf(stored)).toEqual([]);
+    },
+  );
+
+  it('lists only the keys a sparse object holds', () => {
+    expect(explicitKeysOf({ weekStart: 'sunday', theme: 'dark' })).toEqual([
+      'theme',
+      'weekStart',
+    ]);
+  });
+
+  it('follows the order of the preference keys, not the stored order', () => {
+    expect(
+      explicitKeysOf({
+        composerDefaultWhen: 'draft',
+        hiddenModules: [],
+        startPage: 'inbox',
+        dateFormat: 'YYYY_MM_DD',
+        weekStart: 'saturday',
+        timeFormat: '24h',
+        timezone: 'Asia/Karachi',
+        language: 'en',
+        theme: 'light',
+      }),
+    ).toEqual([
+      'theme',
+      'language',
+      'timezone',
+      'timeFormat',
+      'weekStart',
+      'dateFormat',
+      'startPage',
+      'hiddenModules',
+      'composerDefaultWhen',
+    ]);
+  });
+
+  it('counts a value equal to the default: the user still chose it', () => {
+    expect(explicitKeysOf({ weekStart: 'monday', timeFormat: '12h' })).toEqual([
+      'timeFormat',
+      'weekStart',
+    ]);
+  });
+
+  it('does not count a stored invalid value', () => {
+    expect(
+      explicitKeysOf({
+        weekStart: 'friday',
+        timeFormat: 12,
+        theme: 'dark',
+        timezone: 'Mars/Olympus',
+        hiddenModules: 'inbox',
+        dateFormat: null,
+      }),
+    ).toEqual(['theme']);
+  });
+
+  it('ignores unknown keys, explicitKeys itself included', () => {
+    expect(
+      explicitKeysOf({ bogus: 1, explicitKeys: ['theme'], theme: 'dark' }),
+    ).toEqual(['theme']);
+  });
+
+  it('counts an explicit null time zone: "follow the device" was chosen', () => {
+    expect(explicitKeysOf({ timezone: null })).toEqual(['timezone']);
+  });
+
+  it('counts a hiddenModules array even when it holds junk or is empty', () => {
+    expect(explicitKeysOf({ hiddenModules: [] })).toEqual(['hiddenModules']);
+    expect(explicitKeysOf({ hiddenModules: ['home', 3] })).toEqual([
+      'hiddenModules',
+    ]);
+  });
+
+  it('agrees with mergePreferences: an explicit key is one whose stored value survives', () => {
+    const stored = {
+      theme: 'dark',
+      language: 'en',
+      timezone: 'Europe/Paris',
+      timeFormat: '24h',
+      weekStart: 'saturday',
+      dateFormat: 'DD_MM_YYYY',
+      startPage: 'planner',
+      hiddenModules: ['inbox'],
+      composerDefaultWhen: 'best_time',
+    };
+    const merged = mergePreferences(stored);
+    const keys = explicitKeysOf(stored);
+    expect(keys).toHaveLength(9);
+    for (const key of keys) {
+      expect(merged[key]).toEqual(stored[key]);
+    }
+  });
+});
+
+describe('toPreferencesResponse', () => {
+  it('is the merged preferences plus explicitKeys', () => {
+    expect(
+      toPreferencesResponse({ theme: 'dark', weekStart: 'friday' }),
+    ).toEqual({
+      ...DEFAULT_PREFERENCES,
+      theme: 'dark',
+      explicitKeys: ['theme'],
+    });
+  });
+
+  it('keeps the defaults and an empty explicitKeys for an empty object', () => {
+    expect(toPreferencesResponse({})).toEqual({
+      ...DEFAULT_PREFERENCES,
+      explicitKeys: [],
+    });
   });
 });

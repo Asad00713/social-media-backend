@@ -96,6 +96,57 @@ export function mergePreferences(stored: unknown): UserPreferences {
 }
 
 /**
+ * Whether a stored value is one {@link mergePreferences} would keep, per key.
+ * A time zone of `null` counts: the PATCH stores it to say "follow the
+ * device", which is a choice. A hiddenModules array counts whatever it
+ * holds, because merge keeps the array and filters its items.
+ */
+const IS_STORED_VALUE_VALID: Record<
+  keyof UserPreferences,
+  (value: unknown) => boolean
+> = {
+  theme: (v) => oneOf(THEMES, v),
+  language: (v) => oneOf(LANGUAGES, v),
+  timezone: (v) => v === null || (typeof v === 'string' && isIanaTimeZone(v)),
+  timeFormat: (v) => oneOf(TIME_FORMATS, v),
+  weekStart: (v) => oneOf(WEEK_STARTS, v),
+  dateFormat: (v) => oneOf(DATE_FORMATS, v),
+  startPage: (v) => oneOf(START_PAGES, v),
+  hiddenModules: (v) => Array.isArray(v),
+  composerDefaultWhen: (v) => oneOf(COMPOSER_DEFAULT_WHEN, v),
+};
+
+/**
+ * The preference keys the user actually set: present in the stored sparse
+ * object AND valid (the same rules as {@link mergePreferences}). A key the
+ * user never chose, or one holding a bad stored value, is not explicit, so a
+ * client can fill it from the browser instead of the server's default. In
+ * `PREFERENCE_KEYS` order.
+ */
+export function explicitKeysOf(stored: unknown): Array<keyof UserPreferences> {
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) {
+    return [];
+  }
+  const s = stored as Record<string, unknown>;
+  return PREFERENCE_KEYS.filter(
+    (key) =>
+      Object.prototype.hasOwnProperty.call(s, key) &&
+      IS_STORED_VALUE_VALID[key](s[key]),
+  );
+}
+
+/** What the preferences routes return: every value, plus which were chosen. */
+export type UserPreferencesResponse = UserPreferences & {
+  explicitKeys: Array<keyof UserPreferences>;
+};
+
+export function toPreferencesResponse(
+  stored: unknown,
+): UserPreferencesResponse {
+  return { ...mergePreferences(stored), explicitKeys: explicitKeysOf(stored) };
+}
+
+/**
  * Only the {@link UserPreferences} keys of a patch, `undefined` values
  * dropped. An explicit `null` (the time zone) is kept: it means "follow the
  * device" and must be stored.

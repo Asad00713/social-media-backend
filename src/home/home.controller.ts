@@ -15,6 +15,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 import {
+  HomeSummaryQueryDto,
   UpdateWeeklyPostGoalDto,
   type HomePulseDto,
   type HomeSummaryDto,
@@ -27,13 +28,21 @@ import { PULSE_RANGES, isPulseRange } from './lib/home-summary';
 export class HomeController {
   constructor(private readonly home: HomeService) {}
 
-  /** Weekly pulse, per-channel growth, streak and goal for the Home overview. */
+  /**
+   * Weekly pulse, per-channel growth, streak and goal for the Home overview.
+   * `weekStart` (monday, sunday, saturday) and `tz` (IANA) shape the "this
+   * week" numbers to the caller's own week; absent, they are Monday and UTC.
+   */
   @Get('summary')
   @RequireCapability('analytics:view')
   getSummary(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Query() query: HomeSummaryQueryDto,
   ): Promise<HomeSummaryDto> {
-    return this.home.getSummary(workspaceId);
+    return this.home.getSummary(workspaceId, undefined, {
+      weekStart: query.weekStart,
+      tz: query.tz,
+    });
   }
 
   /** Performance over the last 7, 30 or 90 days, with a point per day. */

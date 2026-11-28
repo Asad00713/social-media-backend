@@ -20,7 +20,7 @@ import { AccountDeletionService } from './account-deletion.service';
 import { DeleteAccountDto } from './dto/delete-account.dto';
 import { MyWorkspacesService, type MyWorkspace } from './my-workspaces.service';
 import { UpdatePreferencesDto } from './preferences/dto/update-preferences.dto';
-import type { UserPreferences } from './preferences/user-preferences';
+import type { UserPreferencesResponse } from './preferences/user-preferences';
 import { UserPreferencesService } from './preferences/user-preferences.service';
 
 /** The caller, as the JWT strategy attaches it. */
@@ -55,17 +55,20 @@ export class AccountSettingsController {
     private readonly accountDeletion: AccountDeletionService,
   ) {}
 
+  /** Every preference, plus `explicitKeys`: the ones the user chose. */
   @Get('preferences')
-  getPreferences(@CurrentUser() caller: Caller): Promise<UserPreferences> {
-    return this.preferences.get(caller.userId);
+  getPreferences(
+    @CurrentUser() caller: Caller,
+  ): Promise<UserPreferencesResponse> {
+    return this.preferences.getWithExplicitKeys(caller.userId);
   }
 
   @Patch('preferences')
   updatePreferences(
     @CurrentUser() caller: Caller,
     @Body() dto: UpdatePreferencesDto,
-  ): Promise<UserPreferences> {
-    return this.preferences.update(caller.userId, dto);
+  ): Promise<UserPreferencesResponse> {
+    return this.preferences.updateWithExplicitKeys(caller.userId, dto);
   }
 
   /**
