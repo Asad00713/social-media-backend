@@ -121,12 +121,12 @@ describe('HomeService.getSummary', () => {
 
     const s = await service.getSummary('ws1', NOW);
 
-    // Posts from both windows, up to (not including) today.
+    // Posts from both windows, through today (up to, not including, tomorrow).
     expect(repo.publishedPosts).toHaveBeenCalledWith(
       'ws1',
       [1, 2],
       '2026-09-16',
-      '2026-09-30',
+      '2026-10-01',
     );
 
     expect(s.window).toEqual({
@@ -175,6 +175,232 @@ describe('HomeService.getSummary', () => {
     expect(s.streakWeeks).toBe(2);
     expect(s.publishedThisWeek).toBe(1);
     expect(s.weeklyPostGoal).toBe(7);
+  });
+
+  it('sums this calendar week, today included, against the same days last week', async () => {
+    // NOW is Wed 2026-09-30: the week is Sep 28-30, the same days last week
+    // Sep 21-23. Sep 24 sits in neither; Sep 30 is today, so it is in the
+    // week but not in the 7-day pulse, which ends yesterday.
+    const { db } = fakeDb([
+      [{ id: 1, platform: 'instagram' }],
+      [
+        {
+          channelId: 1,
+          date: '2026-09-22',
+          followersAtEndOfDay: null,
+          followersGained: 7,
+        },
+        {
+          channelId: 1,
+          date: '2026-09-24',
+          followersAtEndOfDay: null,
+          followersGained: 99,
+        },
+        {
+          channelId: 1,
+          date: '2026-09-29',
+          followersAtEndOfDay: null,
+          followersGained: 20,
+        },
+        {
+          channelId: 1,
+          date: '2026-09-30',
+          followersAtEndOfDay: null,
+          followersGained: 5,
+        },
+      ],
+      [],
+      [{ weeklyPostGoal: 5 }],
+    ]);
+    const repo = fakePosts([
+      post({
+        postId: 'prev1',
+        publishedOn: '2026-09-21',
+        likes: 10,
+        impressions: 1000,
+      }),
+      post({
+        postId: 'prev2',
+        publishedOn: '2026-09-23',
+        likes: 5,
+        comments: 5,
+        impressions: 500,
+      }),
+      post({
+        postId: 'neither',
+        publishedOn: '2026-09-24',
+        likes: 99,
+        impressions: 9999,
+      }),
+      post({
+        postId: 'w1',
+        publishedOn: '2026-09-28',
+        likes: 20,
+        comments: 5,
+        shares: 5,
+        impressions: 1500,
+      }),
+      post({
+        postId: 'today',
+        publishedOn: '2026-09-30',
+        likes: 40,
+        impressions: 2000,
+      }),
+    ]);
+
+    const s = await new HomeService(db as any, repo as any).getSummary(
+      'ws1',
+      NOW,
+    );
+
+    // One read, through today: the upper bound is tomorrow.
+    expect(repo.publishedPosts).toHaveBeenCalledTimes(1);
+    expect(repo.publishedPosts).toHaveBeenCalledWith(
+      'ws1',
+      [1],
+      '2026-09-16',
+      '2026-10-01',
+    );
+
+    expect(s.week.window).toEqual({
+      from: '2026-09-28',
+      to: '2026-09-30',
+      previousFrom: '2026-09-21',
+      previousTo: '2026-09-23',
+    });
+    // Hand-computed from the rows above.
+    // This week (Sep 28-30): w1 + today.
+    //   posts 2; impressions 1500 + 2000 = 3500; engagements (20+5+5) + 40 = 70
+    //   rate 70 / 3500 = 2%; followers 20 + 5 = 25.
+    // Same days last week (Sep 21-23): prev1 + prev2.
+    //   posts 2; impressions 1000 + 500 = 1500; engagements 10 + (5+5) = 20
+    //   followers 7 (Sep 22).
+    // Change: impressions (3500-1500)/1500 = 133.3%; engagements (70-20)/20
+    //   = 250%; followers (25-7)/7 = 257.1%; posts 0%.
+    expect(s.week.pulse.postsPublished).toEqual({
+      value: 2,
+      previous: 2,
+      deltaPct: 0,
+    });
+    expect(s.week.pulse.impressions).toEqual({
+      value: 3500,
+      previous: 1500,
+      deltaPct: 133.3,
+    });
+    expect(s.week.pulse.engagements).toEqual({
+      value: 70,
+      previous: 20,
+      deltaPct: 250,
+      rate: 2,
+    });
+    expect(s.week.pulse.followersGained).toEqual({
+      value: 25,
+      previous: 7,
+      deltaPct: 257.1,
+    });
+
+    // The 7-day pulse (Sep 23-29 against Sep 16-22) still ends yesterday.
+    // posts: prev2 + neither + w1 = 3 (not 4: today is out); previous: prev1 = 1.
+    // followers: 99 + 20 = 119 (Sep 30's 5 is out); previous: 7.
+    expect(s.window.to).toBe('2026-09-29');
+    expect(s.pulse.postsPublished).toEqual({
+      value: 3,
+      previous: 1,
+      deltaPct: 200,
+    });
+    expect(s.pulse.impressions.value).toBe(500 + 9999 + 1500);
+    expect(s.pulse.followersGained).toEqual({
+      value: 119,
+      previous: 7,
+      deltaPct: 1600,
+    });
+    // Per-channel numbers are the 7-day window's too.
+    expect(s.channels[0].postsThisWeek).toBe(3);
+    expect(s.channels[0].followersGained).toBe(119);
+  });
+
+  it('is one day against one day on a Monday', async () => {
+    const monday = new Date('2026-09-28T09:00:00Z');
+    const { db } = fakeDb([
+      [{ id: 1, platform: 'instagram' }],
+      [
+        {
+          channelId: 1,
+          date: '2026-09-21',
+          followersAtEndOfDay: null,
+          followersGained: 3,
+        },
+        {
+          channelId: 1,
+          date: '2026-09-22',
+          followersAtEndOfDay: null,
+          followersGained: 50,
+        },
+        {
+          channelId: 1,
+          date: '2026-09-28',
+          followersAtEndOfDay: null,
+          followersGained: 9,
+        },
+      ],
+      [],
+      [{ weeklyPostGoal: 5 }],
+    ]);
+    const repo = fakePosts([
+      post({
+        postId: 'last-mon',
+        publishedOn: '2026-09-21',
+        likes: 2,
+        impressions: 50,
+      }),
+      post({
+        postId: 'last-tue',
+        publishedOn: '2026-09-22',
+        likes: 100,
+        impressions: 5000,
+      }),
+      post({
+        postId: 'mon',
+        publishedOn: '2026-09-28',
+        likes: 4,
+        impressions: 100,
+      }),
+    ]);
+
+    const s = await new HomeService(db as any, repo as any).getSummary(
+      'ws1',
+      monday,
+    );
+
+    expect(s.week.window).toEqual({
+      from: '2026-09-28',
+      to: '2026-09-28',
+      previousFrom: '2026-09-21',
+      previousTo: '2026-09-21',
+    });
+    // Mon 28: 1 post, 100 impressions, 4 engagements, 9 followers.
+    // Last Mon 21 only (Tue 22 is out): 1 post, 50, 2, 3.
+    expect(s.week.pulse.postsPublished).toEqual({
+      value: 1,
+      previous: 1,
+      deltaPct: 0,
+    });
+    expect(s.week.pulse.impressions).toEqual({
+      value: 100,
+      previous: 50,
+      deltaPct: 100,
+    });
+    expect(s.week.pulse.engagements).toEqual({
+      value: 4,
+      previous: 2,
+      deltaPct: 100,
+      rate: 4,
+    });
+    expect(s.week.pulse.followersGained).toEqual({
+      value: 9,
+      previous: 3,
+      deltaPct: 200,
+    });
   });
 
   it("never adds up the rollup's engagement sums, which repeat a post's lifetime likes every day", async () => {

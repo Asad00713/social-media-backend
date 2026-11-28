@@ -13,9 +13,12 @@ import {
 import {
   PERIOD_DAYS,
   deltaPct,
+  isoDate,
   isPeriodDays,
   round1,
+  utcToday,
   type PeriodDays,
+  type PeriodWindow,
 } from '../../post-performance/period';
 import {
   engagementsOf,
@@ -89,6 +92,22 @@ export function weekStart(d: Date): Date {
   return new Date(
     Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - back),
   );
+}
+
+/**
+ * The calendar week so far: Monday (UTC) to today, both counted, against the
+ * same days of the week before. Unlike the 7-day windows it includes today, so
+ * a Monday is one day against one day rather than an empty week.
+ */
+export function weekWindowOf(now: Date): PeriodWindow {
+  const from = weekStart(now).getTime();
+  const to = utcToday(now).getTime();
+  return {
+    from: isoDate(new Date(from)),
+    to: isoDate(new Date(to)),
+    previousFrom: isoDate(new Date(from - WEEK_MS)),
+    previousTo: isoDate(new Date(to - WEEK_MS)),
+  };
 }
 
 /**

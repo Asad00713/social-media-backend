@@ -18,6 +18,11 @@ export interface HomeSummaryDto {
   /** The last 7 complete days and the 7 before them. */
   window: PulseWindow;
   pulse: Pulse;
+  /**
+   * Monday 00:00 UTC (weekStart) to today, against the same days of last
+   * week. Unlike `window`, today is counted.
+   */
+  week: { window: PulseWindow; pulse: Pulse };
   channels: ChannelSummary[];
   streakWeeks: number;
   /** Posts published by Schedura since Monday 00:00 UTC. */
