@@ -42,6 +42,7 @@ import {
   type PulseRange,
   type WeekStartDay,
 } from './lib/home-summary';
+import { wallClockToUtc } from '../common/utils/wall-clock';
 import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 
 const PUBLISHED_STATUSES = ['published', 'partially_published'] as const;
@@ -185,7 +186,14 @@ export class HomeService {
     const publishedDates = streakPosts
       .filter((p): p is { publishedAt: Date } => p.publishedAt !== null)
       .map((p) => new Date(p.publishedAt));
-    const thisWeek = weekStart(now).getTime();
+    // The same week as `week`: from local 00:00 on its first day. In UTC
+    // (no `tz`) that is the Monday 00:00 UTC it always was.
+    const thisWeek = (
+      tz
+        ? (wallClockToUtc(week.from, '00:00', tz) ??
+          new Date(`${week.from}T00:00:00Z`))
+        : new Date(`${week.from}T00:00:00Z`)
+    ).getTime();
 
     return {
       window,

@@ -973,6 +973,82 @@ describe("HomeService.getSummary with the caller's week start and time zone", ()
   });
 });
 
+describe('HomeService.getSummary publishedThisWeek follows the week of the card', () => {
+  /** channels, followers, the streak's published posts, workspace. */
+  const dbWith = (publishedAt: string[]) =>
+    fakeDb([
+      [{ id: 1, platform: 'instagram' }],
+      [],
+      publishedAt.map((at) => ({ publishedAt: new Date(at) })),
+      [{ weeklyPostGoal: 5 }],
+    ]).db;
+  const run = (
+    publishedAt: string[],
+    now: string,
+    options?: { weekStart?: 'sunday'; tz?: string },
+  ) =>
+    new HomeService(dbWith(publishedAt) as any, fakePosts() as any).getSummary(
+      'ws1',
+      new Date(now),
+      options,
+    );
+
+  it('counts from local Monday 00:00 in the zone, not UTC Monday', async () => {
+    // Now: 2026-11-29T21:00Z = Mon 2026-11-30 02:00 PKT. The Karachi week
+    // began 2026-11-29T19:00Z; the UTC Monday week began 2026-11-23T00:00Z.
+    const published = [
+      '2026-11-29T18:59:59Z', // Sun 23:59:59 PKT: last week in Karachi
+      '2026-11-29T20:00:00Z', // Mon 01:00 PKT: this week in Karachi
+      '2026-11-26T08:00:00Z', // Thu: last week in Karachi
+    ];
+    const now = '2026-11-29T21:00:00Z';
+    // Karachi: only the 01:00 post.
+    expect(
+      (await run(published, now, { tz: 'Asia/Karachi' })).publishedThisWeek,
+    ).toBe(1);
+    // No params: the UTC week since Monday Nov 23 holds all three.
+    expect((await run(published, now)).publishedThisWeek).toBe(3);
+  });
+
+  it('counts the same posts as the week card (Karachi, Monday 01:00 PKT post)', async () => {
+    const s = await run(['2026-11-29T20:00:00Z'], '2026-11-29T21:00:00Z', {
+      tz: 'Asia/Karachi',
+    });
+    expect(s.week.window.from).toBe('2026-11-30');
+    expect(s.publishedThisWeek).toBe(1);
+  });
+
+  it('counts from Sunday 00:00 for a Sunday-start week', async () => {
+    // Now: Sat 2026-11-28 10:00Z. Sunday-start week began 2026-11-22T00:00Z;
+    // the Monday week began 2026-11-23T00:00Z.
+    const published = [
+      '2026-11-22T12:00:00Z', // Sunday noon
+      '2026-11-23T09:00:00Z', // Monday
+      '2026-11-21T23:00:00Z', // Saturday night: last week either way
+    ];
+    const now = '2026-11-28T10:00:00Z';
+    expect(
+      (await run(published, now, { weekStart: 'sunday' })).publishedThisWeek,
+    ).toBe(2);
+    expect((await run(published, now)).publishedThisWeek).toBe(1);
+  });
+
+  it('keeps the streak on Monday-UTC weeks whatever the params', async () => {
+    // One post per UTC Monday week, three weeks running up to now.
+    const published = [
+      '2026-11-26T08:00:00Z',
+      '2026-11-19T08:00:00Z',
+      '2026-11-12T08:00:00Z',
+    ];
+    const now = '2026-11-28T10:00:00Z';
+    expect((await run(published, now)).streakWeeks).toBe(3);
+    expect(
+      (await run(published, now, { weekStart: 'sunday', tz: 'Asia/Karachi' }))
+        .streakWeeks,
+    ).toBe(3);
+  });
+});
+
 describe('HomeService.getPulse', () => {
   it('compares the chosen number of days with the same span before, with a point per day', async () => {
     const { db } = fakeDb([

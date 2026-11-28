@@ -30,8 +30,16 @@ export interface HomeSummaryDto {
    */
   week: { window: PulseWindow; pulse: Pulse };
   channels: ChannelSummary[];
+  /**
+   * Consecutive weeks with a post. Always Monday-based UTC weeks, whatever
+   * `weekStart` and `tz` say: it is a history of weeks, not the week above.
+   */
   streakWeeks: number;
-  /** Posts published by Schedura since Monday 00:00 UTC. */
+  /**
+   * Posts published by Schedura in the same week as `week`: from local 00:00
+   * on `week.window.from` until now. Monday 00:00 UTC without `weekStart`
+   * and `tz`.
+   */
   publishedThisWeek: number;
   weeklyPostGoal: number;
 }
