@@ -7,6 +7,7 @@ import {
   isPulseRange,
   summarizeChannel,
   weekStart,
+  weekWindowOf,
   type FollowerRow,
 } from './home-summary';
 
@@ -117,6 +118,35 @@ describe('weekStart', () => {
     expect(weekStart(new Date('2026-09-27T23:00:00Z')).toISOString()).toBe(
       '2026-09-21T00:00:00.000Z',
     );
+  });
+});
+
+describe('weekWindowOf', () => {
+  it('spans Monday to today, against the same days last week', () => {
+    expect(weekWindowOf(new Date('2026-11-27T13:48:00Z'))).toEqual({
+      from: '2026-11-23',
+      to: '2026-11-27',
+      previousFrom: '2026-11-16',
+      previousTo: '2026-11-20',
+    });
+  });
+
+  it('is one day on a Monday', () => {
+    expect(weekWindowOf(new Date('2026-11-23T09:00:00Z'))).toMatchObject({
+      from: '2026-11-23',
+      to: '2026-11-23',
+      previousFrom: '2026-11-16',
+      previousTo: '2026-11-16',
+    });
+  });
+
+  it('is the whole week on a Sunday', () => {
+    expect(weekWindowOf(new Date('2026-11-29T23:59:00Z'))).toEqual({
+      from: '2026-11-23',
+      to: '2026-11-29',
+      previousFrom: '2026-11-16',
+      previousTo: '2026-11-22',
+    });
   });
 });
 

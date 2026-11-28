@@ -36,6 +36,7 @@ import {
   followersGainedOf,
   summarizeChannel,
   weekStart,
+  weekWindowOf,
   type FollowerRow,
   type PulseRange,
 } from './lib/home-summary';
@@ -44,17 +45,20 @@ import { liveWorkspaces } from '../posts/soft-delete/soft-delete';
 const PUBLISHED_STATUSES = ['published', 'partially_published'] as const;
 
 /**
- * The window's totals against the span before, from posts and follower rows
- * covering both.
+ * The window's totals against its comparison span, from posts and follower
+ * rows covering both. Each span takes only the rows dated inside it (both
+ * ends inclusive), so rows fetched for a wider or later range never leak in.
  */
 function pulseOf(
   published: PublishedPost[],
   followers: FollowerRow[],
   window: PulseWindow,
 ): Pulse {
-  const inWindow = (d: string) => d >= window.from;
+  const inWindow = (d: string) => d >= window.from && d <= window.to;
+  const inPrevious = (d: string) =>
+    d >= window.previousFrom && d <= window.previousTo;
   const cur = totalsOf(published.filter((p) => inWindow(p.publishedOn)));
-  const prev = totalsOf(published.filter((p) => !inWindow(p.publishedOn)));
+  const prev = totalsOf(published.filter((p) => inPrevious(p.publishedOn)));
   return {
     postsPublished: metric(cur.postsPublished, prev.postsPublished),
     impressions: metric(cur.impressions, prev.impressions),
@@ -64,7 +68,7 @@ function pulseOf(
     },
     followersGained: metric(
       followersGainedOf(followers.filter((r) => inWindow(r.date))),
-      followersGainedOf(followers.filter((r) => !inWindow(r.date))),
+      followersGainedOf(followers.filter((r) => inPrevious(r.date))),
     ),
   };
 }
@@ -103,17 +107,23 @@ export class HomeService {
   ): Promise<HomeSummaryDto> {
     const today = utcToday(now);
     const window = windowOf(today, 7);
+    const week = weekWindowOf(now);
+    // One read serves both views: the 7-day window ends yesterday, the week
+    // runs through today, and both reach back no further than the window's
+    // previous span. The fetch ends tomorrow so today's rows are included;
+    // pulseOf and the per-channel filters below cut each view to its own days.
+    const tomorrow = new Date(today.getTime() + DAY_MS);
     const channels = await this.activeChannels(workspaceId);
     const followers = await this.followerRows(
       channels,
       window.previousFrom,
-      today,
+      tomorrow,
     );
     const published = await this.publishedPosts(
       workspaceId,
       channels,
       window.previousFrom,
-      today,
+      tomorrow,
     );
 
     const streakPosts: { publishedAt: Date | null }[] = await this.db
@@ -139,9 +149,12 @@ export class HomeService {
       .where(and(eq(workspace.id, workspaceId), liveWorkspaces()));
     if (!ws) throw new NotFoundException('Workspace not found');
 
-    const currentFollowers = followers.filter((r) => r.date >= window.from);
-    const currentPosts = published.filter((p) => p.publishedOn >= window.from);
+    const inWindow = (d: string) => d >= window.from && d <= window.to;
+    const currentFollowers = followers.filter((r) => inWindow(r.date));
+    const currentPosts = published.filter((p) => inWindow(p.publishedOn));
     const social = new Set(channels.filter(isSocial).map((c) => c.id));
+    const socialPosts = published.filter((p) => social.has(p.channelId));
+    const socialFollowers = followers.filter((r) => social.has(r.channelId));
 
     const publishedDates = streakPosts
       .filter((p): p is { publishedAt: Date } => p.publishedAt !== null)
@@ -150,11 +163,11 @@ export class HomeService {
 
     return {
       window,
-      pulse: pulseOf(
-        published.filter((p) => social.has(p.channelId)),
-        followers.filter((r) => social.has(r.channelId)),
-        window,
-      ),
+      pulse: pulseOf(socialPosts, socialFollowers, window),
+      week: {
+        window: week,
+        pulse: pulseOf(socialPosts, socialFollowers, week),
+      },
       channels: channels.map(({ id }) =>
         summarizeChannel(
           id,
